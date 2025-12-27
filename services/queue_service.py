@@ -28,21 +28,13 @@ class QueueService:
 
     def get_visible_queue(self, guild_id: int) -> List[Song]:
         guild_data = self.bot.get_guild_data(guild_id)
-        visible_songs = []
 
-        visible_songs.extend(guild_data["queue"])
+        all_songs = guild_data["queue"][:]
 
-        if (
-                guild_data["loop_mode"] == "queue"
-                and guild_data["loop_backup"]
-        ):
-            queue_urls = {song.webpage_url for song in guild_data["queue"]}
+        if guild_data["loop_mode"] == "queue" and guild_data["loop_backup"]:
+            all_songs.extend(guild_data["loop_backup"])
 
-            for song in guild_data["loop_backup"]:
-                if song.webpage_url not in queue_urls:
-                    visible_songs.append(song)
-
-        return visible_songs[:]
+        return list({song.webpage_url: song for song in all_songs}.values())
 
     def add_to_history(self, guild_id: int, song: Song):
         guild_data = self.bot.get_guild_data(guild_id)
