@@ -97,4 +97,3 @@ def create_embed(title: str, description: str = "", color: int = COLOR, bot_user
     )
     embed.timestamp = datetime.now()
     return embed
-

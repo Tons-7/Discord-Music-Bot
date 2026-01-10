@@ -11,8 +11,6 @@ from services.music_service import MusicService
 from services.playback_service import PlaybackService
 from services.queue_service import QueueService
 
-# from services.transcript_service import TranscriptService
-
 from utils.helpers import (
     format_duration,
     build_progress_bar,
@@ -564,7 +562,7 @@ class MusicCommands(commands.Cog):
 
             if is_playlist:
                 playlist_songs = (
-                    await self.music_service.handle_youtube_playlist_optimized(query)
+                    await self.music_service.handle_youtube_playlist(query)
                 )
 
                 if not playlist_songs:
@@ -1198,6 +1196,7 @@ class MusicCommands(commands.Cog):
             f"🔊 Volume: {guild_data['volume']}%\n"
             f"🔁 Loop: {guild_data['loop_mode'].title()}\n"
             f"🔀 Shuffle: {'On' if guild_data['shuffle'] else 'Off'}\n"
+            f"Autoplay: {'Enabled' if guild_data['autoplay'] else 'Disabled'}\n"
             f"📝 Requested by: {current.requested_by}\n"
             f"📋 Queue length: {len(guild_data['queue'])}",
             COLOR,
@@ -1768,7 +1767,43 @@ class MusicCommands(commands.Cog):
                     del guild_data["seeking_start_time"]
 
     @discord.app_commands.command(
-        name="help", description="Show all available commands and how to use them"
+        name="autoplay",
+        description="Toggle autoplay mode (automatically plays related songs when queue ends)"
+    )
+    async def autoplay_slash(self, interaction: discord.Interaction):
+        if not await self.check_voice_channel(interaction):
+            return
+
+        guild_data = self.bot.get_guild_data(interaction.guild.id)
+
+        if not self.bot.spotify:
+            embed = create_embed(
+                "Autoplay Unavailable",
+                "Autoplay requires Spotify integration, which is not configured on this bot.",
+                COLOR,
+                self.bot.user
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        guild_data["autoplay"] = not guild_data.get("autoplay", False)
+
+        status = "enabled" if guild_data["autoplay"] else "disabled"
+
+        embed = create_embed(
+            f"Autoplay {status.title()}",
+            f"Autoplay has been **{status}**.\n" +
+            ("The bot will automatically add related songs when the queue ends" if guild_data["autoplay"]
+             else "The bot will stop when the queue ends"),
+            COLOR,
+            self.bot.user
+        )
+
+        await interaction.response.send_message(embed=embed)
+        await self.bot.save_guild_queue(interaction.guild.id)
+
+    @discord.app_commands.command(
+        name="help", description="Shows all available commands and how to use them"
     )
     async def help_slash(self, interaction: discord.Interaction):
         description = """**Music Bot Commands Guide**
@@ -1780,7 +1815,7 @@ class MusicCommands(commands.Cog):
         `/resume` - Resume the paused song
         `/skip` - Skip the current song
         `/previous` - Play the previous song from history
-        `/autoplay` - Auto play related songs after queue
+        `/autoplay` - Auto play related songs after queue ends
         `/stop` - Stop playback and clear queue
         `/leave` - Disconnect from voice channel
 

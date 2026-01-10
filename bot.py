@@ -12,8 +12,13 @@ from spotipy.oauth2 import SpotifyClientCredentials
 import concurrent.futures
 import discord
 
-from config import get_intents
+from config import get_intents, COLOR
 from models.song import Song
+
+from services.music_service import MusicService
+from services.playback_service import PlaybackService
+
+from utils import create_embed
 
 logger = logging.getLogger(__name__)
 
@@ -131,27 +136,59 @@ class MusicBot(commands.Bot):
 
             cursor.execute(
                 """
-                CREATE TABLE IF NOT EXISTS playlists (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    guild_id INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    songs TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                CREATE TABLE IF NOT EXISTS playlists
+                (
+                    id
+                    INTEGER
+                    PRIMARY
+                    KEY
+                    AUTOINCREMENT,
+                    user_id
+                    INTEGER
+                    NOT
+                    NULL,
+                    guild_id
+                    INTEGER
+                    NOT
+                    NULL,
+                    name
+                    TEXT
+                    NOT
+                    NULL,
+                    songs
+                    TEXT
+                    NOT
+                    NULL,
+                    created_at
+                    TIMESTAMP
+                    DEFAULT
+                    CURRENT_TIMESTAMP
                 )
-            """
+                """
             )
 
             cursor.execute(
                 """
-                CREATE TABLE IF NOT EXISTS guild_settings (
-                    guild_id INTEGER PRIMARY KEY,
-                    auto_disconnect INTEGER DEFAULT 300,
-                    default_volume INTEGER DEFAULT 100,
-                    music_channel_id INTEGER,
-                    queue_data TEXT
+                CREATE TABLE IF NOT EXISTS guild_settings
+                (
+                    guild_id
+                    INTEGER
+                    PRIMARY
+                    KEY,
+                    auto_disconnect
+                    INTEGER
+                    DEFAULT
+                    300,
+                    default_volume
+                    INTEGER
+                    DEFAULT
+                    100,
+                    music_channel_id
+                    INTEGER,
+                    queue_data
+                    TEXT
                 )
-            """
+                """
             )
 
             conn.commit()
@@ -207,6 +244,7 @@ class MusicBot(commands.Bot):
                 "loop_mode": "off",
                 "shuffle": False,
                 "volume": 100,
+                "autoplay": False,
                 "voice_client": None,
                 "intentional_disconnect": False,
                 "last_activity": datetime.now(),
@@ -275,6 +313,8 @@ class MusicBot(commands.Bot):
 
         if before.channel and not after.channel:
             logger.warning(f"Bot disconnected from voice in guild {guild_id}")
+
+            guild_data["autoplay"] = False
 
             had_current_song = guild_data.get("current") is not None
             had_queue = len(guild_data.get("queue", [])) > 0
@@ -354,7 +394,6 @@ class MusicBot(commands.Bot):
         guild_data = self.get_guild_data(guild_id)
 
         try:
-            from services.playback_service import PlaybackService
             playback_service = PlaybackService(self)
 
             if guild_data.get("current"):
@@ -382,8 +421,6 @@ class MusicBot(commands.Bot):
         guild_data["voice_client"] = None
 
         try:
-            from config import COLOR
-            from utils.helpers import create_embed
             music_cog = self.get_cog("MusicCommands")
             if music_cog and guild_data.get("music_channel_id"):
                 channel = self.get_channel(guild_data["music_channel_id"])
@@ -456,7 +493,6 @@ class MusicBot(commands.Bot):
 
     @tasks.loop(seconds=1)
     async def update_now_playing_timestamps(self):
-        from services.playback_service import PlaybackService
         playback_service = PlaybackService(self)
         await playback_service.update_timestamps_task()
 
@@ -496,7 +532,6 @@ class MusicBot(commands.Bot):
                     if has_current and not is_playing and not is_paused:
                         logger.warning(f"Detected stalled playback in guild {guild_id}")
 
-                        from services.playback_service import PlaybackService
                         playback_service = PlaybackService(self)
 
                         guild_data["current"] = None
@@ -595,7 +630,9 @@ class MusicBot(commands.Bot):
     async def clear_guild_queue_from_db(self, guild_id: int):
         try:
             guild_data = self.get_guild_data(guild_id)
-            
+
+            guild_data["autoplay"] = False
+
             queue_data = {
                 "queue": [],
                 "loop_backup": [],
@@ -607,7 +644,7 @@ class MusicBot(commands.Bot):
                 "shuffle": False,
                 "volume": guild_data.get("volume", 100),
             }
-            
+
             await self.execute_db_query(
                 """
                 INSERT OR REPLACE INTO guild_settings (guild_id, queue_data, music_channel_id)
@@ -620,12 +657,10 @@ class MusicBot(commands.Bot):
             logger.error(f"Failed to clear guild queue from database: {e}")
 
     async def get_song_info_cached(self, url_or_query: str) -> Optional[Dict]:
-        from services.music_service import MusicService
         music_service = MusicService(self)
         return await music_service.get_song_info_cached(url_or_query)
 
     async def get_song_info(self, url_or_query: str) -> Optional[Dict]:
-        from services.music_service import MusicService
         music_service = MusicService(self)
         return await music_service.get_song_info(url_or_query)
 
@@ -636,7 +671,9 @@ class MusicBot(commands.Bot):
         for guild_id in list(self.guilds_data.keys()):
             try:
                 guild_data = self.get_guild_data(guild_id)
-                
+
+                guild_data["autoplay"] = False
+
                 if guild_data.get("queue") or guild_data.get("current") or guild_data.get("loop_backup"):
                     queue_data = {
                         "queue": [song.to_dict() for song in guild_data["queue"]],

@@ -9,3 +9,5 @@ banned_users.txt
 music_bot.db
 
 __pycache__
+
+.cache

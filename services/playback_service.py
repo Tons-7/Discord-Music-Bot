@@ -1,9 +1,16 @@
+import re
+
 import discord
 import asyncio
 import logging
 import aiohttp
 from datetime import datetime
+
 from models.song import Song
+
+from services.queue_service import QueueService
+from services.music_service import MusicService
+
 from utils.helpers import format_duration, build_progress_bar, create_embed
 from config import COLOR
 
@@ -268,7 +275,6 @@ class PlaybackService:
                     logger.error(f"Player error after reconnect: {error}")
 
                 if not guild_data.get("seeking", False):
-                    from services.queue_service import QueueService
                     queue_service = QueueService(self.bot)
                     if guild_data["current"] and not guild_data.get("seeking", False):
                         queue_service.add_to_history(guild_id, guild_data["current"])
@@ -289,7 +295,6 @@ class PlaybackService:
             logger.error(f"Error resuming playback after reconnect: {e}")
 
     async def play_next(self, guild_id: int):
-        from services.queue_service import QueueService
         queue_service = QueueService(self.bot)
 
         guild_data = self.bot.get_guild_data(guild_id)
@@ -325,8 +330,12 @@ class PlaybackService:
                 next_song = await queue_service.get_next_song(guild_id)
 
                 if not next_song:
-                    await self._handle_empty_queue(guild_id)
-                    return
+                    autoplay_added = await self._handle_empty_queue(guild_id)
+
+                    if autoplay_added:
+                        continue
+                    else:
+                        return
 
                 stream_success = await self._extract_and_play_song(guild_id, next_song, skip_count)
 
@@ -381,7 +390,6 @@ class PlaybackService:
         return False
 
     async def _start_playback(self, guild_id: int, song: Song) -> bool:
-        from services.queue_service import QueueService
         queue_service = QueueService(self.bot)
 
         guild_data = self.bot.get_guild_data(guild_id)
@@ -443,8 +451,89 @@ class PlaybackService:
             await self._handle_song_skip(guild_id, song)
             return False
 
-    async def _handle_empty_queue(self, guild_id: int):
+    async def _handle_empty_queue(self, guild_id: int) -> bool:
+        queue_service = QueueService(self.bot)
         guild_data = self.bot.get_guild_data(guild_id)
+
+        if guild_data.get("autoplay", False) and guild_data.get("current"):
+            logger.info(f"Autoplay enabled for guild {guild_id}, fetching related songs...")
+
+            try:
+                music_service = MusicService(self.bot)
+
+                related_songs = await music_service.get_related_songs(
+                    guild_data["current"],
+                    limit=5
+                )
+
+                if related_songs:
+                    added_count = 0
+
+                    existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
+
+                    history = guild_data.get("history", [])
+                    recent_titles = {
+                        self._normalize_title(h.title)
+                        for h in history[-10:]
+                    } if history else set()
+
+                    if guild_data.get("current"):
+                        recent_titles.add(self._normalize_title(guild_data["current"].title))
+
+                    for song_data in related_songs:
+                        if added_count >= 1:
+                            break
+
+                        url = song_data.get("webpage_url")
+                        title = song_data.get("title", "")
+                        normalized_title = self._normalize_title(title)
+
+                        if url in existing_urls:
+                            logger.info(f"Skipping duplicate URL: {title}")
+                            continue
+
+                        if normalized_title in recent_titles:
+                            logger.info(f"Skipping recently played: {title}")
+                            continue
+
+                        song = Song(song_data)
+                        song.requested_by = "Autoplay"
+                        queue_service.add_song_to_queue(guild_id, song)
+                        existing_urls.add(url)
+                        recent_titles.add(normalized_title)
+                        added_count += 1
+
+                        logger.info(f"Added autoplay song: {title}")
+
+                    if added_count > 0:
+                        logger.info(f"Successfully added {added_count} song(s) via autoplay")
+
+                        try:
+                            music_cog = self.bot.get_cog("MusicCommands")
+                            if music_cog:
+                                channel = await music_cog.get_music_channel(guild_id)
+                                if channel:
+                                    queue = guild_data.get("queue", [])
+                                    next_song = queue[0] if queue else None
+
+                                    if next_song:
+                                        embed = create_embed(
+                                            "🎵 Autoplay",
+                                            f"Up next: **{next_song.title}**",
+                                            COLOR,
+                                            self.bot.user
+                                        )
+                                        await channel.send(embed=embed, delete_after=15)
+                        except Exception as notify_error:
+                            logger.warning(f"Failed to send autoplay notification: {notify_error}")
+
+                        return True
+                    else:
+                        logger.warning("All autoplay candidates were duplicates, stopping playback")
+
+            except Exception as e:
+                logger.error(f"Autoplay error for guild {guild_id}: {e}", exc_info=True)
+
         guild_data["current"] = None
         guild_data["position"] = 0
         guild_data["start_time"] = None
@@ -453,7 +542,12 @@ class PlaybackService:
         if guild_data.get("now_playing_message"):
             try:
                 await guild_data["now_playing_message"].edit(
-                    embed=create_embed("Queue Empty", "Add songs with `/play`", COLOR, self.bot.user)
+                    embed=create_embed(
+                        "Queue Empty",
+                        "Add songs with `/play` or enable `/autoplay`",
+                        COLOR,
+                        self.bot.user
+                    )
                 )
                 await guild_data["now_playing_message"].clear_reactions()
             except:
@@ -461,9 +555,33 @@ class PlaybackService:
             guild_data["now_playing_message"] = None
 
         await self.bot.save_guild_queue(guild_id)
+        return False
+
+    def _normalize_title(self, title: str) -> str:
+        normalized = title.lower().strip()
+
+        patterns = [
+            r'\(official.*?\)',
+            r'\[official.*?\]',
+            r'\(audio\)',
+            r'\[audio\]',
+            r'\(music video\)',
+            r'\[music video\]',
+            r'\(lyrics\)',
+            r'\[lyrics\]',
+            r'\(hd\)',
+            r'\[hd\]',
+        ]
+
+        for pattern in patterns:
+            normalized = re.sub(pattern, '', normalized, flags=re.IGNORECASE)
+
+        normalized = re.sub(r'[^\w\s]', '', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+
+        return normalized
 
     async def _handle_song_skip(self, guild_id: int, song: Song):
-        from services.queue_service import QueueService
         queue_service = QueueService(self.bot)
 
         guild_data = self.bot.get_guild_data(guild_id)

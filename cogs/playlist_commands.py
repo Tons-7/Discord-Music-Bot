@@ -186,7 +186,7 @@ class PlaylistCommands(commands.Cog):
 
             if is_youtube_playlist:
                 music_service = MusicService(self.bot)
-                youtube_songs = await music_service.handle_youtube_playlist_optimized(song)
+                youtube_songs = await music_service.handle_youtube_playlist(song)
 
                 if not youtube_songs:
                     embed = create_embed(
