@@ -190,6 +190,7 @@ class PlaybackService:
                 f"🔊 Volume: {guild_data['volume']}%\n"
                 f"🔁 Loop: {guild_data['loop_mode'].title()}\n"
                 f"🔀 Shuffle: {'On' if guild_data['shuffle'] else 'Off'}\n"
+                f"Autoplay: {'Enabled' if guild_data['autoplay'] else 'Disabled'}\n"
                 f"👤 Requested by: {current.requested_by}\n"
                 f"📋 Queue length: {len(guild_data['queue'])}"
             ),
