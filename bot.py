@@ -9,6 +9,7 @@ import sqlite3
 import yt_dlp
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
+import pylast
 import concurrent.futures
 import discord
 
@@ -127,6 +128,23 @@ class MusicBot(commands.Bot):
         except Exception as e:
             self.spotify = None
             logger.warning(f"Spotify setup failed: {e}")
+
+        try:
+            lastfm_api_key = os.getenv("LASTFM_API_KEY")
+            lastfm_api_secret = os.getenv("LASTFM_API_SECRET")
+
+            if lastfm_api_key and lastfm_api_secret:
+                self.lastfm = pylast.LastFMNetwork(
+                    api_key=lastfm_api_key,
+                    api_secret=lastfm_api_secret
+                )
+                logger.info("Last.fm integration enabled")
+            else:
+                self.lastfm = None
+                logger.info("Last.fm credentials not found. Last.fm features disabled.")
+        except Exception as e:
+            self.lastfm = None
+            logger.warning(f"Last.fm setup failed: {e}")
 
     @staticmethod
     def init_database():
