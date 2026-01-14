@@ -7,4 +7,4 @@ dotenv>=0.9.9
 PyNaCl>=1.6.2
 asyncio>=4.0.0
 python-dotenv>=1.2.1
-spotipy>=2.25.2
+pylast>=5.3.0
