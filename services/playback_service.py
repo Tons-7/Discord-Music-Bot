@@ -1,18 +1,16 @@
-import re
-
-import discord
 import asyncio
 import logging
-import aiohttp
+import re
 from datetime import datetime
 
-from models.song import Song
+import aiohttp
+import discord
 
-from services.queue_service import QueueService
-from services.music_service import MusicService
-
-from utils.helpers import format_duration, build_progress_bar, create_embed
 from config import COLOR
+from models.song import Song
+from services.music_service import MusicService
+from services.queue_service import QueueService
+from utils.helpers import format_duration, build_progress_bar, create_embed
 
 logger = logging.getLogger(__name__)
 
@@ -462,24 +460,33 @@ class PlaybackService:
             try:
                 music_service = MusicService(self.bot)
 
-                related_songs = await music_service.get_related_songs(
-                    guild_data["current"],
-                    limit=5
-                )
+                existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
 
-                if related_songs:
-                    added_count = 0
+                history = guild_data.get("history", [])
+                recent_titles = {
+                    self._normalize_title(h.title)
+                    for h in history[-10:]
+                } if history else set()
 
-                    existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
+                if guild_data.get("current"):
+                    recent_titles.add(self._normalize_title(guild_data["current"].title))
 
-                    history = guild_data.get("history", [])
-                    recent_titles = {
-                        self._normalize_title(h.title)
-                        for h in history[-10:]
-                    } if history else set()
+                added_count = 0
+                max_fetch_attempts = 2
+                fetch_attempt = 0
 
-                    if guild_data.get("current"):
-                        recent_titles.add(self._normalize_title(guild_data["current"].title))
+                while added_count == 0 and fetch_attempt < max_fetch_attempts:
+                    fetch_attempt += 1
+                    logger.info(f"Autoplay fetch attempt {fetch_attempt}/{max_fetch_attempts}")
+
+                    related_songs = await music_service.get_related_songs(
+                        guild_data["current"],
+                        limit=3
+                    )
+
+                    if not related_songs:
+                        logger.warning(f"No related songs found on attempt {fetch_attempt}")
+                        break
 
                     for song_data in related_songs:
                         if added_count >= 1:
@@ -506,31 +513,31 @@ class PlaybackService:
 
                         logger.info(f"Added autoplay song: {title}")
 
-                    if added_count > 0:
-                        logger.info(f"Successfully added {added_count} song(s) via autoplay")
+                if added_count > 0:
+                    logger.info(f"Successfully added {added_count} song(s) via autoplay")
 
-                        try:
-                            music_cog = self.bot.get_cog("MusicCommands")
-                            if music_cog:
-                                channel = await music_cog.get_music_channel(guild_id)
-                                if channel:
-                                    queue = guild_data.get("queue", [])
-                                    next_song = queue[0] if queue else None
+                    try:
+                        music_cog = self.bot.get_cog("MusicCommands")
+                        if music_cog:
+                            channel = await music_cog.get_music_channel(guild_id)
+                            if channel:
+                                queue = guild_data.get("queue", [])
+                                next_song = queue[0] if queue else None
 
-                                    if next_song:
-                                        embed = create_embed(
-                                            "🎵 Autoplay",
-                                            f"Up next: **{next_song.title}**",
-                                            COLOR,
-                                            self.bot.user
-                                        )
-                                        await channel.send(embed=embed, delete_after=15)
-                        except Exception as notify_error:
-                            logger.warning(f"Failed to send autoplay notification: {notify_error}")
+                                if next_song:
+                                    embed = create_embed(
+                                        "🎵 Autoplay",
+                                        f"Up next: **{next_song.title}**",
+                                        COLOR,
+                                        self.bot.user
+                                    )
+                                    await channel.send(embed=embed, delete_after=15)
+                    except Exception as notify_error:
+                        logger.warning(f"Failed to send autoplay notification: {notify_error}")
 
-                        return True
-                    else:
-                        logger.warning("All autoplay candidates were duplicates, stopping playback")
+                    return True
+                else:
+                    logger.warning(f"Could not find non-duplicate songs after {fetch_attempt} attempts")
 
             except Exception as e:
                 logger.error(f"Autoplay error for guild {guild_id}: {e}", exc_info=True)
