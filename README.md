@@ -8,6 +8,7 @@ This bot supports music playback, queue and playlist management, and more.
 - Play music from supported sources, also with a normal search, instead of a link
 - Queue, history, and playlist management
 - Skip, pause, resume, and stop playback
+- Autoplay mode using Last.fm (similar tracks, artist top tracks, similar artists)
 - Modular command system
 
 # Configuration
@@ -23,7 +24,12 @@ This bot uses **environment variables** for secrets:
     - SPOTIFY_CLIENT_ID=client_id
     - SPOTIFY_CLIENT_SECRET=client_secret
 
-4. Make sure `.env` remains in `.gitignore` so it is **never committed**.
+4. For Last.fm (required for autoplay feature), get your API credentials from https://www.last.fm/api/account/create
+   and add them to the .env:
+    - LASTFM_API_KEY=your_api_key
+    - LASTFM_API_SECRET=your_api_secret
+
+5. Make sure `.env` remains in `.gitignore` so it is **never committed**.
 
 # How to run
 
