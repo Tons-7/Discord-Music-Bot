@@ -243,7 +243,6 @@ class MusicService:
         return None
 
     async def get_related_songs(self, song: 'Song', limit: int = 1) -> List[Dict]:
-        """Get related songs using Last.fm API"""
         try:
             if not self.bot.lastfm:
                 logger.warning("Last.fm not configured, cannot get recommendations")
@@ -252,14 +251,12 @@ class MusicService:
             logger.info(f"Finding songs similar to: {song.title} by {song.uploader}")
 
             seen_track_names: Set[str] = {self._normalize_track_name(song.title)}
+            seen_artists: Set[str] = {song.uploader.lower()}
             candidate_tracks = []
 
             try:
-                # Get artist and track from Last.fm
                 track = self.bot.lastfm.get_track(song.uploader, song.title)
-
-                # Get similar tracks
-                similar_tracks = track.get_similar(limit=limit * 10)
+                similar_tracks = track.get_similar(limit=limit * 5)
 
                 if similar_tracks:
                     for similar in similar_tracks:
@@ -269,13 +266,19 @@ class MusicService:
                             artist_name = track_item.get_artist().get_name()
 
                             normalized_name = self._normalize_track_name(track_name)
+                            normalized_artist = artist_name.lower()
 
                             if normalized_name not in seen_track_names:
+                                priority = 1 if normalized_artist not in seen_artists else 2
                                 candidate_tracks.append({
                                     'name': track_name,
-                                    'artist': artist_name
+                                    'artist': artist_name,
+                                    'priority': priority,
+                                    'source': 'similar_tracks'
                                 })
                                 seen_track_names.add(normalized_name)
+                                if normalized_artist not in seen_artists:
+                                    seen_artists.add(normalized_artist)
                                 logger.debug(f"Added similar track: {track_name} by {artist_name}")
                         except Exception as track_error:
                             logger.debug(f"Error processing similar track: {track_error}")
@@ -286,39 +289,7 @@ class MusicService:
             except Exception as e:
                 logger.warning(f"Error getting similar tracks: {e}")
 
-            # If we don't have enough, try artist top tracks
             if len(candidate_tracks) < limit * 5:
-                try:
-                    artist = self.bot.lastfm.get_artist(song.uploader)
-                    top_tracks = artist.get_top_tracks(limit=20)
-
-                    if top_tracks:
-                        for top_track in top_tracks:
-                            try:
-                                track_item = top_track.item
-                                track_name = track_item.get_name()
-                                artist_name = track_item.get_artist().get_name()
-
-                                normalized_name = self._normalize_track_name(track_name)
-
-                                if normalized_name not in seen_track_names:
-                                    candidate_tracks.append({
-                                        'name': track_name,
-                                        'artist': artist_name
-                                    })
-                                    seen_track_names.add(normalized_name)
-                                    logger.debug(f"Added top track: {track_name}")
-                            except Exception as track_error:
-                                logger.debug(f"Error processing top track: {track_error}")
-                                continue
-
-                        logger.info(f"Total candidates after top tracks: {len(candidate_tracks)}")
-
-                except Exception as e:
-                    logger.warning(f"Error getting artist top tracks: {e}")
-
-            # If still not enough, try artist similar artists
-            if len(candidate_tracks) < limit * 3:
                 try:
                     artist = self.bot.lastfm.get_artist(song.uploader)
                     similar_artists = artist.get_similar(limit=5)
@@ -328,10 +299,10 @@ class MusicService:
                             try:
                                 artist_item = similar_artist.item
                                 similar_artist_name = artist_item.get_name()
+                                normalized_artist = similar_artist_name.lower()
 
-                                # Get top tracks from similar artist
                                 similar_artist_obj = self.bot.lastfm.get_artist(similar_artist_name)
-                                similar_top_tracks = similar_artist_obj.get_top_tracks(limit=3)
+                                similar_top_tracks = similar_artist_obj.get_top_tracks(limit=5)
 
                                 for top_track in similar_top_tracks:
                                     track_item = top_track.item
@@ -341,17 +312,22 @@ class MusicService:
                                     normalized_name = self._normalize_track_name(track_name)
 
                                     if normalized_name not in seen_track_names:
+                                        priority = 1 if normalized_artist not in seen_artists else 3
                                         candidate_tracks.append({
                                             'name': track_name,
-                                            'artist': artist_name
+                                            'artist': artist_name,
+                                            'priority': priority,
+                                            'source': 'similar_artists'
                                         })
                                         seen_track_names.add(normalized_name)
+                                        if normalized_artist not in seen_artists:
+                                            seen_artists.add(normalized_artist)
                                         logger.debug(f"Added track from similar artist: {track_name}")
 
-                                        if len(candidate_tracks) >= limit * 10:
+                                        if len(candidate_tracks) >= limit * 8:
                                             break
 
-                                if len(candidate_tracks) >= limit * 10:
+                                if len(candidate_tracks) >= limit * 8:
                                     break
 
                             except Exception as artist_error:
@@ -363,12 +339,62 @@ class MusicService:
                 except Exception as e:
                     logger.warning(f"Error getting similar artists: {e}")
 
+            if len(candidate_tracks) < limit * 5:
+                try:
+                    track = self.bot.lastfm.get_track(song.uploader, song.title)
+                    top_tags = track.get_top_tags(limit=2)
+
+                    if top_tags:
+                        for tag_item in top_tags:
+                            try:
+                                tag_name = tag_item.item.get_name()
+                                logger.info(f"Fetching tracks from tag: {tag_name}")
+
+                                tag = self.bot.lastfm.get_tag(tag_name)
+                                tag_tracks = tag.get_top_tracks(limit=8)
+
+                                for tag_track in tag_tracks:
+                                    track_item = tag_track.item
+                                    track_name = track_item.get_name()
+                                    artist_name = track_item.get_artist().get_name()
+
+                                    normalized_name = self._normalize_track_name(track_name)
+                                    normalized_artist = artist_name.lower()
+
+                                    if normalized_name not in seen_track_names:
+                                        priority = 2 if normalized_artist not in seen_artists else 4
+                                        candidate_tracks.append({
+                                            'name': track_name,
+                                            'artist': artist_name,
+                                            'priority': priority,
+                                            'source': f'tag_{tag_name}'
+                                        })
+                                        seen_track_names.add(normalized_name)
+                                        if normalized_artist not in seen_artists:
+                                            seen_artists.add(normalized_artist)
+
+                                    if len(candidate_tracks) >= limit * 8:
+                                        break
+
+                                if len(candidate_tracks) >= limit * 8:
+                                    break
+
+                            except Exception as tag_error:
+                                logger.debug(f"Error processing tag: {tag_error}")
+                                continue
+
+                        logger.info(f"Total candidates after tags: {len(candidate_tracks)}")
+
+                except Exception as e:
+                    logger.warning(f"Error getting tag-based recommendations: {e}")
+
             if not candidate_tracks:
                 logger.warning(f"No candidate tracks found for {song.title}")
                 return []
 
-            # Shuffle and search on YouTube
-            random.shuffle(candidate_tracks)
+            candidate_tracks.sort(key=lambda x: (x.get('priority', 99), random.random()))
+
+            logger.info(f"Total candidates collected: {len(candidate_tracks)} (prioritizing different artists)")
 
             related_songs = []
             attempts = 0
@@ -387,18 +413,20 @@ class MusicService:
                 try:
                     track_name = track.get('name', '')
                     artist_name = track.get('artist', '')
+                    source = track.get('source', 'unknown')
 
                     if not track_name or not artist_name:
                         continue
 
                     youtube_query = f"{track_name} {artist_name}"
 
-                    logger.debug(f"Searching YouTube for: {youtube_query}")
+                    logger.debug(f"Searching YouTube for: {youtube_query} (from {source})")
                     song_data = await self.search_youtube(youtube_query)
 
                     if song_data:
                         related_songs.append(song_data)
-                        logger.info(f"Added song {len(related_songs)}/{limit}: {track_name} by {artist_name}")
+                        logger.info(
+                            f"Added song {len(related_songs)}/{limit}: {track_name} by {artist_name} (from {source})")
 
                     await asyncio.sleep(0.3)
 
