@@ -1,16 +1,17 @@
-import discord
-from discord.ext import commands
 import asyncio
 import logging
-from typing import Optional
 from datetime import datetime
+from typing import Optional
 
+import discord
+from discord.ext import commands
+
+from config import COLOR, SONGS_PER_PAGE
 from models.song import Song
-
 from services.music_service import MusicService
 from services.playback_service import PlaybackService
 from services.queue_service import QueueService
-
+from utils.ban_system import is_banned, ban_user_id, unban_user_id
 from utils.helpers import (
     format_duration,
     build_progress_bar,
@@ -19,13 +20,8 @@ from utils.helpers import (
     interaction_check,
     create_embed,
 )
-
-from utils.ban_system import is_banned, ban_user_id, unban_user_id
-
-from views.song_select import SongSelectView
 from views.pagination import PaginationView
-
-from config import COLOR, SONGS_PER_PAGE
+from views.song_select import SongSelectView
 
 logger = logging.getLogger(__name__)
 
@@ -1777,10 +1773,10 @@ class MusicCommands(commands.Cog):
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
 
-        if not self.bot.spotify:
+        if not self.bot.lastfm:
             embed = create_embed(
                 "Autoplay Unavailable",
-                "Autoplay requires Spotify integration, which is not configured on this bot.",
+                "Autoplay requires Last.fm integration, which is not configured",
                 COLOR,
                 self.bot.user
             )

@@ -243,111 +243,131 @@ class MusicService:
         return None
 
     async def get_related_songs(self, song: 'Song', limit: int = 1) -> List[Dict]:
+        """Get related songs using Last.fm API"""
         try:
-            if not self.bot.spotify:
-                logger.warning("Spotify not configured, cannot get recommendations")
+            if not self.bot.lastfm:
+                logger.warning("Last.fm not configured, cannot get recommendations")
                 return []
 
-            search_query = f"{song.title} {song.uploader}"
-            results = self.bot.spotify.search(q=search_query, type='track', limit=1)
+            logger.info(f"Finding songs similar to: {song.title} by {song.uploader}")
 
-            if not results or not results['tracks']['items']:
-                logger.warning(f"Could not find {song.title} on Spotify")
-                return []
-
-            track_info = results['tracks']['items'][0]
-            track_id = track_info.get('id')
-            track_name = track_info.get('name', song.title)
-
-            if not track_id or not track_info.get('artists'):
-                logger.warning(f"Incomplete track info for {song.title}")
-                return []
-
-            artist_id = track_info['artists'][0]['id']
-            artist_name = track_info['artists'][0]['name']
-
-            logger.info(f"Finding songs similar to: {track_name} by {artist_name}")
-
-            seen_track_ids: Set[str] = {track_id}
-            seen_track_names: Set[str] = {self._normalize_track_name(track_name)}
+            seen_track_names: Set[str] = {self._normalize_track_name(song.title)}
             candidate_tracks = []
 
             try:
-                top_tracks = self.bot.spotify.artist_top_tracks(artist_id, country='US')
-                if top_tracks and top_tracks.get('tracks'):
-                    for track in top_tracks['tracks']:
-                        if self._add_unique_track(track, candidate_tracks, seen_track_ids, seen_track_names):
-                            logger.debug(f"Added top track: {track.get('name')}")
-                    logger.info(f"Found {len(candidate_tracks)} from top tracks")
+                # Get artist and track from Last.fm
+                track = self.bot.lastfm.get_track(song.uploader, song.title)
+
+                # Get similar tracks
+                similar_tracks = track.get_similar(limit=limit * 10)
+
+                if similar_tracks:
+                    for similar in similar_tracks:
+                        try:
+                            track_item = similar.item
+                            track_name = track_item.get_name()
+                            artist_name = track_item.get_artist().get_name()
+
+                            normalized_name = self._normalize_track_name(track_name)
+
+                            if normalized_name not in seen_track_names:
+                                candidate_tracks.append({
+                                    'name': track_name,
+                                    'artist': artist_name
+                                })
+                                seen_track_names.add(normalized_name)
+                                logger.debug(f"Added similar track: {track_name} by {artist_name}")
+                        except Exception as track_error:
+                            logger.debug(f"Error processing similar track: {track_error}")
+                            continue
+
+                    logger.info(f"Found {len(candidate_tracks)} similar tracks from Last.fm")
+
             except Exception as e:
-                logger.warning(f"Error getting top tracks: {e}")
+                logger.warning(f"Error getting similar tracks: {e}")
 
-            if len(candidate_tracks) < limit * 8:
-                try:
-                    albums = self.bot.spotify.artist_albums(
-                        artist_id,
-                        album_type='album,single',
-                        limit=10
-                    )
-
-                    if albums and albums.get('items'):
-                        album_list = albums['items']
-                        random.shuffle(album_list)
-
-                        for album in album_list[:5]:
-                            if len(candidate_tracks) >= limit * 15:
-                                break
-
-                            try:
-                                album_tracks = self.bot.spotify.album_tracks(album['id'], limit=20)
-                                if album_tracks and album_tracks.get('items'):
-                                    for track in album_tracks['items']:
-                                        track['artists'] = [{'name': artist_name, 'id': artist_id}]
-                                        if self._add_unique_track(track, candidate_tracks, seen_track_ids,
-                                                                  seen_track_names):
-                                            logger.debug(f"Added album track: {track.get('name')}")
-
-                                        if len(candidate_tracks) >= limit * 15:
-                                            break
-                            except Exception as album_error:
-                                logger.debug(f"Error processing album: {album_error}")
-                                continue
-
-                    logger.info(f"Total candidates after albums: {len(candidate_tracks)}")
-                except Exception as e:
-                    logger.warning(f"Error getting albums: {e}")
-
+            # If we don't have enough, try artist top tracks
             if len(candidate_tracks) < limit * 5:
                 try:
-                    artist_details = self.bot.spotify.artist(artist_id)
-                    genres = artist_details.get('genres', [])
+                    artist = self.bot.lastfm.get_artist(song.uploader)
+                    top_tracks = artist.get_top_tracks(limit=20)
 
-                    if genres:
-                        genre_query = f'genre:"{genres[0]}" artist:"{artist_name}"'
-                        logger.info(f"Using genre search as fallback: {genres[0]}")
+                    if top_tracks:
+                        for top_track in top_tracks:
+                            try:
+                                track_item = top_track.item
+                                track_name = track_item.get_name()
+                                artist_name = track_item.get_artist().get_name()
 
-                        genre_results = self.bot.spotify.search(
-                            q=genre_query,
-                            type='track',
-                            limit=20
-                        )
+                                normalized_name = self._normalize_track_name(track_name)
 
-                        if genre_results and genre_results.get('tracks', {}).get('items'):
-                            for track in genre_results['tracks']['items']:
-                                if self._add_unique_track(track, candidate_tracks, seen_track_ids, seen_track_names):
-                                    logger.debug(f"Added genre track: {track.get('name')}")
+                                if normalized_name not in seen_track_names:
+                                    candidate_tracks.append({
+                                        'name': track_name,
+                                        'artist': artist_name
+                                    })
+                                    seen_track_names.add(normalized_name)
+                                    logger.debug(f"Added top track: {track_name}")
+                            except Exception as track_error:
+                                logger.debug(f"Error processing top track: {track_error}")
+                                continue
 
-                                if len(candidate_tracks) >= limit * 15:
+                        logger.info(f"Total candidates after top tracks: {len(candidate_tracks)}")
+
+                except Exception as e:
+                    logger.warning(f"Error getting artist top tracks: {e}")
+
+            # If still not enough, try artist similar artists
+            if len(candidate_tracks) < limit * 3:
+                try:
+                    artist = self.bot.lastfm.get_artist(song.uploader)
+                    similar_artists = artist.get_similar(limit=5)
+
+                    if similar_artists:
+                        for similar_artist in similar_artists:
+                            try:
+                                artist_item = similar_artist.item
+                                similar_artist_name = artist_item.get_name()
+
+                                # Get top tracks from similar artist
+                                similar_artist_obj = self.bot.lastfm.get_artist(similar_artist_name)
+                                similar_top_tracks = similar_artist_obj.get_top_tracks(limit=3)
+
+                                for top_track in similar_top_tracks:
+                                    track_item = top_track.item
+                                    track_name = track_item.get_name()
+                                    artist_name = track_item.get_artist().get_name()
+
+                                    normalized_name = self._normalize_track_name(track_name)
+
+                                    if normalized_name not in seen_track_names:
+                                        candidate_tracks.append({
+                                            'name': track_name,
+                                            'artist': artist_name
+                                        })
+                                        seen_track_names.add(normalized_name)
+                                        logger.debug(f"Added track from similar artist: {track_name}")
+
+                                        if len(candidate_tracks) >= limit * 10:
+                                            break
+
+                                if len(candidate_tracks) >= limit * 10:
                                     break
 
-                    logger.info(f"Total candidates after genre search: {len(candidate_tracks)}")
+                            except Exception as artist_error:
+                                logger.debug(f"Error processing similar artist: {artist_error}")
+                                continue
+
+                        logger.info(f"Total candidates after similar artists: {len(candidate_tracks)}")
+
                 except Exception as e:
-                    logger.warning(f"Error with genre search: {e}")
+                    logger.warning(f"Error getting similar artists: {e}")
 
             if not candidate_tracks:
                 logger.warning(f"No candidate tracks found for {song.title}")
                 return []
 
+            # Shuffle and search on YouTube
             random.shuffle(candidate_tracks)
 
             related_songs = []
@@ -366,20 +386,19 @@ class MusicService:
 
                 try:
                     track_name = track.get('name', '')
-                    artists = track.get('artists', [])
+                    artist_name = track.get('artist', '')
 
-                    if not track_name or not artists:
+                    if not track_name or not artist_name:
                         continue
 
-                    artist_str = artists[0].get('name', '')
-                    youtube_query = f"{track_name} {artist_str}"
+                    youtube_query = f"{track_name} {artist_name}"
 
                     logger.debug(f"Searching YouTube for: {youtube_query}")
                     song_data = await self.search_youtube(youtube_query)
 
                     if song_data:
                         related_songs.append(song_data)
-                        logger.info(f"Added song {len(related_songs)}/{limit}: {track_name} by {artist_str}")
+                        logger.info(f"Added song {len(related_songs)}/{limit}: {track_name} by {artist_name}")
 
                     await asyncio.sleep(0.3)
 
