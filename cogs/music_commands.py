@@ -229,7 +229,7 @@ class MusicCommands(commands.Cog):
         if user.bot or not reaction.message.guild:
             return
 
-        if is_banned(user.id):
+        if reaction.message.author == self.bot.user and is_banned(user.id):
             await self.remove_reaction(reaction, user, str(reaction.emoji))
 
             try:
