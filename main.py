@@ -1,17 +1,12 @@
-import os
 import asyncio
 import logging
+import os
+
 from dotenv import load_dotenv
 
 from bot import MusicBot
 from cogs.music_commands import MusicCommands
 from cogs.playlist_commands import PlaylistCommands
-
-# For windows only, to remove the socket closed error
-import sys
-
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 load_dotenv()
 
