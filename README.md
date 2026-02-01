@@ -32,9 +32,9 @@ This bot uses **environment variables** for secrets:
 5. Make sure `.env` remains in `.gitignore` so it is **never committed**.
 
 # How to run
-
-1. Install the libraries in requirements.txt by doing `pip install -r requirements.txt`
-2. Execute main.py
+1. ffmpeg must be intalled on your PC. Download from -> https://www.ffmpeg.org/download.html
+2. Install the libraries in requirements.txt by doing `pip install -r requirements.txt`
+3. Execute main.py
 
 # License
 
