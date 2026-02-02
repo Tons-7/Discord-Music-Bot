@@ -11,7 +11,7 @@ from models.song import Song
 from services.music_service import MusicService
 from services.playback_service import PlaybackService
 from services.queue_service import QueueService
-from utils.ban_system import is_banned, ban_user_id, unban_user_id
+from utils.ban_system import ban_user_id, unban_user_id
 from utils.helpers import (
     format_duration,
     build_progress_bar,
@@ -20,6 +20,7 @@ from utils.helpers import (
     interaction_check,
     create_embed,
 )
+from views.now_playing_controls import NowPlayingControls
 from views.pagination import PaginationView
 from views.song_select import SongSelectView
 
@@ -138,7 +139,8 @@ class MusicCommands(commands.Cog):
             msg = await channel.send(embed=embed)
             guild_data["now_playing_message"] = msg
 
-            await self.add_reaction_controls(msg)
+            view = NowPlayingControls(self, guild_id)
+            await msg.edit(view=view)
             await asyncio.sleep(0.2)
             guild_data["message_ready_for_timestamps"] = True
 
@@ -149,34 +151,6 @@ class MusicCommands(commands.Cog):
             guild_data["now_playing_message"] = None
             guild_data["message_ready_for_timestamps"] = False
             return None
-
-    @staticmethod
-    async def add_reaction_controls(message: discord.Message):
-        reactions = ["⏯️", "⏭️", "⏮️", "🔀", "🔁", "⏹️", "🔊", "🔉"]
-        for reaction in reactions:
-            try:
-                await message.add_reaction(reaction)
-                await asyncio.sleep(0.1)
-            except discord.HTTPException as e:
-                logger.warning(f"Failed to add reaction {reaction}: {e}")
-                continue
-            except Exception as e:
-                logger.error(f"Unexpected error adding reaction {reaction}: {e}")
-                break
-
-    @staticmethod
-    async def remove_reaction(reaction, user, emoji):
-        try:
-            await reaction.remove(user)
-            logger.debug(f"Successfully removed reaction {emoji} from {user.name}")
-        except discord.Forbidden:
-            logger.debug(f"No permission to remove reaction {emoji} from {user.name}")
-        except discord.HTTPException as e:
-            logger.debug(f"Failed to remove reaction {emoji} from {user.name}: {e}")
-        except Exception as e:
-            logger.error(
-                f"Unexpected error removing reaction {emoji} from {user.name}: {e}"
-            )
 
     async def update_now_playing(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
@@ -223,109 +197,6 @@ class MusicCommands(commands.Cog):
             embed.set_thumbnail(url=current.thumbnail)
 
         await self.create_now_playing_message(guild_id, embed)
-
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
-        if user.bot or not reaction.message.guild:
-            return
-
-        if reaction.message.author == self.bot.user and is_banned(user.id):
-            await self.remove_reaction(reaction, user, str(reaction.emoji))
-
-            try:
-                embed = create_embed(
-                    "Access Denied",
-                    "You are banned from using this bot.",
-                    COLOR,
-                    self.bot.user,
-                )
-                msg = await reaction.message.channel.send(
-                    content=user.mention, embed=embed, delete_after=5
-                )
-            except discord.Forbidden:
-                pass
-            return
-
-        emoji = str(reaction.emoji)
-        guild_data = self.bot.get_guild_data(reaction.message.guild.id)
-
-        if (
-                not guild_data.get("now_playing_message")
-                or guild_data["now_playing_message"].id != reaction.message.id
-        ):
-            return
-
-        if not user.voice or not guild_data.get("voice_client"):
-            await self.remove_reaction(reaction, user, emoji)
-            return
-
-        if guild_data["voice_client"].channel != user.voice.channel:
-            await self.remove_reaction(reaction, user, emoji)
-            return
-
-        try:
-            match emoji:
-                case "⏯️":
-                    if guild_data["voice_client"].is_playing():
-                        self.playback_service.handle_pause(reaction.message.guild.id)
-                    elif guild_data["voice_client"].is_paused():
-                        self.playback_service.handle_resume(reaction.message.guild.id)
-
-                case "⏭️":
-                    if (
-                            guild_data["voice_client"].is_playing()
-                            or guild_data["voice_client"].is_paused()
-                    ):
-                        guild_data["voice_client"].stop()
-
-                case "⏮️":
-                    await self.play_previous(reaction.message.guild.id)
-
-                case "🔀":
-                    self.queue_service.toggle_shuffle(reaction.message.guild.id)
-
-                case "🔁":
-                    modes = ["off", "song", "queue"]
-                    current_index = modes.index(guild_data["loop_mode"])
-                    self.queue_service.set_loop_mode(
-                        reaction.message.guild.id,
-                        modes[(current_index + 1) % len(modes)],
-                    )
-
-                case "⏹️":
-                    self.queue_service.clear_queue(reaction.message.guild.id)
-                    guild_data["current"] = None
-                    guild_data["start_time"] = None
-                    if (
-                            guild_data["voice_client"].is_playing()
-                            or guild_data["voice_client"].is_paused()
-                    ):
-                        guild_data["voice_client"].stop()
-
-                case "🔊":
-                    new_volume = min(100, guild_data["volume"] + 10)
-                    guild_data["volume"] = new_volume
-                    if guild_data["voice_client"] and guild_data["voice_client"].source:
-                        try:
-                            guild_data["voice_client"].source.volume = new_volume / 100
-                        except AttributeError:
-                            pass
-
-                case "🔉":
-                    new_volume = max(0, guild_data["volume"] - 10)
-                    guild_data["volume"] = new_volume
-                    if guild_data["voice_client"] and guild_data["voice_client"].source:
-                        try:
-                            guild_data["voice_client"].source.volume = new_volume / 100
-                        except AttributeError:
-                            pass
-
-            await self.bot.save_guild_queue(reaction.message.guild.id)
-
-        except Exception as e:
-            logger.error(f"Reaction control error: {e}")
-
-        await self.remove_reaction(reaction, user, emoji)
 
     async def play_previous(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
@@ -1853,8 +1724,8 @@ class MusicCommands(commands.Cog):
         `/setmusicchannel` - Set the channel for music messages
 
         **Tips:**
-        • Use reaction controls on the 'Now Playing' message: 
-        ⏯️ Pause/Resume, ⏭️ Skip, ⏮️ Previous, 🔀 Shuffle, 🔁 Loop, ⏹️ Stop, 🔊/🔉 Volume
+        • Use button controls on the 'Now Playing' message: 
+        ⏯️ Pause/Resume, ⏮️ Previous, ⏭️ Skip, 🔀 Shuffle, 🔁 Loop, ⏹️ Stop, 🔊/🔉 Volume
         • Supports YouTube URLs, YouTube playlists, Spotify links, and search queries
         • Queue persists across bot restarts
         • You must be in the same voice channel as the bot to control playback

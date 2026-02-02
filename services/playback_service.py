@@ -555,9 +555,9 @@ class PlaybackService:
                         "Add songs with `/play` or enable `/autoplay`",
                         COLOR,
                         self.bot.user
-                    )
+                    ),
+                    view=None
                 )
-                await guild_data["now_playing_message"].clear_reactions()
             except:
                 pass
             guild_data["now_playing_message"] = None
