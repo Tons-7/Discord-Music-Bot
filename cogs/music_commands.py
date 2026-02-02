@@ -138,6 +138,7 @@ class MusicCommands(commands.Cog):
 
             msg = await channel.send(embed=embed)
             guild_data["now_playing_message"] = msg
+            guild_data["now_playing_message_sent_time"] = datetime.now()
 
             view = NowPlayingControls(self, guild_id)
             await msg.edit(view=view)

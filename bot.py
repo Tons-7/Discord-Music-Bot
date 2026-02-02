@@ -39,7 +39,7 @@ class MusicBot(commands.Bot):
 
         self.song_cache = {}
         self.max_cache_size = 500
-        self.cache_ttl = 3600
+        self.cache_ttl = 900
 
         self.db_save_tasks = {}
 
@@ -273,6 +273,7 @@ class MusicBot(commands.Bot):
                 "message_last_validated": 0,
                 "seeking": False,
                 "pause_position": None,
+                "now_playing_message_sent_time": None,
                 "play_lock": asyncio.Lock(),
             }
         return self.guilds_data[guild_id]

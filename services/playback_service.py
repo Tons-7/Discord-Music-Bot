@@ -114,6 +114,16 @@ class PlaybackService:
 
         return True
 
+    async def _should_resend_message(self, guild_id: int) -> bool:
+        guild_data = self.bot.get_guild_data(guild_id)
+
+        message_sent_time = guild_data.get("now_playing_message_sent_time")
+        if not message_sent_time:
+            return False
+
+        elapsed_since_send = (datetime.now() - message_sent_time).total_seconds()
+        return elapsed_since_send >= 2400
+
     async def _update_single_timestamp(self, guild_id: int, current_time: float):
         try:
             self.bot.message_update_locks[guild_id] = current_time
@@ -126,8 +136,14 @@ class PlaybackService:
             current_position = self.get_current_position(guild_id)
             is_paused = self.is_paused(guild_id)
 
-            embed = self._build_timestamp_embed(guild_data, current_position, is_paused)
+            if await self._should_resend_message(guild_id):
+                music_cog = self.bot.get_cog("MusicCommands")
+                if music_cog:
+                    embed = self._build_timestamp_embed(guild_data, current_position, is_paused)
+                    await music_cog.create_now_playing_message(guild_id, embed)
+                return
 
+            embed = self._build_timestamp_embed(guild_data, current_position, is_paused)
             await self._safe_message_edit(guild_data["now_playing_message"], embed)
 
         except Exception as e:
