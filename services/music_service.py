@@ -4,6 +4,7 @@ import random
 import re
 from typing import Optional, Dict, List, Set
 
+from config import MAX_PLAYLIST_SIZE
 from models.song import Song
 
 logger = logging.getLogger(__name__)
@@ -195,7 +196,7 @@ class MusicService:
                 songs = []
 
                 items = results.get("items", [])
-                for item in items[:25]:
+                for item in items[:MAX_PLAYLIST_SIZE]:
                     track = item.get("track") if item else None
                     if not track or not track.get("name"):
                         continue
@@ -220,7 +221,7 @@ class MusicService:
                 songs = []
 
                 items = results.get("items", [])
-                for track in items[:25]:
+                for track in items[:MAX_PLAYLIST_SIZE]:
                     if not track or not track.get("name"):
                         continue
 
