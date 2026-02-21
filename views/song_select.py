@@ -1,5 +1,7 @@
-import discord
 import logging
+
+import discord
+
 from config import COLOR
 from utils.helpers import create_embed
 
@@ -15,18 +17,21 @@ class SongSelectView(discord.ui.View):
         self.selected = False
         self.message = None
 
-        self.add_item(SongSelect(songs_data, self))
+        self.add_item(SongSelect(songs_data))
 
     async def on_timeout(self):
-        if not self.selected:
-            for item in self.children:
-                item.disabled = True
+        if self.selected:
+            return
+
+        for item in self.children:
+            item.disabled = True
 
         try:
             embed = create_embed(
                 "⏰ Search Timed Out",
                 "Search selection timed out.",
                 COLOR,
+                self.music_commands_cog.bot.user,
             )
             await self.message.edit(embed=embed, view=self)
         except discord.HTTPException:
@@ -42,9 +47,8 @@ class SongSelectView(discord.ui.View):
 
 
 class SongSelect(discord.ui.Select):
-    def __init__(self, songs_data, view_parent):
+    def __init__(self, songs_data):
         self.songs_data = songs_data
-        self.view_parent = view_parent
 
         options = []
         for i, entry in enumerate(songs_data[:5]):
@@ -79,16 +83,15 @@ class SongSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        if self.view_parent.selected:
+        if self.view.selected:
             await interaction.response.send_message(
                 "A song has already been selected!", ephemeral=True
             )
             return
 
-        self.view_parent.selected = True
+        self.view.selected = True
         self.disabled = True
-
-        self.view_parent.stop()
+        self.view.stop()
 
         try:
             selected_index = int(self.values[0])
@@ -101,7 +104,7 @@ class SongSelect(discord.ui.Select):
             )
             await interaction.response.edit_message(embed=loading_embed, view=self.view)
 
-            await self.view_parent.music_commands_cog.process_selected_song(
+            await self.view.music_commands_cog.process_selected_song(
                 interaction, selected_song
             )
 
@@ -111,6 +114,7 @@ class SongSelect(discord.ui.Select):
                 "❌ Error",
                 "Failed to add song to queue.",
                 COLOR,
+                self.view.music_commands_cog.bot.user,
             )
             try:
                 if not interaction.response.is_done():
