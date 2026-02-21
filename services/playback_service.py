@@ -6,7 +6,7 @@ from datetime import datetime
 import aiohttp
 import discord
 
-from config import COLOR
+from config import COLOR, NOW_PLAYING_RESEND_SECONDS
 from models.song import Song
 from services.music_service import MusicService
 from services.queue_service import QueueService
@@ -69,7 +69,7 @@ class PlaybackService:
         return guild_data["voice_client"] and guild_data["voice_client"].is_paused()
 
     async def update_timestamps_task(self):
-        current_time = asyncio.get_event_loop().time()
+        current_time = asyncio.get_running_loop().time()
 
         for guild_id, guild_data in list(self.bot.guilds_data.items()):
             try:
@@ -114,7 +114,7 @@ class PlaybackService:
 
         return True
 
-    async def _should_resend_message(self, guild_id: int) -> bool:
+    def _should_resend_message(self, guild_id: int) -> bool:
         guild_data = self.bot.get_guild_data(guild_id)
 
         message_sent_time = guild_data.get("now_playing_message_sent_time")
@@ -122,7 +122,7 @@ class PlaybackService:
             return False
 
         elapsed_since_send = (datetime.now() - message_sent_time).total_seconds()
-        return elapsed_since_send >= 2400
+        return elapsed_since_send >= NOW_PLAYING_RESEND_SECONDS
 
     async def _update_single_timestamp(self, guild_id: int, current_time: float):
         try:
@@ -136,7 +136,7 @@ class PlaybackService:
             current_position = self.get_current_position(guild_id)
             is_paused = self.is_paused(guild_id)
 
-            if await self._should_resend_message(guild_id):
+            if self._should_resend_message(guild_id):
                 music_cog = self.bot.get_cog("MusicCommands")
                 if music_cog:
                     embed = self._build_timestamp_embed(guild_data, current_position, is_paused)
@@ -231,83 +231,6 @@ class PlaybackService:
                 logger.warning(f"Message edit failed: {e}")
         except Exception as e:
             logger.warning(f"Unexpected message edit error: {e}")
-
-    async def check_voice_connection(self, guild_id: int, voice_channel) -> bool:
-        """Check and repair voice connection if needed"""
-        guild_data = self.bot.get_guild_data(guild_id)
-        voice_client = guild_data["voice_client"]
-
-        if not voice_client or not voice_client.is_connected():
-            logger.warning(f"Voice client disconnected for guild {guild_id}, attempting reconnect...")
-            try:
-                current_song = guild_data.get("current")
-                current_position = self.get_current_position(guild_id) if current_song else 0
-                was_paused = voice_client.is_paused() if voice_client else False
-
-                if voice_client:
-                    try:
-                        await voice_client.disconnect(force=True)
-                    except:
-                        pass
-
-                guild_data["voice_client"] = await voice_channel.connect(timeout=10.0, reconnect=True)
-                logger.info(f"Successfully reconnected to voice in guild {guild_id}")
-
-                if current_song:
-                    guild_data["seek_offset"] = current_position
-                    await self._resume_after_reconnect(guild_id, current_song, was_paused)
-
-                return True
-
-            except asyncio.TimeoutError:
-                logger.error(f"Voice reconnection timeout for guild {guild_id}")
-                return False
-            except Exception as e:
-                logger.error(f"Failed to reconnect voice for guild {guild_id}: {e}")
-                return False
-
-        return True
-
-    async def _resume_after_reconnect(self, guild_id: int, song: Song, was_paused: bool):
-        """Resume playback after reconnection"""
-        try:
-            guild_data = self.bot.get_guild_data(guild_id)
-
-            fresh_data = await self.bot.get_song_info(song.webpage_url)
-            if not fresh_data or not fresh_data.get("url"):
-                logger.error(f"Could not get stream URL after reconnect for {song.title}")
-                return
-
-            song.url = fresh_data["url"]
-
-            source = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(song.url, **self.bot.ffmpeg_options),
-                volume=guild_data["volume"] / 100,
-            )
-
-            def after_playing(error):
-                if error:
-                    logger.error(f"Player error after reconnect: {error}")
-
-                if not guild_data.get("seeking", False):
-                    queue_service = QueueService(self.bot)
-                    if guild_data["current"] and not guild_data.get("seeking", False):
-                        queue_service.add_to_history(guild_id, guild_data["current"])
-
-                    coro = self.play_next(guild_id)
-                    fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
-                    fut.add_done_callback(lambda f: f.exception())
-
-            guild_data["start_time"] = datetime.now()
-            guild_data["voice_client"].play(source, after=after_playing)
-
-            if was_paused:
-                guild_data["voice_client"].pause()
-
-            logger.info(f"Resumed playback after reconnect: {song.title}")
-
-        except Exception as e:
-            logger.error(f"Error resuming playback after reconnect: {e}")
 
     async def play_next(self, guild_id: int):
         queue_service = QueueService(self.bot)
@@ -410,6 +333,10 @@ class PlaybackService:
         guild_data = self.bot.get_guild_data(guild_id)
 
         try:
+            if guild_data["voice_client"].is_playing() or guild_data["voice_client"].is_paused():
+                guild_data["voice_client"].stop()
+                await asyncio.sleep(0.3)
+
             source = discord.PCMVolumeTransformer(
                 discord.FFmpegPCMAudio(song.url, **self.bot.ffmpeg_options),
                 volume=guild_data["volume"] / 100,
@@ -457,7 +384,9 @@ class PlaybackService:
 
             await self.bot.save_guild_queue(guild_id)
 
-            logger.info(f"Now playing: {song.title} in guild {guild_id}")
+            guild = self.bot.get_guild(guild_id)
+            guild_name = guild.name if guild else "unknown"
+            logger.info(f"Now playing: {song.title} in guild: {guild_name} ({guild_id})")
 
             return True
 
@@ -574,8 +503,8 @@ class PlaybackService:
                     ),
                     view=None
                 )
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to edit now playing message on queue empty: {e}")
             guild_data["now_playing_message"] = None
 
         await self.bot.save_guild_queue(guild_id)
@@ -625,8 +554,8 @@ class PlaybackService:
                         self.bot.user
                     )
                     await channel.send(embed=skip_embed, delete_after=10)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to send skip notification for '{song.title}': {e}")
 
         if guild_data["loop_mode"] == "song":
             guild_data["loop_mode"] = "off"
@@ -651,5 +580,5 @@ class PlaybackService:
                         self.bot.user
                     )
                     await channel.send(embed=error_embed)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to send max retries notification for guild {guild_id}: {e}")
