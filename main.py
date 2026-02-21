@@ -14,6 +14,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _windows_exception_handler(loop, context):
+    """Suppress harmless WinError 10054 (connection forcibly closed by remote host)
+    that the Windows ProactorEventLoop raises when Discord closes connections.
+    All other exceptions are passed to the default handler as normal.
+    """
+    exception = context.get("exception")
+    if isinstance(exception, ConnectionResetError):
+        return
+    loop.default_exception_handler(context)
+
+
 async def main():
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:
