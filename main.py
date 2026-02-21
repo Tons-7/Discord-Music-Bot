@@ -36,6 +36,10 @@ async def main():
 
     bot = MusicBot()
 
+    # Suppress harmless Windows ProactorEventLoop connection reset noise
+    if sys.platform == "win32":
+        asyncio.get_running_loop().set_exception_handler(_windows_exception_handler)
+
     try:
         await bot.add_cog(MusicCommands(bot))
         await bot.add_cog(PlaylistCommands(bot))
