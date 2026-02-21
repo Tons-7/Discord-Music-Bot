@@ -1,5 +1,6 @@
-import discord
 from typing import List
+
+import discord
 
 
 class PaginationView(discord.ui.View):
@@ -8,6 +9,7 @@ class PaginationView(discord.ui.View):
         self.pages = pages
         self.user = user
         self.current_page = 0
+        self.message: discord.Message | None = None
 
         if len(pages) <= 1:
             self.previous_button.disabled = True
@@ -28,6 +30,11 @@ class PaginationView(discord.ui.View):
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.primary)
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
