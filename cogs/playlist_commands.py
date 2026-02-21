@@ -1,20 +1,17 @@
-import discord
-from discord.ext import commands
 import json
 import logging
-from typing import List
 from datetime import datetime
+from typing import List
 
-from models.song import Song
-
-from services.queue_service import QueueService
-from services.playback_service import PlaybackService
-from services.music_service import MusicService
-
-from utils.helpers import get_existing_urls, interaction_check, create_embed
+import discord
+from discord.ext import commands
 
 from config import COLOR, MAX_PLAYLIST_SIZE, SONGS_PER_PAGE
-
+from models.song import Song
+from services.music_service import MusicService
+from services.playback_service import PlaybackService
+from services.queue_service import QueueService
+from utils.helpers import get_existing_urls, interaction_check, create_embed
 from views.pagination import PaginationView
 
 logger = logging.getLogger(__name__)
@@ -742,7 +739,8 @@ class PlaylistCommands(commands.Cog):
                 return
 
             loaded_count = 0
-            seen_urls = set()
+            skipped_count = 0
+            seen_urls = get_existing_urls(guild_data)
 
             for song_info in playlist_items:
                 try:
@@ -750,6 +748,7 @@ class PlaylistCommands(commands.Cog):
                         continue
 
                     if song_info["webpage_url"] in seen_urls:
+                        skipped_count += 1
                         continue
 
                     song = Song.from_dict(song_info)
@@ -770,9 +769,10 @@ class PlaylistCommands(commands.Cog):
                 await interaction.response.send_message(embed=embed)
                 return
 
+            skip_note = f"\n({skipped_count} duplicate{'s' if skipped_count != 1 else ''} skipped)" if skipped_count > 0 else ""
             embed = create_embed(
                 "Playlist Loaded",
-                f"Loaded **{name}** with {loaded_count} songs",
+                f"Loaded **{name}** with {loaded_count} songs{skip_note}",
                 COLOR,
                 self.bot.user
             )
@@ -845,6 +845,7 @@ class PlaylistCommands(commands.Cog):
             view.next_button.disabled = view.current_page == len(pages) - 1
 
             await interaction.response.send_message(embed=pages[page - 1], view=view)
+            view.message = await interaction.original_response()
 
         except Exception as e:
             logger.error(f"Playlist show error: {e}")
@@ -979,6 +980,7 @@ class PlaylistCommands(commands.Cog):
             embed=pages[page - 1],
             view=view
         )
+        view.message = await interaction.original_response()
 
     @history_group.command(name="play", description="Play a song from history by number")
     @discord.app_commands.describe(song_number="Song number from history to play")
@@ -1161,15 +1163,14 @@ class PlaylistCommands(commands.Cog):
             )
             await interaction.response.send_message(embed=embed)
             return
-        else:
-            guild_data["history"].clear()
-            guild_data["history_position"] = 0
-            embed = create_embed(
-                "History cleared",
-                "Removed all songs from history",
-                COLOR,
-                self.bot.user
-            )
-            await interaction.response.send_message(embed=embed)
 
+        guild_data["history"].clear()
+        guild_data["history_position"] = 0
+        embed = create_embed(
+            "History cleared",
+            "Removed all songs from history",
+            COLOR,
+            self.bot.user
+        )
+        await interaction.response.send_message(embed=embed)
         await self.bot.save_guild_queue(interaction.guild.id)
