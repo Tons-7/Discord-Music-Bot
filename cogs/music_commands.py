@@ -567,15 +567,13 @@ class MusicCommands(commands.Cog):
                     self.queue_service.add_song_to_queue(interaction.guild.id, song)
 
                     position = len(guild_data["queue"])
-                    if position == 1 and not guild_data["current"]:
-                        embed = create_embed("Added to Queue", "", COLOR, self.bot.user)
-                    else:
-                        embed = create_embed(
-                            "Added to Queue",
-                            f"{song}\n\nPosition in queue: {position}",
-                            COLOR,
-                            self.bot.user,
-                        )
+
+                    embed = create_embed(
+                        "Added to Queue",
+                        f"{song}\n\nPosition in queue: {position}",
+                        COLOR,
+                        self.bot.user,
+                    )
 
                     if hasattr(song, "thumbnail") and song.thumbnail:
                         embed.set_thumbnail(url=song.thumbnail)
@@ -869,6 +867,7 @@ class MusicCommands(commands.Cog):
         view.next_button.disabled = view.current_page == len(pages) - 1
 
         await interaction.response.send_message(embed=pages[page - 1], view=view)
+        view.message = await interaction.original_response()
 
     @discord.app_commands.command(
         name="volume", description="Set or show the volume (0-100)"
@@ -1197,7 +1196,7 @@ class MusicCommands(commands.Cog):
         await interaction.response.send_message(embed=searching_embed)
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             data = await loop.run_in_executor(
                 self.bot.executor,
                 lambda: self.bot.ytdl.extract_info(
@@ -1448,8 +1447,8 @@ class MusicCommands(commands.Cog):
                 try:
                     await self.playback_service.play_next(interaction.guild.id)
                     await asyncio.sleep(0.5)
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to restart stalled playback before seek: {e}")
 
             if not (
                     guild_data["voice_client"].is_playing()
@@ -1486,7 +1485,7 @@ class MusicCommands(commands.Cog):
         async with guild_data["play_lock"]:
             try:
                 guild_data["seeking"] = True
-                guild_data["seeking_start_time"] = asyncio.get_event_loop().time()
+                guild_data["seeking_start_time"] = asyncio.get_running_loop().time()
 
                 seek_embed = create_embed(
                     "Seeking...",
@@ -1622,7 +1621,8 @@ class MusicCommands(commands.Cog):
                         COLOR,
                         self.bot.user,
                     )
-                except:
+                except Exception as recovery_error:
+                    logger.error(f"Seek recovery also failed for guild {interaction.guild.id}: {recovery_error}")
                     embed = create_embed(
                         "Error",
                         "Failed to seek and could not recover playback",
@@ -1763,8 +1763,8 @@ class MusicCommands(commands.Cog):
                 await interaction.followup.send(embed=embed, ephemeral=True)
             else:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to send error response for command error: {e}")
 
     @commands.command(name="leaveguild")
     @commands.is_owner()
@@ -1799,15 +1799,15 @@ class MusicCommands(commands.Cog):
     @commands.command(name="listbanned")
     @commands.is_owner()
     async def list_banned(self, ctx):
-        try:
-            with open("banned_users.txt", "r") as f:
-                banned_ids = [line.strip() for line in f.readlines() if line.strip()]
+        import utils.ban_system as ban_sys
+        if ban_sys._banned_cache is None:
+            ban_sys._load_cache()
 
-            if not banned_ids:
-                await ctx.send("No banned users.")
-                return
+        banned_ids = sorted(str(uid) for uid in ban_sys._banned_cache)
 
-            msg = "Banned users:\n" + "\n".join(banned_ids)
-            await ctx.send(msg)
-        except FileNotFoundError:
+        if not banned_ids:
             await ctx.send("No banned users.")
+            return
+
+        msg = "Banned users:\n" + "\n".join(banned_ids)
+        await ctx.send(msg)
