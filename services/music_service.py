@@ -51,7 +51,7 @@ class MusicService:
 
         if cache_key in self.bot.song_cache:
             cached_data = self.bot.song_cache[cache_key]
-            current_time = asyncio.get_event_loop().time()
+            current_time = asyncio.get_running_loop().time()
             if current_time - cached_data["cached_at"] < self.bot.cache_ttl:
                 logger.debug(f"Using cached data for: {url_or_query[:50]}")
                 return cached_data["data"]
@@ -59,7 +59,7 @@ class MusicService:
         data = await self.get_song_info(url_or_query)
 
         if data:
-            current_time = asyncio.get_event_loop().time()
+            current_time = asyncio.get_running_loop().time()
             self.bot.song_cache[cache_key] = {"data": data, "cached_at": current_time}
             await self._cleanup_cache_if_needed()
 
@@ -78,7 +78,7 @@ class MusicService:
 
     async def get_song_info(self, url_or_query: str) -> Optional[Dict]:
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             if any(
                     platform in url_or_query.lower()
@@ -116,7 +116,7 @@ class MusicService:
 
     async def search_youtube(self, query: str) -> Optional[Dict]:
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             data = await loop.run_in_executor(
                 self.bot.executor,
                 lambda: self.bot.ytdl.extract_info(f"ytsearch:{query}", download=False),
@@ -133,7 +133,7 @@ class MusicService:
 
     async def handle_youtube_playlist(self, url: str) -> List[Dict]:
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             playlist_info = await loop.run_in_executor(
                 self.bot.executor,
@@ -171,6 +171,21 @@ class MusicService:
             logger.error(f"Playlist handling error: {e}")
             return []
 
+    @staticmethod
+    def _spotify_search_query(track: Dict) -> Optional[str]:
+        """Build a YouTube search query from a Spotify track dict.
+        Returns None if the track has no usable name."""
+        track_name = track.get("name", "").strip()
+        if not track_name:
+            return None
+        artists = track.get("artists", [])
+        if artists:
+            artist_name = artists[0].get("name", "").strip()
+            if artist_name:
+                return f"{track_name} {artist_name}"
+        logger.warning(f"Spotify track has no artists: {track_name}")
+        return track_name
+
     async def handle_spotify_url(self, url: str) -> Optional[Dict]:
         if not self.bot.spotify:
             return None
@@ -179,66 +194,44 @@ class MusicService:
             if "track/" in url:
                 track_id = url.split("track/")[-1].split("?")[0]
                 track = self.bot.spotify.track(track_id)
-
-                track_name = track.get("name", "")
-                artists = track.get("artists", [])
-                if not artists or len(artists) == 0:
-                    logger.warning(f"Spotify track has no artists: {track_name}")
-                    search_query = track_name
-                else:
-                    artist_name = artists[0].get("name", "")
-                    search_query = f"{track_name} {artist_name}" if artist_name else track_name
-
+                search_query = self._spotify_search_query(track)
+                if not search_query:
+                    return None
                 return await self.search_youtube(search_query)
+
             elif "playlist/" in url:
                 playlist_id = url.split("playlist/")[-1].split("?")[0]
                 results = self.bot.spotify.playlist_tracks(playlist_id)
                 songs = []
-
-                items = results.get("items", [])
-                for item in items[:MAX_PLAYLIST_SIZE]:
+                for item in results.get("items", [])[:MAX_PLAYLIST_SIZE]:
                     track = item.get("track") if item else None
-                    if not track or not track.get("name"):
+                    if not track:
                         continue
-
-                    track_name = track.get("name", "")
-                    artists = track.get("artists", [])
-                    if not artists or len(artists) == 0:
-                        logger.warning(f"Spotify track has no artists: {track_name}")
-                        search_query = track_name
-                    else:
-                        artist_name = artists[0].get("name", "")
-                        search_query = f"{track_name} {artist_name}" if artist_name else track_name
-
+                    search_query = self._spotify_search_query(track)
+                    if not search_query:
+                        continue
                     song_data = await self.search_youtube(search_query)
                     if song_data:
                         songs.append(song_data)
                     await asyncio.sleep(0.1)
                 return songs if songs else None
+
             elif "album/" in url:
                 album_id = url.split("album/")[-1].split("?")[0]
                 results = self.bot.spotify.album_tracks(album_id)
                 songs = []
-
-                items = results.get("items", [])
-                for track in items[:MAX_PLAYLIST_SIZE]:
-                    if not track or not track.get("name"):
+                for track in results.get("items", [])[:MAX_PLAYLIST_SIZE]:
+                    if not track:
                         continue
-
-                    track_name = track.get("name", "")
-                    artists = track.get("artists", [])
-                    if not artists or len(artists) == 0:
-                        logger.warning(f"Spotify track has no artists: {track_name}")
-                        search_query = track_name
-                    else:
-                        artist_name = artists[0].get("name", "")
-                        search_query = f"{track_name} {artist_name}" if artist_name else track_name
-
+                    search_query = self._spotify_search_query(track)
+                    if not search_query:
+                        continue
                     song_data = await self.search_youtube(search_query)
                     if song_data:
                         songs.append(song_data)
                     await asyncio.sleep(0.1)
                 return songs if songs else None
+
         except Exception as e:
             logger.error(f"Spotify error: {e}")
         return None
@@ -452,29 +445,4 @@ class MusicService:
 
         return normalized
 
-    def _add_unique_track(
-            self,
-            track: Dict,
-            candidates: List[Dict],
-            seen_ids: Set[str],
-            seen_names: Set[str]
-    ) -> bool:
-        track_id = track.get('id')
-        track_name = track.get('name', '')
 
-        if not track_id or not track_name:
-            return False
-
-        normalized_name = self._normalize_track_name(track_name)
-
-        if track_id in seen_ids:
-            return False
-
-        if normalized_name in seen_names:
-            return False
-
-        seen_ids.add(track_id)
-        seen_names.add(normalized_name)
-        candidates.append(track)
-
-        return True
