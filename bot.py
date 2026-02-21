@@ -1,24 +1,23 @@
-from discord.ext import commands, tasks
 import asyncio
+import concurrent.futures
 import json
-import os
 import logging
+import os
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Optional, Dict
-import sqlite3
-import yt_dlp
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-import pylast
-import concurrent.futures
+
 import discord
+import pylast
+import spotipy
+import yt_dlp
+from discord.ext import commands, tasks
+from spotipy.oauth2 import SpotifyClientCredentials
 
-from config import get_intents, COLOR
+from config import get_intents, COLOR, MAX_CACHE_SIZE, CACHE_TTL, INACTIVE_TIMEOUT_MINUTES
 from models.song import Song
-
 from services.music_service import MusicService
 from services.playback_service import PlaybackService
-
 from utils import create_embed
 
 logger = logging.getLogger(__name__)
@@ -30,7 +29,6 @@ class MusicBot(commands.Bot):
 
         self.message_update_locks = {}
         self.message_validation_cache = {}
-        self.last_update_times = {}
         self.loop = None
 
         self.init_database()
@@ -38,8 +36,8 @@ class MusicBot(commands.Bot):
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
 
         self.song_cache = {}
-        self.max_cache_size = 500
-        self.cache_ttl = 900
+        self.max_cache_size = MAX_CACHE_SIZE
+        self.cache_ttl = CACHE_TTL
 
         self.db_save_tasks = {}
 
@@ -98,10 +96,10 @@ class MusicBot(commands.Bot):
             ),
             "options": (
                 "-vn "
-                "-bufsize 512k "
-                "-probesize 10M "
-                "-analyzeduration 10M "
-                "-fflags +discardcorrupt "
+                "-threads 0 "
+                "-probesize 1M "
+                "-analyzeduration 1M "
+                "-fflags +discardcorrupt+genpts "
                 "-flags +low_delay"
             ),
         }
@@ -232,7 +230,7 @@ class MusicBot(commands.Bot):
                 conn.commit()
                 return cursor.fetchall()
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _execute)
 
     async def fetch_db_query(self, query: str, params: tuple = None):
@@ -245,7 +243,7 @@ class MusicBot(commands.Bot):
                     cursor.execute(query)
                 return cursor.fetchall()
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _fetch)
 
     def get_guild_data(self, guild_id: int) -> Dict:
@@ -413,6 +411,13 @@ class MusicBot(commands.Bot):
         guild_data = self.get_guild_data(guild_id)
 
         try:
+            if guild_data.get("voice_client") and (
+                    guild_data["voice_client"].is_playing()
+                    or guild_data["voice_client"].is_paused()
+            ):
+                guild_data["voice_client"].stop()
+                await asyncio.sleep(0.5)
+
             playback_service = PlaybackService(self)
 
             if guild_data.get("current"):
@@ -467,17 +472,19 @@ class MusicBot(commands.Bot):
                             and not data.get("current")
                     )
 
-                    if inactive_time > timedelta(minutes=5) and is_truly_inactive:
+                    if inactive_time > timedelta(minutes=INACTIVE_TIMEOUT_MINUTES) and is_truly_inactive:
+                        guild = self.get_guild(guild_id)
+                        guild_name = guild.name if guild else "unknown"
                         await data["voice_client"].disconnect()
                         data["voice_client"] = None
-                        logger.info(f"Disconnected from inactive guild: {guild_id}")
+                        logger.info(f"Disconnected from inactive guild: {guild_name} ({guild_id})")
         except Exception as e:
             logger.error(f"Cleanup task error: {e}")
 
     @tasks.loop(minutes=10)
     async def cleanup_cache(self):
         try:
-            current_time = asyncio.get_event_loop().time()
+            current_time = asyncio.get_running_loop().time()
             expired_keys = [
                 key
                 for key, value in self.song_cache.items()
@@ -518,7 +525,7 @@ class MusicBot(commands.Bot):
     @tasks.loop(minutes=5)
     async def cleanup_validation_cache(self):
         try:
-            current_time = asyncio.get_event_loop().time()
+            current_time = asyncio.get_running_loop().time()
             expired_keys = [
                 key
                 for key, value in self.message_validation_cache.items()
@@ -542,6 +549,9 @@ class MusicBot(commands.Bot):
                 if not voice_client:
                     continue
 
+                guild = self.get_guild(guild_id)
+                guild_name = guild.name if guild else "unknown"
+
                 if voice_client.is_connected():
 
                     has_current = guild_data.get("current") is not None
@@ -549,7 +559,7 @@ class MusicBot(commands.Bot):
                     is_paused = voice_client.is_paused()
 
                     if has_current and not is_playing and not is_paused:
-                        logger.warning(f"Detected stalled playback in guild {guild_id}")
+                        logger.warning(f"Detected stalled playback in guild: {guild_name} ({guild_id})")
 
                         playback_service = PlaybackService(self)
 
@@ -557,7 +567,8 @@ class MusicBot(commands.Bot):
                         await playback_service.play_next(guild_id)
                 else:
                     if guild_data.get("current") or guild_data.get("queue"):
-                        logger.warning(f"Voice client disconnected but has active state in guild {guild_id}")
+                        logger.warning(
+                            f"Voice client disconnected but has active state in guild: {guild_name} ({guild_id})")
                         guild_data["voice_client"] = None
 
         except Exception as e:
@@ -602,7 +613,8 @@ class MusicBot(commands.Bot):
                     except json.JSONDecodeError:
                         continue
 
-            logger.info("Persistent data loaded")
+            total_songs = sum(len(self.guilds_data[gid]["queue"]) for gid in self.guilds_data)
+            logger.info(f"Persistent data loaded: {len(results)} guild(s), {total_songs} queued song(s) restored")
         except Exception as e:
             logger.error(f"Failed to load persistent data: {e}")
 
@@ -715,11 +727,12 @@ class MusicBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to save queue for guild {guild_id} on shutdown: {e}")
 
-        for task in self.db_save_tasks.values():
+        pending_tasks = list(self.db_save_tasks.values())
+        for task in pending_tasks:
             task.cancel()
 
-        if self.db_save_tasks:
-            await asyncio.gather(*self.db_save_tasks.values(), return_exceptions=True)
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
             logger.info("All database save tasks completed")
 
         for guild_data in self.guilds_data.values():
@@ -732,18 +745,3 @@ class MusicBot(commands.Bot):
         self.executor.shutdown(wait=True)
 
         await super().close()
-
-    def load_guild_music_channel(self, guild_id: int):
-        async def _load():
-            try:
-                result = await self.fetch_db_query(
-                    "SELECT music_channel_id FROM guild_settings WHERE guild_id = ?",
-                    (guild_id,),
-                )
-                if result and result[0][0]:
-                    guild_data = self.get_guild_data(guild_id)
-                    guild_data["music_channel_id"] = result[0][0]
-            except Exception as e:
-                logger.error(f"Failed to load music channel for guild {guild_id}: {e}")
-
-        asyncio.create_task(_load())
