@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from utils.ban_system import is_banned
+
 if TYPE_CHECKING:
     from cogs.music_commands import MusicCommands
 
@@ -18,6 +20,13 @@ class NowPlayingControls(discord.ui.View):
         self.bot = music_commands_cog.bot
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_banned(interaction.user.id):
+            await interaction.response.send_message(
+                "You are banned from using this bot.",
+                ephemeral=True
+            )
+            return False
+
         guild_data = self.bot.get_guild_data(self.guild_id)
 
         if not interaction.user.voice:
@@ -109,7 +118,10 @@ class NowPlayingControls(discord.ui.View):
             guild_data = self.bot.get_guild_data(self.guild_id)
 
             modes = ["off", "song", "queue"]
-            current_index = modes.index(guild_data["loop_mode"])
+            current_mode = guild_data.get("loop_mode", "off")
+            if current_mode not in modes:
+                current_mode = "off"
+            current_index = modes.index(current_mode)
             new_mode = modes[(current_index + 1) % len(modes)]
 
             self.music_commands_cog.queue_service.set_loop_mode(self.guild_id, new_mode)
