@@ -1657,6 +1657,13 @@ class MusicCommands(commands.Cog):
 
         guild_data["autoplay"] = not guild_data.get("autoplay", False)
 
+        if not guild_data["autoplay"]:
+            prefetch_task = guild_data.get("autoplay_prefetch_task")
+            if prefetch_task and not prefetch_task.done():
+                prefetch_task.cancel()
+            guild_data["autoplay_prefetch"] = None
+            guild_data["autoplay_prefetch_task"] = None
+
         status = "enabled" if guild_data["autoplay"] else "disabled"
 
         embed = create_embed(
