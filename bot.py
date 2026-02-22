@@ -261,6 +261,8 @@ class MusicBot(commands.Bot):
                 "shuffle": False,
                 "volume": 100,
                 "autoplay": False,
+                "autoplay_prefetch": None,
+                "autoplay_prefetch_task": None,
                 "voice_client": None,
                 "intentional_disconnect": False,
                 "last_activity": datetime.now(),
@@ -332,6 +334,11 @@ class MusicBot(commands.Bot):
             logger.warning(f"Bot disconnected from voice in guild {guild_id}")
 
             guild_data["autoplay"] = False
+            prefetch_task = guild_data.get("autoplay_prefetch_task")
+            if prefetch_task and not prefetch_task.done():
+                prefetch_task.cancel()
+            guild_data["autoplay_prefetch"] = None
+            guild_data["autoplay_prefetch_task"] = None
 
             had_current_song = guild_data.get("current") is not None
             had_queue = len(guild_data.get("queue", [])) > 0
@@ -663,6 +670,11 @@ class MusicBot(commands.Bot):
             guild_data = self.get_guild_data(guild_id)
 
             guild_data["autoplay"] = False
+            prefetch_task = guild_data.get("autoplay_prefetch_task")
+            if prefetch_task and not prefetch_task.done():
+                prefetch_task.cancel()
+            guild_data["autoplay_prefetch"] = None
+            guild_data["autoplay_prefetch_task"] = None
 
             queue_data = {
                 "queue": [],
