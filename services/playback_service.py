@@ -561,7 +561,7 @@ class PlaybackService:
                         COLOR,
                         self.bot.user
                     )
-                    await channel.send(skip_embed, delete_after=10)
+                    await channel.send(embed=skip_embed, delete_after=10)
         except Exception as e:
             logger.warning(f"Failed to send skip notification for '{song.title}': {e}")
 
