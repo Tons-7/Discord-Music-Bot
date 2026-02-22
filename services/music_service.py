@@ -236,20 +236,55 @@ class MusicService:
             logger.error(f"Spotify error: {e}")
         return None
 
+    @staticmethod
+    def _extract_artist_from_title(title: str, uploader: str) -> str:
+        """
+        Extract a clean artist name from a YouTube title + uploader.
+        """
+        for sep in [' - ', ' \u2013 ', ' \u2014 ']:
+            if sep in title:
+                candidate = title.split(sep)[0].strip()
+                if candidate and len(candidate) <= 60 and not candidate.startswith('[') and not candidate.isdigit():
+                    return candidate
+
+        cleaned = uploader.strip()
+        cleaned = re.sub(r'VEVO$', '', cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r'\s*[-\u2013]\s*Topic$', '', cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r'\s*Official$', '', cleaned, flags=re.IGNORECASE).strip()
+        return cleaned if cleaned else uploader
+
+    @staticmethod
+    def _extract_song_title(title: str) -> str:
+        """
+        Strip the artist prefix and common noise suffixes from a YouTube title
+        """
+        clean = title
+        for sep in [' - ', ' \u2013 ', ' \u2014 ']:
+            if sep in clean:
+                clean = clean.split(sep, 1)[1].strip()
+                break
+        clean = re.sub(
+            r'\s*[\(\[](official(\s*(music\s*)?video|(\s*audio))?|audio|lyrics|hd|hq|mv|4k|live|remaster(ed)?).*?[\)\]]',
+            '', clean, flags=re.IGNORECASE
+        ).strip()
+        return clean if clean else title
+
     async def get_related_songs(self, song: 'Song', limit: int = 1) -> List[Dict]:
         try:
             if not self.bot.lastfm:
                 logger.warning("Last.fm not configured, cannot get recommendations")
                 return []
 
-            logger.info(f"Finding songs similar to: {song.title} by {song.uploader}")
+            artist_name = self._extract_artist_from_title(song.title, song.uploader)
+            clean_title = self._extract_song_title(song.title)
+            logger.info(f"Finding songs similar to: '{clean_title}' by '{artist_name}' (uploader: '{song.uploader}')")
 
-            seen_track_names: Set[str] = {self._normalize_track_name(song.title)}
-            seen_artists: Set[str] = {song.uploader.lower()}
+            seen_track_names: Set[str] = {self._normalize_track_name(clean_title)}
+            seen_artists: Set[str] = {artist_name.lower()}
             candidate_tracks = []
 
             try:
-                track = self.bot.lastfm.get_track(song.uploader, song.title)
+                track = self.bot.lastfm.get_track(artist_name, clean_title)
                 similar_tracks = track.get_similar(limit=limit * 5)
 
                 if similar_tracks:
@@ -285,7 +320,7 @@ class MusicService:
 
             if len(candidate_tracks) < limit * 5:
                 try:
-                    artist = self.bot.lastfm.get_artist(song.uploader)
+                    artist = self.bot.lastfm.get_artist(artist_name)
                     similar_artists = artist.get_similar(limit=5)
 
                     if similar_artists:
@@ -335,7 +370,7 @@ class MusicService:
 
             if len(candidate_tracks) < limit * 5:
                 try:
-                    track = self.bot.lastfm.get_track(song.uploader, song.title)
+                    track = self.bot.lastfm.get_track(artist_name, clean_title)
                     top_tags = track.get_top_tags(limit=2)
 
                     if top_tags:
@@ -444,5 +479,3 @@ class MusicService:
         normalized = re.sub(r'\s+', ' ', normalized)
 
         return normalized
-
-
