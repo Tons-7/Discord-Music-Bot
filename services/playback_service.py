@@ -190,10 +190,10 @@ class PlaybackService:
 
         if is_paused:
             status = "Paused"
-            status_emoji = "⏸️"
+            status_emoji = "\u23f8\ufe0f"
         else:
             status = "Playing"
-            status_emoji = "🎵"
+            status_emoji = "\U0001f3b5"
 
         embed = discord.Embed(
             title=f"{status_emoji} Now {status}",
@@ -201,12 +201,12 @@ class PlaybackService:
                 f"**{current.title}**\n"
                 f"*by {current.uploader}*\n\n"
                 f"`{format_duration(current_position)} {progress} {format_duration(current.duration)}`\n\n"
-                f"🔊 Volume: {guild_data['volume']}%\n"
-                f"🔁 Loop: {guild_data['loop_mode'].title()}\n"
-                f"🔀 Shuffle: {'On' if guild_data['shuffle'] else 'Off'}\n"
+                f"\U0001f50a Volume: {guild_data['volume']}%\n"
+                f"\U0001f501 Loop: {guild_data['loop_mode'].title()}\n"
+                f"\U0001f500 Shuffle: {'On' if guild_data['shuffle'] else 'Off'}\n"
                 f"Autoplay: {'Enabled' if guild_data['autoplay'] else 'Disabled'}\n"
-                f"👤 Requested by: {current.requested_by}\n"
-                f"📋 Queue length: {len(guild_data['queue'])}"
+                f"\U0001f464 Requested by: {current.requested_by}\n"
+                f"\U0001f4cb Queue length: {len(guild_data['queue'])}"
             ),
             color=COLOR,
         )
@@ -388,6 +388,15 @@ class PlaybackService:
             guild_name = guild.name if guild else "unknown"
             logger.info(f"Now playing: {song.title} in guild: {guild_name} ({guild_id})")
 
+            if guild_data.get("autoplay") and len(guild_data["queue"]) == 0:
+                existing_prefetch = guild_data.get("autoplay_prefetch_task")
+                if existing_prefetch and not existing_prefetch.done():
+                    existing_prefetch.cancel()
+                guild_data["autoplay_prefetch"] = None
+                task = asyncio.create_task(self._prefetch_autoplay_song(guild_id, song))
+                guild_data["autoplay_prefetch_task"] = task
+                logger.debug(f"Autoplay pre-fetch triggered for guild {guild_id}")
+
             return True
 
         except Exception as e:
@@ -400,89 +409,88 @@ class PlaybackService:
         guild_data = self.bot.get_guild_data(guild_id)
 
         if guild_data.get("autoplay", False) and guild_data.get("current"):
-            logger.info(f"Autoplay enabled for guild {guild_id}, fetching related songs...")
+            logger.info(f"Autoplay enabled for guild {guild_id}, checking for pre-fetched song...")
 
             try:
                 music_service = MusicService(self.bot)
 
                 existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
-
                 history = guild_data.get("history", [])
                 recent_titles = {
-                    self._normalize_title(h.title)
-                    for h in history[-10:]
+                    self._normalize_title(h.title) for h in history[-10:]
                 } if history else set()
-
                 if guild_data.get("current"):
                     recent_titles.add(self._normalize_title(guild_data["current"].title))
 
-                added_count = 0
-                max_fetch_attempts = 2
-                fetch_attempt = 0
+                next_song = None
 
-                while added_count == 0 and fetch_attempt < max_fetch_attempts:
-                    fetch_attempt += 1
-                    logger.info(f"Autoplay fetch attempt {fetch_attempt}/{max_fetch_attempts}")
+                prefetch_task = guild_data.get("autoplay_prefetch_task")
+                if prefetch_task and not prefetch_task.done():
+                    logger.info(f"Pre-fetch still running for guild {guild_id}, waiting up to 20s...")
+                    try:
+                        done, _ = await asyncio.wait({prefetch_task}, timeout=20)
+                        if not done:
+                            logger.warning(f"Pre-fetch timed out for guild {guild_id}, cancelling")
+                            prefetch_task.cancel()
+                            guild_data["autoplay_prefetch_task"] = None
+                    except Exception as wait_err:
+                        logger.warning(f"Error waiting for pre-fetch: {wait_err}")
 
-                    related_songs = await music_service.get_related_songs(
-                        guild_data["current"],
-                        limit=3
-                    )
+                prefetched = guild_data.get("autoplay_prefetch")
+                if prefetched:
+                    guild_data["autoplay_prefetch"] = None
+                    if (prefetched.webpage_url not in existing_urls and
+                            self._normalize_title(prefetched.title) not in recent_titles):
+                        next_song = prefetched
+                        logger.info(f"Using pre-fetched autoplay song: {prefetched.title}")
+                    else:
+                        logger.info(f"Pre-fetched song is now a duplicate, fetching inline")
 
-                    if not related_songs:
-                        logger.warning(f"No related songs found on attempt {fetch_attempt}")
-                        break
+                if not next_song:
+                    logger.info(f"Fetching autoplay song inline for guild {guild_id}...")
+                    for fetch_attempt in range(2):
+                        related_songs = await music_service.get_related_songs(
+                            guild_data["current"], limit=3
+                        )
+                        if not related_songs:
+                            logger.warning(f"No related songs on inline attempt {fetch_attempt + 1}")
+                            continue
 
-                    for song_data in related_songs:
-                        if added_count >= 1:
+                        for song_data in related_songs:
+                            url = song_data.get("webpage_url")
+                            title = song_data.get("title", "")
+                            if (url not in existing_urls and
+                                    self._normalize_title(title) not in recent_titles):
+                                next_song = Song(song_data)
+                                next_song.requested_by = "Autoplay"
+                                logger.info(f"Inline autoplay found: {title}")
+                                break
+
+                        if next_song:
                             break
 
-                        url = song_data.get("webpage_url")
-                        title = song_data.get("title", "")
-                        normalized_title = self._normalize_title(title)
-
-                        if url in existing_urls:
-                            logger.info(f"Skipping duplicate URL: {title}")
-                            continue
-
-                        if normalized_title in recent_titles:
-                            logger.info(f"Skipping recently played: {title}")
-                            continue
-
-                        song = Song(song_data)
-                        song.requested_by = "Autoplay"
-                        queue_service.add_song_to_queue(guild_id, song)
-                        existing_urls.add(url)
-                        recent_titles.add(normalized_title)
-                        added_count += 1
-
-                        logger.info(f"Added autoplay song: {title}")
-
-                if added_count > 0:
-                    logger.info(f"Successfully added {added_count} song(s) via autoplay")
+                if next_song:
+                    queue_service.add_song_to_queue(guild_id, next_song)
+                    logger.info(f"Successfully queued autoplay song: {next_song.title}")
 
                     try:
                         music_cog = self.bot.get_cog("MusicCommands")
                         if music_cog:
                             channel = await music_cog.get_music_channel(guild_id)
                             if channel:
-                                queue = guild_data.get("queue", [])
-                                next_song = queue[0] if queue else None
-
-                                if next_song:
-                                    embed = create_embed(
-                                        "🎵 Autoplay",
-                                        f"Up next: **{next_song.title}**",
-                                        COLOR,
-                                        self.bot.user
-                                    )
-                                    await channel.send(embed=embed, delete_after=15)
+                                embed = create_embed(
+                                    "\U0001f3b5 Autoplay",
+                                    f"Up next: **{next_song.title}**",
+                                    COLOR,
+                                    self.bot.user
+                                )
+                                await channel.send(embed=embed, delete_after=15)
                     except Exception as notify_error:
                         logger.warning(f"Failed to send autoplay notification: {notify_error}")
 
                     return True
-                else:
-                    logger.warning(f"Could not find non-duplicate songs after {fetch_attempt} attempts")
+
+                logger.warning(f"Could not find any autoplay song for guild {guild_id}")
 
             except Exception as e:
                 logger.error(f"Autoplay error for guild {guild_id}: {e}", exc_info=True)
@@ -553,7 +561,7 @@ class PlaybackService:
                         COLOR,
                         self.bot.user
                     )
-                    await channel.send(embed=skip_embed, delete_after=10)
+                    await channel.send(skip_embed, delete_after=10)
         except Exception as e:
             logger.warning(f"Failed to send skip notification for '{song.title}': {e}")
 
@@ -582,3 +590,63 @@ class PlaybackService:
                     await channel.send(embed=error_embed)
         except Exception as e:
             logger.warning(f"Failed to send max retries notification for guild {guild_id}: {e}")
+
+    async def _prefetch_autoplay_song(self, guild_id: int, current_song: Song):
+        """
+        Pre-fetch the next autoplay song in the background while the current song is playing.
+
+        The result is stored in guild_data['autoplay_prefetch'] and is NOT added to the
+        queue yet. _handle_empty_queue consumes it when the queue actually runs out,
+        eliminating the silence gap caused by fetching on demand.
+
+        If autoplay is disabled before the fetch completes, the task is cancelled and
+        the result is discarded — so no song is auto-queued.
+        """
+        guild_data = self.bot.get_guild_data(guild_id)
+
+        try:
+            logger.info(f"Starting autoplay pre-fetch for guild {guild_id}: '{current_song.title}'")
+
+            music_service = MusicService(self.bot)
+
+            existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
+            history = guild_data.get("history", [])
+            recent_titles = {
+                self._normalize_title(h.title) for h in history[-10:]
+            } if history else set()
+            recent_titles.add(self._normalize_title(current_song.title))
+
+            for attempt in range(2):
+                if not guild_data.get("autoplay"):
+                    logger.info(f"Autoplay disabled during pre-fetch for guild {guild_id}, stopping")
+                    return
+
+                related_songs = await music_service.get_related_songs(current_song, limit=3)
+
+                for song_data in related_songs:
+                    url = song_data.get("webpage_url")
+                    title = song_data.get("title", "")
+                    normalized_title = self._normalize_title(title)
+
+                    if url in existing_urls or normalized_title in recent_titles:
+                        continue
+
+                    song = Song(song_data)
+                    song.requested_by = "Autoplay"
+                    guild_data["autoplay_prefetch"] = song
+                    logger.info(f"Autoplay pre-fetch complete for guild {guild_id}: '{title}'")
+                    return
+
+                if attempt == 0:
+                    logger.warning(f"Pre-fetch attempt 1 found no suitable songs for guild {guild_id}, retrying...")
+
+            logger.warning(f"Autoplay pre-fetch could not find a suitable song for guild {guild_id}")
+
+        except asyncio.CancelledError:
+            logger.debug(f"Autoplay pre-fetch cancelled for guild {guild_id}")
+            raise
+        except Exception as e:
+            logger.error(f"Autoplay pre-fetch error for guild {guild_id}: {e}")
+        finally:
+            if guild_data.get("autoplay_prefetch_task") is asyncio.current_task():
+                guild_data["autoplay_prefetch_task"] = None
