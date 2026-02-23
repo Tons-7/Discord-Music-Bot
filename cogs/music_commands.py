@@ -205,6 +205,12 @@ class MusicCommands(commands.Cog):
         if not guild_data["history"]:
             return False
 
+        prefetch_task = guild_data.get("autoplay_prefetch_task")
+        if prefetch_task and not prefetch_task.done():
+            prefetch_task.cancel()
+        guild_data["autoplay_prefetch"] = None
+        guild_data["autoplay_prefetch_task"] = None
+
         if "history_position" not in guild_data:
             guild_data["history_position"] = len(guild_data["history"])
 
@@ -235,6 +241,7 @@ class MusicCommands(commands.Cog):
 
     async def play_previous_song_directly(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
+        stream_failed = False
 
         async with guild_data["play_lock"]:
             current_song = guild_data["current"]
@@ -290,10 +297,12 @@ class MusicCommands(commands.Cog):
                         logger.error(
                             f"Failed to extract stream for {current_song.title} after {max_retries} attempts"
                         )
-                        await self.playback_service.play_next(guild_id)
-                        return
+                        stream_failed = True
                     else:
                         await asyncio.sleep(0.5)
+
+            if stream_failed:
+                return
 
             try:
                 source = discord.PCMVolumeTransformer(
@@ -307,7 +316,14 @@ class MusicCommands(commands.Cog):
 
                     coro = self.playback_service.play_next(guild_id)
                     fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
-                    fut.add_done_callback(lambda f: f.exception())
+
+                    def _handle_result(future):
+                        try:
+                            future.result()
+                        except Exception as cb_err:
+                            logger.error(f"Error in play_next callback (after previous): {cb_err}")
+
+                    fut.add_done_callback(_handle_result)
 
                 guild_data["seek_offset"] = 0
                 guild_data["position"] = 0
@@ -329,6 +345,9 @@ class MusicCommands(commands.Cog):
                 guild_data["current"] = None
                 guild_data["start_time"] = None
                 await self.bot.save_guild_queue(guild_id)
+
+        if stream_failed:
+            await self.playback_service.play_next(guild_id)
 
     # Slash Commands Start Here
 
@@ -757,49 +776,48 @@ class MusicCommands(commands.Cog):
             await interaction.response.send_message(embed=embed)
             return
 
-        async with guild_data["play_lock"]:
-            target_song = visible_queue[position - 1]
-            primary_queue_size = len(guild_data["queue"])
+        target_song = visible_queue[position - 1]
+        primary_queue_size = len(guild_data["queue"])
 
-            if guild_data["current"]:
-                self.queue_service.add_to_history(
-                    interaction.guild.id, guild_data["current"]
-                )
-
-            if position <= primary_queue_size:
-                songs_to_skip = position - 1
-
-                for _ in range(songs_to_skip):
-                    if guild_data["queue"]:
-                        skipped_song = guild_data["queue"].pop(0)
-                        self.queue_service.add_to_history(
-                            interaction.guild.id, skipped_song
-                        )
-
-            else:
-                for song in guild_data["queue"]:
-                    self.queue_service.add_to_history(interaction.guild.id, song)
-                guild_data["queue"].clear()
-
-                target_song_copy = Song.from_dict(target_song.to_dict())
-                target_song_copy.requested_by = interaction.user.mention
-                guild_data["queue"].insert(0, target_song_copy)
-
-            if guild_data["voice_client"] and (
-                    guild_data["voice_client"].is_playing()
-                    or guild_data["voice_client"].is_paused()
-            ):
-                guild_data["voice_client"].stop()
-
-            embed = create_embed(
-                "Skipped to Song",
-                f"Skipped to: **{target_song.title}**",
-                COLOR,
-                self.bot.user,
+        if guild_data["current"]:
+            self.queue_service.add_to_history(
+                interaction.guild.id, guild_data["current"]
             )
-            await interaction.response.send_message(embed=embed)
 
-            await self.bot.save_guild_queue(interaction.guild.id)
+        if position <= primary_queue_size:
+            songs_to_skip = position - 1
+
+            for _ in range(songs_to_skip):
+                if guild_data["queue"]:
+                    skipped_song = guild_data["queue"].pop(0)
+                    self.queue_service.add_to_history(
+                        interaction.guild.id, skipped_song
+                    )
+
+        else:
+            for song in guild_data["queue"]:
+                self.queue_service.add_to_history(interaction.guild.id, song)
+            guild_data["queue"].clear()
+
+            target_song_copy = Song.from_dict(target_song.to_dict())
+            target_song_copy.requested_by = interaction.user.mention
+            guild_data["queue"].insert(0, target_song_copy)
+
+        if guild_data["voice_client"] and (
+                guild_data["voice_client"].is_playing()
+                or guild_data["voice_client"].is_paused()
+        ):
+            guild_data["voice_client"].stop()
+
+        embed = create_embed(
+            "Skipped to Song",
+            f"Skipped to: **{target_song.title}**",
+            COLOR,
+            self.bot.user,
+        )
+        await interaction.response.send_message(embed=embed)
+
+        await self.bot.save_guild_queue(interaction.guild.id)
 
     @discord.app_commands.command(name="queue", description="Show the current queue")
     @discord.app_commands.describe(page="Page number to view (optional)")
@@ -1482,158 +1500,156 @@ class MusicCommands(commands.Cog):
 
         was_paused = guild_data["voice_client"].is_paused()
         await interaction.response.defer()
-        async with guild_data["play_lock"]:
-            try:
-                guild_data["seeking"] = True
-                guild_data["seeking_start_time"] = asyncio.get_running_loop().time()
 
-                seek_embed = create_embed(
-                    "Seeking...",
-                    f"Seeking to {format_duration(seek_seconds)} in **{current_song.title}**",
-                    COLOR,
-                    self.bot.user,
-                )
-                await interaction.followup.send(embed=seek_embed)
+        try:
+            guild_data["seeking"] = True
+            guild_data["seeking_start_time"] = asyncio.get_running_loop().time()
 
-                if (
-                        guild_data["voice_client"].is_playing()
-                        or guild_data["voice_client"].is_paused()
-                ):
-                    guild_data["voice_client"].stop()
+            seek_embed = create_embed(
+                "Seeking...",
+                f"Seeking to {format_duration(seek_seconds)} in **{current_song.title}**",
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.followup.send(embed=seek_embed)
 
-                await asyncio.sleep(0.2)
+            if (
+                    guild_data["voice_client"].is_playing()
+                    or guild_data["voice_client"].is_paused()
+            ):
+                guild_data["voice_client"].stop()
 
-                fresh_data = None
-                for attempt in range(3):
-                    try:
-                        fresh_data = await self.bot.get_song_info_cached(
-                            current_song.webpage_url
-                        )
-                        if fresh_data and fresh_data.get("url"):
-                            break
-                        await asyncio.sleep(0.5)
-                    except Exception as e:
-                        logger.warning(
-                            f"Stream extraction attempt {attempt + 1} failed: {e}"
-                        )
-                        if attempt < 2:
-                            await asyncio.sleep(1)
+            await asyncio.sleep(0.2)
 
-                if not fresh_data or not fresh_data.get("url"):
-                    embed = create_embed(
-                        "Error",
-                        "Failed to seek - could not get fresh stream URL",
-                        COLOR,
-                        self.bot.user,
-                    )
-                    await interaction.edit_original_response(embed=embed)
-                    return
-
-                seek_strategies = [
-                    {
-                        "before_options": f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss {seek_seconds} -nostdin -user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'",
-                        "options": "-vn -bufsize 1024k",
-                    },
-                    {
-                        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'",
-                        "options": f"-vn -ss {seek_seconds} -bufsize 1024k",
-                    },
-                    {
-                        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin",
-                        "options": "-vn",
-                    },
-                ]
-
-                source = None
-                strategy_used = 0
-
-                for i, ffmpeg_options in enumerate(seek_strategies):
-                    try:
-                        source = discord.PCMVolumeTransformer(
-                            discord.FFmpegPCMAudio(fresh_data["url"], **ffmpeg_options),
-                            volume=guild_data["volume"] / 100,
-                        )
-                        strategy_used = i
-                        break
-                    except Exception as e:
-                        logger.warning(f"Seek strategy {i + 1} failed: {e}")
-                        if i < len(seek_strategies) - 1:
-                            continue
-                        else:
-                            raise e
-
-                if not source:
-                    embed = create_embed(
-                        "Error",
-                        "Failed to seek - stream format not supported",
-                        COLOR,
-                        self.bot.user,
-                    )
-                    await interaction.edit_original_response(embed=embed)
-                    return
-
-                guild_data["seek_offset"] = seek_seconds if strategy_used == 0 else 0
-                guild_data["start_time"] = datetime.now()
-
-                def after_seeking(error):
-                    if error:
-                        logger.error(f"Seek player error: {error}")
-                    else:
-                        if guild_data["current"] and not guild_data.get(
-                                "seeking", False
-                        ):
-                            self.queue_service.add_to_history(
-                                interaction.guild.id, guild_data["current"]
-                            )
-
-                    if not guild_data.get("seeking", False):
-                        coro = self.playback_service.play_next(interaction.guild.id)
-                        fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
-                        fut.add_done_callback(lambda f: f.exception())
-
-                guild_data["voice_client"].play(source, after=after_seeking)
-
-                if was_paused:
-                    await asyncio.sleep(0.2)
-                    guild_data["voice_client"].pause()
-                    guild_data["pause_position"] = seek_seconds
-
-                success_embed = create_embed(
-                    "Seeked",
-                    f"Moved to {format_duration(seek_seconds)} in **{current_song.title}**"
-                    + (f" (strategy {strategy_used + 1})" if strategy_used > 0 else ""),
-                    COLOR,
-                    self.bot.user,
-                )
-                await interaction.edit_original_response(embed=success_embed)
-
-                guild_data["message_ready_for_timestamps"] = True
-
-            except Exception as e:
-                logger.error(f"Seek error: {e}")
+            fresh_data = None
+            for attempt in range(3):
                 try:
-                    guild_data["seek_offset"] = 0
-                    guild_data["start_time"] = datetime.now()
-                    await self.playback_service.play_next(interaction.guild.id)
-                    embed = create_embed(
-                        "Seek Failed",
-                        "Could not seek, restarted song from beginning",
-                        COLOR,
-                        self.bot.user,
+                    fresh_data = await self.bot.get_song_info_cached(
+                        current_song.webpage_url
                     )
-                except Exception as recovery_error:
-                    logger.error(f"Seek recovery also failed for guild {interaction.guild.id}: {recovery_error}")
-                    embed = create_embed(
-                        "Error",
-                        "Failed to seek and could not recover playback",
-                        COLOR,
-                        self.bot.user,
+                    if fresh_data and fresh_data.get("url"):
+                        break
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.warning(
+                        f"Stream extraction attempt {attempt + 1} failed: {e}"
                     )
+                    if attempt < 2:
+                        await asyncio.sleep(1)
+
+            if not fresh_data or not fresh_data.get("url"):
+                embed = create_embed(
+                    "Error",
+                    "Failed to seek - could not get fresh stream URL",
+                    COLOR,
+                    self.bot.user,
+                )
                 await interaction.edit_original_response(embed=embed)
-            finally:
-                guild_data["seeking"] = False
-                if "seeking_start_time" in guild_data:
-                    del guild_data["seeking_start_time"]
+                return
+
+            seek_strategies = [
+                {
+                    "before_options": f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss {seek_seconds} -nostdin -user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'",
+                    "options": "-vn -bufsize 1024k",
+                },
+                {
+                    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'",
+                    "options": f"-vn -ss {seek_seconds} -bufsize 1024k",
+                },
+                {
+                    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin",
+                    "options": "-vn",
+                },
+            ]
+
+            source = None
+            strategy_used = 0
+
+            for i, ffmpeg_options in enumerate(seek_strategies):
+                try:
+                    source = discord.PCMVolumeTransformer(
+                        discord.FFmpegPCMAudio(fresh_data["url"], **ffmpeg_options),
+                        volume=guild_data["volume"] / 100,
+                    )
+                    strategy_used = i
+                    break
+                except Exception as e:
+                    logger.warning(f"Seek strategy {i + 1} failed: {e}")
+                    if i < len(seek_strategies) - 1:
+                        continue
+                    else:
+                        raise e
+
+            if not source:
+                embed = create_embed(
+                    "Error",
+                    "Failed to seek - stream format not supported",
+                    COLOR,
+                    self.bot.user,
+                )
+                await interaction.edit_original_response(embed=embed)
+                return
+
+            guild_data["seek_offset"] = seek_seconds if strategy_used <= 1 else 0
+            guild_data["start_time"] = datetime.now()
+
+            def after_seeking(error):
+                if error:
+                    logger.error(f"Seek player error: {error}")
+                else:
+                    if guild_data["current"] and not guild_data.get("seeking", False):
+                        self.queue_service.add_to_history(
+                            interaction.guild.id, guild_data["current"]
+                        )
+
+                if not guild_data.get("seeking", False):
+                    coro = self.playback_service.play_next(interaction.guild.id)
+                    fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
+
+                    def _handle_seek_callback(future):
+                        try:
+                            future.result()
+                        except Exception as cb_err:
+                            logger.error(f"Error in play_next after seek: {cb_err}")
+
+                    fut.add_done_callback(_handle_seek_callback)
+
+            guild_data["voice_client"].play(source, after=after_seeking)
+
+            if was_paused:
+                await asyncio.sleep(0.2)
+                guild_data["voice_client"].pause()
+                guild_data["pause_position"] = seek_seconds
+
+            if strategy_used <= 1:
+                result_desc = f"Moved to {format_duration(seek_seconds)} in **{current_song.title}**"
+                if strategy_used == 1:
+                    result_desc += " (strategy 2)"
+            else:
+                result_desc = f"Could not seek — playing **{current_song.title}** from the beginning"
+                logger.warning(f"Seek strategy 3 used for guild {interaction.guild.id}: playing from start")
+
+            success_embed = create_embed("Seeked", result_desc, COLOR, self.bot.user)
+            await interaction.edit_original_response(embed=success_embed)
+
+            guild_data["message_ready_for_timestamps"] = True
+
+        except Exception as e:
+            logger.error(f"Seek error: {e}")
+            guild_data["seek_offset"] = 0
+            guild_data["start_time"] = datetime.now()
+            embed = create_embed(
+                "Seek Failed",
+                "Could not seek, restarted song from beginning",
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.edit_original_response(embed=embed)
+            asyncio.create_task(self.playback_service.play_next(interaction.guild.id))
+        finally:
+            guild_data["seeking"] = False
+            if "seeking_start_time" in guild_data:
+                del guild_data["seeking_start_time"]
 
     @discord.app_commands.command(
         name="autoplay",
@@ -1717,16 +1733,16 @@ class MusicCommands(commands.Cog):
         `/history clear` - Clear all history songs
 
         **Playlist Commands: (your playlist(s) are guild specific)**
-        `/playlist create <name>` - Create a new empty playlist
-        `/playlist add <name> <song>` - Add a song to playlist by searching
-        `/playlist add-from-queue <name> <from_queue>` - Add song from current queue to playlist
-        `/playlist add-all-queue <name>` - Add entire current queue to playlist
-        `/playlist remove <name> <position>` - Remove a song from playlist
-        `/playlist move <name> <from_pos> <to_pos>` - Move song in playlist
-        `/playlist load <name>` - Load a playlist into the queue
-        `/playlist show <name> [page]` - Show songs in a playlist
+        `/playlist create <n>` - Create a new empty playlist
+        `/playlist add <n> <song>` - Add a song to playlist by searching
+        `/playlist add-from-queue <n> <from_queue>` - Add song from current queue to playlist
+        `/playlist add-all-queue <n>` - Add entire current queue to playlist
+        `/playlist remove <n> <position>` - Remove a song from playlist
+        `/playlist move <n> <from_pos> <to_pos>` - Move song in playlist
+        `/playlist load <n>` - Load a playlist into the queue
+        `/playlist show <n> [page]` - Show songs in a playlist
         `/playlist list` - List all your playlists
-        `/playlist delete <name>` - Delete a playlist
+        `/playlist delete <n>` - Delete a playlist
 
         **Settings:**
         `/setmusicchannel` - Set the channel for music messages
