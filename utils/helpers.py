@@ -1,6 +1,6 @@
-import discord
-
 from datetime import datetime
+
+import discord
 
 from config import COLOR
 from .ban_system import is_banned
@@ -38,7 +38,8 @@ def build_progress_bar(current: int, total: int, length: int = 20) -> str:
 
 def get_existing_urls(guild_data) -> set:
     urls = {song.webpage_url for song in guild_data["queue"]}
-    urls.update(song.webpage_url for song in guild_data["loop_backup"])
+    if guild_data.get("loop_mode") == "queue":
+        urls.update(song.webpage_url for song in guild_data["loop_backup"])
     if guild_data.get("current"):
         urls.add(guild_data["current"].webpage_url)
     return urls
