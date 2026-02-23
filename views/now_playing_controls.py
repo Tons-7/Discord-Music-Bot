@@ -71,15 +71,19 @@ class NowPlayingControls(discord.ui.View):
 
     @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.primary, custom_id="previous")
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=False)
         try:
             success = await self.music_commands_cog.play_previous(self.guild_id)
             if success:
-                await interaction.response.send_message("⏮️ Playing previous", ephemeral=True, delete_after=2)
+                await interaction.followup.send("⏮️ Playing previous", ephemeral=True)
             else:
-                await interaction.response.send_message("No previous song available", ephemeral=True, delete_after=2)
+                await interaction.followup.send("No previous song available", ephemeral=True)
         except Exception as e:
             logger.error(f"Previous button error: {e}")
-            await interaction.response.send_message("An error occurred", ephemeral=True, delete_after=2)
+            try:
+                await interaction.followup.send("An error occurred", ephemeral=True)
+            except Exception as followup_error:
+                logger.warning(f"Could not send previous button error message: {followup_error}")
 
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.primary, custom_id="skip")
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
