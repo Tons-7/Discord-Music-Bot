@@ -564,8 +564,9 @@ class MusicBot(commands.Bot):
                     has_current = guild_data.get("current") is not None
                     is_playing = voice_client.is_playing()
                     is_paused = voice_client.is_paused()
+                    is_seeking = guild_data.get("seeking", False)
 
-                    if has_current and not is_playing and not is_paused:
+                    if has_current and not is_playing and not is_paused and not is_seeking:
                         logger.warning(f"Detected stalled playback in guild: {guild_name} ({guild_id})")
 
                         playback_service = PlaybackService(self)
