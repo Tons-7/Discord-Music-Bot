@@ -414,7 +414,6 @@ class PlaybackService:
             try:
                 music_service = MusicService(self.bot)
 
-                existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
                 history = guild_data.get("history", [])
                 recent_titles = {
                     self._normalize_title(h.title) for h in history[-10:]
@@ -435,6 +434,10 @@ class PlaybackService:
                             guild_data["autoplay_prefetch_task"] = None
                     except Exception as wait_err:
                         logger.warning(f"Error waiting for pre-fetch: {wait_err}")
+
+                existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
+                if guild_data.get("current"):
+                    existing_urls.add(guild_data["current"].webpage_url)
 
                 prefetched = guild_data.get("autoplay_prefetch")
                 if prefetched:
@@ -599,7 +602,7 @@ class PlaybackService:
         queue yet. _handle_empty_queue consumes it when the queue actually runs out,
         eliminating the silence gap caused by fetching on demand.
 
-        If autoplay is disabled before the fetch completes, the task is cancelled and
+        If autoplay is disabled before the fetch completes, the task is canceled and
         the result is discarded — so no song is auto-queued.
         """
         guild_data = self.bot.get_guild_data(guild_id)
