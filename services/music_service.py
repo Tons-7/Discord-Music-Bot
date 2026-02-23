@@ -239,13 +239,31 @@ class MusicService:
     @staticmethod
     def _extract_artist_from_title(title: str, uploader: str) -> str:
         """
-        Extract a clean artist name from a YouTube title + uploader.
+        Extract a clean artist name from a YouTube title and uploader.
         """
         for sep in [' - ', ' \u2013 ', ' \u2014 ']:
             if sep in title:
-                candidate = title.split(sep)[0].strip()
-                if candidate and len(candidate) <= 60 and not candidate.startswith('[') and not candidate.isdigit():
-                    return candidate
+                parts = [p.strip() for p in title.split(sep)]
+                first, last = parts[0], parts[-1]
+
+                first_is_track_id = (
+                        bool(re.search(r'\d', first))
+                        or '(' in first
+                        or '[' in first
+                )
+
+                if not first_is_track_id and len(first) <= 60:
+                    return first
+
+                if (last and len(last) <= 60
+                        and not re.search(r'\d', last)
+                        and '(' not in last
+                        and '[' not in last):
+                    return last
+
+                if first and len(first) <= 60:
+                    return first
+                break
 
         cleaned = uploader.strip()
         cleaned = re.sub(r'VEVO$', '', cleaned, flags=re.IGNORECASE).strip()
@@ -256,16 +274,11 @@ class MusicService:
     @staticmethod
     def _extract_song_title(title: str) -> str:
         """
-        Strip the artist prefix and common noise suffixes from a YouTube title
+        Return a lightly cleaned version of the YouTube title for Last.fm lookup.
         """
-        clean = title
-        for sep in [' - ', ' \u2013 ', ' \u2014 ']:
-            if sep in clean:
-                clean = clean.split(sep, 1)[1].strip()
-                break
         clean = re.sub(
-            r'\s*[\(\[](official(\s*(music\s*)?video|(\s*audio))?|audio|lyrics|hd|hq|mv|4k|live|remaster(ed)?).*?[\)\]]',
-            '', clean, flags=re.IGNORECASE
+            r'\s*[\(\[](official(\s*(music\s*)?video|[\s\w]*audio)?|lyric\s*video|lyrics|hd|hq|4k|mv)[\)\]]',
+            '', title, flags=re.IGNORECASE
         ).strip()
         return clean if clean else title
 
@@ -275,40 +288,48 @@ class MusicService:
                 logger.warning("Last.fm not configured, cannot get recommendations")
                 return []
 
-            artist_name = self._extract_artist_from_title(song.title, song.uploader)
+            original_artist = self._extract_artist_from_title(song.title, song.uploader)
             clean_title = self._extract_song_title(song.title)
-            logger.info(f"Finding songs similar to: '{clean_title}' by '{artist_name}' (uploader: '{song.uploader}')")
+            logger.info(
+                f"Finding songs similar to: '{clean_title}' by '{original_artist}' "
+                f"(uploader: '{song.uploader}')"
+            )
 
             seen_track_names: Set[str] = {self._normalize_track_name(clean_title)}
-            seen_artists: Set[str] = {artist_name.lower()}
+            seen_artists: Set[str] = {original_artist.lower()}
             candidate_tracks = []
 
+            loop = asyncio.get_running_loop()
+
             try:
-                track = self.bot.lastfm.get_track(artist_name, clean_title)
-                similar_tracks = track.get_similar(limit=limit * 5)
+                def _fetch_similar_tracks():
+                    t = self.bot.lastfm.get_track(original_artist, clean_title)
+                    return t.get_similar(limit=limit * 5)
+
+                similar_tracks = await loop.run_in_executor(self.bot.executor, _fetch_similar_tracks)
 
                 if similar_tracks:
                     for similar in similar_tracks:
                         try:
                             track_item = similar.item
                             track_name = track_item.get_name()
-                            artist_name = track_item.get_artist().get_name()
+                            track_artist = track_item.get_artist().get_name()
 
                             normalized_name = self._normalize_track_name(track_name)
-                            normalized_artist = artist_name.lower()
+                            normalized_artist = track_artist.lower()
 
                             if normalized_name not in seen_track_names:
                                 priority = 1 if normalized_artist not in seen_artists else 2
                                 candidate_tracks.append({
                                     'name': track_name,
-                                    'artist': artist_name,
+                                    'artist': track_artist,
                                     'priority': priority,
                                     'source': 'similar_tracks'
                                 })
                                 seen_track_names.add(normalized_name)
                                 if normalized_artist not in seen_artists:
                                     seen_artists.add(normalized_artist)
-                                logger.debug(f"Added similar track: {track_name} by {artist_name}")
+                                logger.debug(f"Added similar track: {track_name} by {track_artist}")
                         except Exception as track_error:
                             logger.debug(f"Error processing similar track: {track_error}")
                             continue
@@ -320,8 +341,11 @@ class MusicService:
 
             if len(candidate_tracks) < limit * 5:
                 try:
-                    artist = self.bot.lastfm.get_artist(artist_name)
-                    similar_artists = artist.get_similar(limit=5)
+                    def _fetch_similar_artists():
+                        a = self.bot.lastfm.get_artist(original_artist)
+                        return a.get_similar(limit=5)
+
+                    similar_artists = await loop.run_in_executor(self.bot.executor, _fetch_similar_artists)
 
                     if similar_artists:
                         for similar_artist in similar_artists:
@@ -330,13 +354,17 @@ class MusicService:
                                 similar_artist_name = artist_item.get_name()
                                 normalized_artist = similar_artist_name.lower()
 
-                                similar_artist_obj = self.bot.lastfm.get_artist(similar_artist_name)
-                                similar_top_tracks = similar_artist_obj.get_top_tracks(limit=5)
+                                def _fetch_artist_top_tracks(name=similar_artist_name):
+                                    obj = self.bot.lastfm.get_artist(name)
+                                    return obj.get_top_tracks(limit=5)
+
+                                similar_top_tracks = await loop.run_in_executor(self.bot.executor,
+                                                                                _fetch_artist_top_tracks)
 
                                 for top_track in similar_top_tracks:
                                     track_item = top_track.item
                                     track_name = track_item.get_name()
-                                    artist_name = track_item.get_artist().get_name()
+                                    track_artist = track_item.get_artist().get_name()
 
                                     normalized_name = self._normalize_track_name(track_name)
 
@@ -344,7 +372,7 @@ class MusicService:
                                         priority = 1 if normalized_artist not in seen_artists else 3
                                         candidate_tracks.append({
                                             'name': track_name,
-                                            'artist': artist_name,
+                                            'artist': track_artist,
                                             'priority': priority,
                                             'source': 'similar_artists'
                                         })
@@ -370,8 +398,11 @@ class MusicService:
 
             if len(candidate_tracks) < limit * 5:
                 try:
-                    track = self.bot.lastfm.get_track(artist_name, clean_title)
-                    top_tags = track.get_top_tags(limit=2)
+                    def _fetch_top_tags():
+                        t = self.bot.lastfm.get_track(original_artist, clean_title)
+                        return t.get_top_tags(limit=2)
+
+                    top_tags = await loop.run_in_executor(self.bot.executor, _fetch_top_tags)
 
                     if top_tags:
                         for tag_item in top_tags:
@@ -379,22 +410,25 @@ class MusicService:
                                 tag_name = tag_item.item.get_name()
                                 logger.info(f"Fetching tracks from tag: {tag_name}")
 
-                                tag = self.bot.lastfm.get_tag(tag_name)
-                                tag_tracks = tag.get_top_tracks(limit=8)
+                                def _fetch_tag_tracks(name=tag_name):
+                                    g = self.bot.lastfm.get_tag(name)
+                                    return g.get_top_tracks(limit=8)
+
+                                tag_tracks = await loop.run_in_executor(self.bot.executor, _fetch_tag_tracks)
 
                                 for tag_track in tag_tracks:
                                     track_item = tag_track.item
                                     track_name = track_item.get_name()
-                                    artist_name = track_item.get_artist().get_name()
+                                    track_artist = track_item.get_artist().get_name()
 
                                     normalized_name = self._normalize_track_name(track_name)
-                                    normalized_artist = artist_name.lower()
+                                    normalized_artist = track_artist.lower()
 
                                     if normalized_name not in seen_track_names:
                                         priority = 2 if normalized_artist not in seen_artists else 4
                                         candidate_tracks.append({
                                             'name': track_name,
-                                            'artist': artist_name,
+                                            'artist': track_artist,
                                             'priority': priority,
                                             'source': f'tag_{tag_name}'
                                         })
@@ -429,7 +463,7 @@ class MusicService:
             attempts = 0
             max_attempts = min(len(candidate_tracks), limit * 5)
 
-            for track in candidate_tracks:
+            for candidate in candidate_tracks:
                 if len(related_songs) >= limit:
                     break
 
@@ -440,14 +474,14 @@ class MusicService:
                 attempts += 1
 
                 try:
-                    track_name = track.get('name', '')
-                    artist_name = track.get('artist', '')
-                    source = track.get('source', 'unknown')
+                    track_name = candidate.get('name', '')
+                    track_artist = candidate.get('artist', '')
+                    source = candidate.get('source', 'unknown')
 
-                    if not track_name or not artist_name:
+                    if not track_name or not track_artist:
                         continue
 
-                    youtube_query = f"{track_name} {artist_name}"
+                    youtube_query = f"{track_name} {track_artist}"
 
                     logger.debug(f"Searching YouTube for: {youtube_query} (from {source})")
                     song_data = await self.search_youtube(youtube_query)
@@ -455,7 +489,9 @@ class MusicService:
                     if song_data:
                         related_songs.append(song_data)
                         logger.info(
-                            f"Added song {len(related_songs)}/{limit}: {track_name} by {artist_name} (from {source})")
+                            f"Added song {len(related_songs)}/{limit}: "
+                            f"{track_name} by {track_artist} (from {source})"
+                        )
 
                     await asyncio.sleep(0.3)
 
