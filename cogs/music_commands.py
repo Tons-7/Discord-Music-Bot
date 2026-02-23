@@ -1658,6 +1658,7 @@ class MusicCommands(commands.Cog):
     async def autoplay_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
             return
+        await interaction.response.defer()
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
 
@@ -1668,7 +1669,7 @@ class MusicCommands(commands.Cog):
                 COLOR,
                 self.bot.user
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         guild_data["autoplay"] = not guild_data.get("autoplay", False)
@@ -1691,7 +1692,7 @@ class MusicCommands(commands.Cog):
             self.bot.user
         )
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
         await self.bot.save_guild_queue(interaction.guild.id)
 
     @discord.app_commands.command(
@@ -1786,6 +1787,8 @@ class MusicCommands(commands.Cog):
                 await interaction.followup.send(embed=embed, ephemeral=True)
             else:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
+        except discord.NotFound:
+            logger.warning(f"Could not send error response — interaction expired (10062): {error}")
         except Exception as e:
             logger.warning(f"Failed to send error response for command error: {e}")
 
