@@ -237,6 +237,19 @@ class MusicService:
         return None
 
     @staticmethod
+    def _clean_artist_name(name: str) -> str:
+        """
+        Strip genre/label markers that YouTube uploaders often prepend to OST titles.
+        """
+        # Remove content inside CJK bracket pairs like 「Soundtrack」
+        name = re.sub(r'[「」【】『』〔〕][^「」【】『』〔〕]*[「」【】『』〔〕]', '', name)
+        name = re.sub(
+            r'[\(\[【「]?\s*(ost|o\.s\.t\.?|soundtrack|bgm|music|theme|score|original)s?\s*[\)\]】」]?',
+            '', name, flags=re.IGNORECASE
+        )
+        return name.strip(' \u2013\u2014-|:')
+
+    @staticmethod
     def _extract_artist_from_title(title: str, uploader: str) -> str:
         """
         Extract a clean artist name from a YouTube title and uploader.
@@ -282,13 +295,31 @@ class MusicService:
         ).strip()
         return clean if clean else title
 
+    @staticmethod
+    def _extract_content_name(title: str) -> Optional[str]:
+        """
+        For OST-style titles extract the franchise/game name.
+        Returns None if no clear content name is found.
+        """
+        # Pattern: optional_bracket_label  CONTENT_NAME  separator  track_name
+        match = re.match(
+            r'^[「\[\(【]?\s*(?:soundtrack|ost|o\.s\.t\.?|bgm|music|score|theme)s?\s*[」\]\)】]?\s*'
+            r'([A-Za-z0-9][A-Za-z0-9\s\'\-:!]+?)\s*[-\u2013\u2014|]',
+            title, re.IGNORECASE
+        )
+        if match:
+            return match.group(1).strip()
+        return None
+
     async def get_related_songs(self, song: 'Song', limit: int = 1) -> List[Dict]:
         try:
             if not self.bot.lastfm:
                 logger.warning("Last.fm not configured, cannot get recommendations")
                 return []
 
-            original_artist = self._extract_artist_from_title(song.title, song.uploader)
+            original_artist = self._clean_artist_name(
+                self._extract_artist_from_title(song.title, song.uploader)
+            )
             clean_title = self._extract_song_title(song.title)
             logger.info(
                 f"Finding songs similar to: '{clean_title}' by '{original_artist}' "
@@ -450,6 +481,48 @@ class MusicService:
 
                 except Exception as e:
                     logger.warning(f"Error getting tag-based recommendations: {e}")
+
+            if len(candidate_tracks) < limit * 5:
+                content_name = self._extract_content_name(song.title)
+                if content_name:
+                    logger.info(f"Trying content tag lookup for: '{content_name}'")
+                    try:
+                        def _fetch_content_tag_tracks(name=content_name.lower()):
+                            g = self.bot.lastfm.get_tag(name)
+                            return g.get_top_tracks(limit=10)
+
+                        content_tag_tracks = await loop.run_in_executor(
+                            self.bot.executor, _fetch_content_tag_tracks
+                        )
+
+                        for top_track in content_tag_tracks:
+                            track_item = top_track.item
+                            track_name = track_item.get_name()
+                            track_artist = track_item.get_artist().get_name()
+                            normalized_name = self._normalize_track_name(track_name)
+                            normalized_artist = track_artist.lower()
+
+                            if normalized_name not in seen_track_names:
+                                priority = 2 if normalized_artist not in seen_artists else 4
+                                candidate_tracks.append({
+                                    'name': track_name,
+                                    'artist': track_artist,
+                                    'priority': priority,
+                                    'source': f'content_tag_{content_name}'
+                                })
+                                seen_track_names.add(normalized_name)
+                                if normalized_artist not in seen_artists:
+                                    seen_artists.add(normalized_artist)
+
+                            if len(candidate_tracks) >= limit * 8:
+                                break
+
+                        logger.info(
+                            f"Total candidates after content tag '{content_name}': {len(candidate_tracks)}"
+                        )
+
+                    except Exception as e:
+                        logger.debug(f"Content tag lookup failed for '{content_name}': {e}")
 
             if not candidate_tracks:
                 logger.warning(f"No candidate tracks found for {song.title}")
