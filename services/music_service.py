@@ -186,6 +186,36 @@ class MusicService:
         logger.warning(f"Spotify track has no artists: {track_name}")
         return track_name
 
+    def _collect_spotify_tracks(self, first_page: Dict, is_playlist: bool) -> List[Dict]:
+        """
+        Walk all Spotify pages and return a flat list of track dicts,  capped at MAX_PLAYLIST_SIZE.
+
+        - is_playlist=True  → each page item is {"track": {...}, "added_at": ...}
+        - is_playlist=False → each page item is the track dict directly (album tracks)
+        """
+        tracks = []
+        page = first_page
+
+        while page and len(tracks) < MAX_PLAYLIST_SIZE:
+            for item in page.get("items", []):
+                if len(tracks) >= MAX_PLAYLIST_SIZE:
+                    break
+                track = item.get("track") if is_playlist else item
+                # track can be None for removed/unavailable playlist entries
+                if track and track.get("name"):
+                    tracks.append(track)
+
+            if not page.get("next"):
+                break
+            try:
+                page = self.bot.spotify.next(page)
+            except Exception as e:
+                logger.warning(f"Spotify pagination error after {len(tracks)} tracks: {e}")
+                break
+
+        logger.info(f"Collected {len(tracks)} Spotify tracks across pages")
+        return tracks
+
     async def handle_spotify_url(self, url: str) -> Optional[Dict]:
         if not self.bot.spotify:
             return None
@@ -201,12 +231,10 @@ class MusicService:
 
             elif "playlist/" in url:
                 playlist_id = url.split("playlist/")[-1].split("?")[0]
-                results = self.bot.spotify.playlist_tracks(playlist_id)
+                first_page = self.bot.spotify.playlist_tracks(playlist_id)
+                all_tracks = self._collect_spotify_tracks(first_page, is_playlist=True)
                 songs = []
-                for item in results.get("items", [])[:MAX_PLAYLIST_SIZE]:
-                    track = item.get("track") if item else None
-                    if not track:
-                        continue
+                for track in all_tracks:
                     search_query = self._spotify_search_query(track)
                     if not search_query:
                         continue
@@ -218,11 +246,10 @@ class MusicService:
 
             elif "album/" in url:
                 album_id = url.split("album/")[-1].split("?")[0]
-                results = self.bot.spotify.album_tracks(album_id)
+                first_page = self.bot.spotify.album_tracks(album_id)
+                all_tracks = self._collect_spotify_tracks(first_page, is_playlist=False)
                 songs = []
-                for track in results.get("items", [])[:MAX_PLAYLIST_SIZE]:
-                    if not track:
-                        continue
+                for track in all_tracks:
                     search_query = self._spotify_search_query(track)
                     if not search_query:
                         continue
