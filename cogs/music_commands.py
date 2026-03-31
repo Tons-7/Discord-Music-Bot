@@ -622,12 +622,12 @@ class MusicCommands(commands.Cog):
             embed = create_embed(
                 "⏸️ Paused", "Music has been paused.", COLOR, self.bot.user
             )
+            await interaction.response.send_message(embed=embed, silent=True)
         else:
             embed = create_embed(
                 "❌ Error", "Nothing is playing!", COLOR, self.bot.user
             )
-
-        await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed)
 
     @discord.app_commands.command(name="resume", description="Resume the paused song")
     async def resume_slash(self, interaction: discord.Interaction):
@@ -638,12 +638,12 @@ class MusicCommands(commands.Cog):
             embed = create_embed(
                 "▶️ Resumed", "Music has been resumed.", COLOR, self.bot.user
             )
+            await interaction.response.send_message(embed=embed, silent=True)
         else:
             embed = create_embed(
                 "❌ Error", "Music is not paused!", COLOR, self.bot.user
             )
-
-        await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed)
 
     @discord.app_commands.command(name="skip", description="Skip the current song")
     async def skip_slash(self, interaction: discord.Interaction):
@@ -669,10 +669,10 @@ class MusicCommands(commands.Cog):
             embed = create_embed(
                 "Skipped", f"Skipped: **{skipped_song}**", COLOR, self.bot.user
             )
+            await interaction.response.send_message(embed=embed, silent=True)
         else:
             embed = create_embed("Error", "Nothing is playing!", COLOR, self.bot.user)
-
-        await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed)
 
     @discord.app_commands.command(name="previous", description="Play the previous song")
     async def previous_slash(self, interaction: discord.Interaction):
@@ -718,12 +718,12 @@ class MusicCommands(commands.Cog):
                 self.bot.user,
             )
             await self.bot.save_guild_queue(interaction.guild.id)
+            await interaction.response.send_message(embed=embed, silent=True)
         else:
             embed = create_embed(
                 "❌ Error", "Could not play previous song!", COLOR, self.bot.user
             )
-
-        await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed)
 
     @discord.app_commands.command(
         name="skipto", description="Skip to a specific song in the queue"
@@ -768,12 +768,12 @@ class MusicCommands(commands.Cog):
                     COLOR,
                     self.bot.user,
                 )
+                await interaction.response.send_message(embed=embed, silent=True)
             else:
                 embed = create_embed(
                     "Error", "Nothing is playing!", COLOR, self.bot.user
                 )
-
-            await interaction.response.send_message(embed=embed)
+                await interaction.response.send_message(embed=embed)
             return
 
         target_song = visible_queue[position - 1]
@@ -815,7 +815,7 @@ class MusicCommands(commands.Cog):
             COLOR,
             self.bot.user,
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
 
         await self.bot.save_guild_queue(interaction.guild.id)
 
@@ -826,7 +826,7 @@ class MusicCommands(commands.Cog):
 
         if not guild_data["current"] and not guild_data["queue"]:
             embed = create_embed("📋 Queue", "Queue is empty!", COLOR, self.bot.user)
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
             return
 
         all_visible_songs = self.queue_service.get_visible_queue(interaction.guild.id)
@@ -884,7 +884,7 @@ class MusicCommands(commands.Cog):
         view.previous_button.disabled = view.current_page == 0
         view.next_button.disabled = view.current_page == len(pages) - 1
 
-        await interaction.response.send_message(embed=pages[page - 1], view=view)
+        await interaction.response.send_message(embed=pages[page - 1], view=view, silent=True)
         view.message = await interaction.original_response()
 
     @discord.app_commands.command(
@@ -916,7 +916,7 @@ class MusicCommands(commands.Cog):
             )
             await self.bot.save_guild_queue(interaction.guild.id)
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
 
     @discord.app_commands.command(
         name="loop", description="Set loop mode (off/song/queue)"
@@ -944,7 +944,7 @@ class MusicCommands(commands.Cog):
         )
 
         await self.bot.save_guild_queue(interaction.guild.id)
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
 
     @discord.app_commands.command(name="shuffle", description="Toggle shuffle mode")
     async def shuffle_slash(self, interaction: discord.Interaction):
@@ -961,7 +961,7 @@ class MusicCommands(commands.Cog):
         )
 
         await self.bot.save_guild_queue(interaction.guild.id)
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
 
     @discord.app_commands.command(
         name="stop", description="Stop playback and clear queue"
@@ -987,7 +987,7 @@ class MusicCommands(commands.Cog):
         embed = create_embed(
             "Stopped", "Playback stopped and queue cleared.", COLOR, self.bot.user
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
 
     @discord.app_commands.command(
         name="clear", description="Clear the queue without stopping current song"
@@ -1002,14 +1002,15 @@ class MusicCommands(commands.Cog):
             embed = create_embed(
                 "Error", "Queue is already empty!", COLOR, self.bot.user
             )
+            await self.bot.save_guild_queue(interaction.guild.id)
+            await interaction.response.send_message(embed=embed)
         else:
             self.queue_service.clear_queue(interaction.guild.id)
             embed = create_embed(
                 "Queue Cleared", f"Removed all songs from queue.", COLOR, self.bot.user
             )
-
-        await self.bot.save_guild_queue(interaction.guild.id)
-        await interaction.response.send_message(embed=embed)
+            await self.bot.save_guild_queue(interaction.guild.id)
+            await interaction.response.send_message(embed=embed, silent=True)
 
     @discord.app_commands.command(
         name="leave", description="Disconnect from voice channel"
@@ -1034,12 +1035,12 @@ class MusicCommands(commands.Cog):
             embed = create_embed(
                 "Disconnected", "Left the voice channel.", COLOR, self.bot.user
             )
+            await interaction.response.send_message(embed=embed, silent=True)
         else:
             embed = create_embed(
                 "Error", "Not connected to a voice channel!", COLOR, self.bot.user
             )
-
-        await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed)
 
     @discord.app_commands.command(
         name="nowplaying", description="Show the currently playing song"
@@ -1092,7 +1093,7 @@ class MusicCommands(commands.Cog):
         if current.thumbnail:
             embed.set_thumbnail(url=current.thumbnail)
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
 
     @discord.app_commands.command(
         name="remove", description="Remove a song from the queue permanently"
@@ -1147,7 +1148,7 @@ class MusicCommands(commands.Cog):
         )
 
         await self.bot.save_guild_queue(interaction.guild.id)
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
 
     @discord.app_commands.command(
         name="move", description="Move a song to a different position in queue"
@@ -1198,7 +1199,7 @@ class MusicCommands(commands.Cog):
         )
 
         await self.bot.save_guild_queue(interaction.guild.id)
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
 
     @discord.app_commands.command(
         name="search", description="Search for songs and choose which to play"
@@ -1211,7 +1212,7 @@ class MusicCommands(commands.Cog):
         searching_embed = create_embed(
             "Searching...", f"Looking for: `{query}`", COLOR, self.bot.user
         )
-        await interaction.response.send_message(embed=searching_embed)
+        await interaction.response.send_message(embed=searching_embed, silent=True)
 
         try:
             loop = asyncio.get_running_loop()
@@ -1426,7 +1427,7 @@ class MusicCommands(commands.Cog):
                 self.bot.user,
             )
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
 
     @discord.app_commands.command(
         name="seek", description="Seek to a specific position in the current song"
@@ -1692,7 +1693,7 @@ class MusicCommands(commands.Cog):
             self.bot.user
         )
 
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, silent=True)
         await self.bot.save_guild_queue(interaction.guild.id)
 
     @discord.app_commands.command(
@@ -1758,7 +1759,7 @@ class MusicCommands(commands.Cog):
         """
 
         embed = create_embed("Command Guide", description, COLOR, self.bot.user)
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
 
     async def cog_app_command_error(
             self,
