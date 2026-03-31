@@ -150,7 +150,7 @@ class PlaylistCommands(commands.Cog):
             embed = create_embed(
                 "Playlist Created", f"Created empty playlist **{name}**", COLOR, self.bot.user
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
 
         except Exception as e:
             logger.error(f"Playlist create error: {e}")
@@ -614,7 +614,7 @@ class PlaylistCommands(commands.Cog):
                 COLOR,
                 self.bot.user
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
 
         except Exception as e:
             logger.error(f"Playlist remove error: {e}")
@@ -689,7 +689,7 @@ class PlaylistCommands(commands.Cog):
                 COLOR,
                 self.bot.user
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
 
         except Exception as e:
             logger.error(f"Playlist move error: {e}")
@@ -776,7 +776,7 @@ class PlaylistCommands(commands.Cog):
                 COLOR,
                 self.bot.user
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
 
             playback_service = PlaybackService(self.bot)
 
@@ -808,7 +808,7 @@ class PlaylistCommands(commands.Cog):
                 embed = create_embed(
                     f"Playlist: {name}", "Playlist is empty", COLOR, self.bot.user
                 )
-                await interaction.response.send_message(embed=embed)
+                await interaction.response.send_message(embed=embed, silent=True)
                 return
 
             total_pages = max(
@@ -844,13 +844,13 @@ class PlaylistCommands(commands.Cog):
             view.previous_button.disabled = view.current_page == 0
             view.next_button.disabled = view.current_page == len(pages) - 1
 
-            await interaction.response.send_message(embed=pages[page - 1], view=view)
+            await interaction.response.send_message(embed=pages[page - 1], view=view, silent=True)
             view.message = await interaction.original_response()
 
         except Exception as e:
             logger.error(f"Playlist show error: {e}")
             embed = create_embed("Error", "Failed to show playlist.", COLOR, self.bot.user)
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
 
     @playlist_group.command(name="list", description="List all your playlists")
     async def playlist_list(self, interaction: discord.Interaction):
@@ -882,12 +882,12 @@ class PlaylistCommands(commands.Cog):
 
                 embed = create_embed("Your Playlists", description, COLOR, self.bot.user)
 
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
 
         except Exception as e:
             logger.error(f"Playlist list error: {e}")
             embed = create_embed("Error", "Failed to retrieve playlists.", COLOR, self.bot.user)
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
 
     @playlist_group.command(name="delete", description="Delete a playlist")
     @discord.app_commands.describe(name="Playlist name to delete")
@@ -925,7 +925,7 @@ class PlaylistCommands(commands.Cog):
             embed = create_embed(
                 "Playlist Deleted", f"Deleted playlist **{name}**.", COLOR, self.bot.user
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
 
         except Exception as e:
             logger.error(f"Playlist delete error: {e}")
@@ -939,7 +939,7 @@ class PlaylistCommands(commands.Cog):
 
         if not guild_data["history"]:
             embed = create_embed("History", "No songs in history yet", COLOR, self.bot.user)
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
             return
 
         total_pages = max(
@@ -978,7 +978,8 @@ class PlaylistCommands(commands.Cog):
 
         await interaction.response.send_message(
             embed=pages[page - 1],
-            view=view
+            view=view,
+            silent=True
         )
         view.message = await interaction.original_response()
 
@@ -989,7 +990,7 @@ class PlaylistCommands(commands.Cog):
 
         if not guild_data["history"]:
             embed = create_embed("History", "No songs in history yet", COLOR, self.bot.user)
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
             return
 
         music_cog = self.bot.get_cog("MusicCommands")
@@ -1072,7 +1073,7 @@ class PlaylistCommands(commands.Cog):
         if song_copy.thumbnail:
             embed.set_thumbnail(url=song_copy.thumbnail)
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
         guild_data["last_activity"] = datetime.now()
         await self.bot.save_guild_queue(interaction.guild.id)
 
@@ -1091,7 +1092,7 @@ class PlaylistCommands(commands.Cog):
 
         if not guild_data["history"]:
             embed = create_embed("History", "No songs in history yet", COLOR, self.bot.user)
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, silent=True)
             return
 
         if not await music_cog.ensure_voice_connection(interaction):
@@ -1137,7 +1138,7 @@ class PlaylistCommands(commands.Cog):
                 self.bot.user
             )
 
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, silent=True)
 
         playback_service = PlaybackService(self.bot)
 
@@ -1172,5 +1173,5 @@ class PlaylistCommands(commands.Cog):
             COLOR,
             self.bot.user
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, silent=True)
         await self.bot.save_guild_queue(interaction.guild.id)
