@@ -9,8 +9,6 @@ from discord.ext import commands
 from config import COLOR, SONGS_PER_PAGE
 from models.song import Song
 from services.music_service import MusicService
-from services.playback_service import PlaybackService
-from services.queue_service import QueueService
 from utils.ban_system import ban_user_id, unban_user_id
 from utils.helpers import (
     format_duration,
@@ -30,9 +28,9 @@ logger = logging.getLogger(__name__)
 class MusicCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.music_service = MusicService(bot)
-        self.playback_service = PlaybackService(bot)
-        self.queue_service = QueueService(bot)
+        self.music_service = bot._music_service
+        self.playback_service = bot._playback_service
+        self.queue_service = bot._playback_service.queue_service
         super().__init__()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -168,31 +166,11 @@ class MusicCommands(commands.Cog):
             return
 
         current_position = self.playback_service.get_current_position(guild_id)
-        progress = build_progress_bar(current_position, current.duration)
-
-        status = "Playing"
-        if self.playback_service.is_paused(guild_id):
-            status = "Paused"
-        elif (
-                not guild_data["voice_client"]
-                or not guild_data["voice_client"].is_playing()
-        ):
-            status = "Stopped"
-
-        embed = create_embed(
-            f"🎵 Now {status}",
-            f"**{current.title}**\n"
-            f"*by {current.uploader}*\n\n"
-            f"`{format_duration(current_position)} {progress} {format_duration(current.duration)}`\n\n"
-            f"🔊 Volume: {guild_data['volume']}%\n"
-            f"🔁 Loop: {guild_data['loop_mode'].title()}\n"
-            f"🔀 Shuffle: {'On' if guild_data['shuffle'] else 'Off'}\n"
-            f"Autoplay: {'Enabled' if guild_data['autoplay'] else 'Disabled'}\n"
-            f"📝 Requested by: {current.requested_by}\n"
-            f"📋 Queue length: {len(guild_data['queue'])} ",
-            COLOR,
-            self.bot.user,
+        is_paused = self.playback_service.is_paused(guild_id)
+        title, description = self.playback_service._build_now_playing_description(
+            guild_data, current_position, is_paused
         )
+        embed = create_embed(title, description, COLOR, self.bot.user)
 
         if current.thumbnail:
             embed.set_thumbnail(url=current.thumbnail)
@@ -205,10 +183,10 @@ class MusicCommands(commands.Cog):
         if not guild_data["history"]:
             return False
 
+        guild_data["autoplay_prefetch"] = None
         prefetch_task = guild_data.get("autoplay_prefetch_task")
         if prefetch_task and not prefetch_task.done():
             prefetch_task.cancel()
-        guild_data["autoplay_prefetch"] = None
         guild_data["autoplay_prefetch_task"] = None
 
         if "history_position" not in guild_data:
@@ -241,112 +219,27 @@ class MusicCommands(commands.Cog):
 
     async def play_previous_song_directly(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
-        stream_failed = False
+
+        current_song = guild_data["current"]
+        if not current_song:
+            return
+
+        if (
+                not guild_data["voice_client"]
+                or not guild_data["voice_client"].is_connected()
+        ):
+            logger.info(f"Voice client disconnected for guild {guild_id}, stopping playback")
+            guild_data["current"] = None
+            guild_data["start_time"] = None
+            return
+
+        # Clear current so _extract_and_play_song can set it fresh
+        guild_data["current"] = None
 
         async with guild_data["play_lock"]:
-            current_song = guild_data["current"]
+            success = await self.playback_service._extract_and_play_song(guild_id, current_song, 0)
 
-            if not current_song:
-                return
-
-            if (
-                    not guild_data["voice_client"]
-                    or not guild_data["voice_client"].is_connected()
-            ):
-                logger.info(
-                    f"Voice client disconnected for guild {guild_id}, stopping playback"
-                )
-                guild_data["current"] = None
-                guild_data["start_time"] = None
-                return
-
-            max_retries = 2
-            for attempt in range(max_retries):
-                try:
-                    logger.info(
-                        f"Extracting fresh stream URL for previous song: {current_song.title} (attempt {attempt + 1})"
-                    )
-
-                    fresh_data = await self.bot.get_song_info_cached(
-                        current_song.webpage_url
-                    )
-
-                    if not fresh_data or not fresh_data.get("url"):
-                        raise Exception(
-                            f"No stream URL available for {current_song.title}"
-                        )
-
-                    current_song.url = fresh_data["url"]
-                    if fresh_data.get("title"):
-                        current_song.title = fresh_data["title"]
-                    if fresh_data.get("duration"):
-                        current_song.duration = fresh_data["duration"]
-                    if fresh_data.get("thumbnail"):
-                        current_song.thumbnail = fresh_data["thumbnail"]
-                    if fresh_data.get("uploader"):
-                        current_song.uploader = fresh_data["uploader"]
-
-                    break
-
-                except Exception as e:
-                    logger.error(
-                        f"Error extracting stream URL (attempt {attempt + 1}): {e}"
-                    )
-
-                    if attempt == max_retries - 1:
-                        logger.error(
-                            f"Failed to extract stream for {current_song.title} after {max_retries} attempts"
-                        )
-                        stream_failed = True
-                    else:
-                        await asyncio.sleep(0.5)
-
-            if stream_failed:
-                return
-
-            try:
-                source = discord.PCMVolumeTransformer(
-                    discord.FFmpegPCMAudio(current_song.url, **self.bot.ffmpeg_options),
-                    volume=guild_data["volume"] / 100,
-                )
-
-                def after_playing(error):
-                    if error:
-                        logger.error(f"Player error: {error}")
-
-                    coro = self.playback_service.play_next(guild_id)
-                    fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
-
-                    def _handle_result(future):
-                        try:
-                            future.result()
-                        except Exception as cb_err:
-                            logger.error(f"Error in play_next callback (after previous): {cb_err}")
-
-                    fut.add_done_callback(_handle_result)
-
-                guild_data["seek_offset"] = 0
-                guild_data["position"] = 0
-                guild_data["start_time"] = datetime.now()
-                guild_data["last_activity"] = datetime.now()
-
-                guild_data["voice_client"].play(source, after=after_playing)
-
-                await asyncio.sleep(0.2)
-                await self.update_now_playing(guild_id)
-                await self.bot.save_guild_queue(guild_id)
-
-                logger.info(
-                    f"Now playing previous song: {current_song.title} in guild {guild_id}"
-                )
-
-            except Exception as e:
-                logger.error(f"Error playing previous song: {e}")
-                guild_data["current"] = None
-                guild_data["start_time"] = None
-                await self.bot.save_guild_queue(guild_id)
-
-        if stream_failed:
+        if not success:
             await self.playback_service.play_next(guild_id)
 
     # Slash Commands Start Here
@@ -486,7 +379,6 @@ class MusicCommands(commands.Cog):
                         COLOR,
                         self.bot.user,
                     )
-                    self.queue_service.sync_loop_backup(interaction.guild.id)
                 else:
                     embed = create_embed(
                         "No Songs Added",
@@ -537,7 +429,6 @@ class MusicCommands(commands.Cog):
                             COLOR,
                             self.bot.user,
                         )
-                        self.queue_service.sync_loop_backup(interaction.guild.id)
                     else:
                         embed = create_embed(
                             "No Songs Added",
@@ -1232,33 +1123,9 @@ class MusicCommands(commands.Cog):
 
             valid_entries = []
             for entry in data["entries"]:
-                if not entry:
-                    continue
-
-                title = entry.get("title") or entry.get("alt_title")
-                if not title:
-                    continue
-                entry["title"] = title
-
-                webpage_url = entry.get("webpage_url")
-                url = entry.get("url")
-                video_id = entry.get("id")
-
-                if not webpage_url:
-                    if isinstance(url, str) and url.startswith("http"):
-                        webpage_url = url
-                    elif video_id:
-                        webpage_url = f"https://www.youtube.com/watch?v={video_id}"
-
-                if not webpage_url:
-                    continue
-
-                entry["webpage_url"] = webpage_url
-
-                if "url" not in entry or not entry["url"]:
-                    entry["url"] = webpage_url
-
-                valid_entries.append(entry)
+                normalized = MusicService._normalize_youtube_entry(entry)
+                if normalized:
+                    valid_entries.append(normalized)
 
             if not valid_entries:
                 embed = create_embed(
@@ -1335,7 +1202,7 @@ class MusicCommands(commands.Cog):
                     )
                     await interaction.edit_original_response(embed=embed, view=None)
                     return
-            elif guild_data["voice_client"].channel != interaction.user.voice.channel:
+            elif interaction.user.voice and guild_data["voice_client"].channel != interaction.user.voice.channel:
                 try:
                     await guild_data["voice_client"].move_to(
                         interaction.user.voice.channel
@@ -1734,7 +1601,7 @@ class MusicCommands(commands.Cog):
         `/history add_all` - Add all songs from history to queue
         `/history clear` - Clear all history songs
 
-        **Playlist Commands: (your playlist(s) are guild specific)**
+        **Playlist Commands: (your playlist(s) are server specific)**
         `/playlist create <n>` - Create a new empty playlist
         `/playlist add <n> <song>` - Add a song to playlist by searching
         `/playlist add-from-queue <n> <from_queue>` - Add song from current queue to playlist
@@ -1745,6 +1612,18 @@ class MusicCommands(commands.Cog):
         `/playlist show <n> [page]` - Show songs in a playlist
         `/playlist list` - List all your playlists
         `/playlist delete <n>` - Delete a playlist
+
+        **Global Playlist Commands: (accessible from any server)**
+        `/globalplaylist create <n>` - Create a new global playlist
+        `/globalplaylist add <n> <song>` - Add a song to global playlist
+        `/globalplaylist add-from-queue <n> <from_queue>` - Add song from queue to global playlist
+        `/globalplaylist add-all-queue <n>` - Add entire queue to global playlist
+        `/globalplaylist remove <n> <position>` - Remove a song from global playlist
+        `/globalplaylist move <n> <from_pos> <to_pos>` - Move song in global playlist
+        `/globalplaylist load <n>` - Load a global playlist into the queue
+        `/globalplaylist show <n> [page]` - Show songs in a global playlist
+        `/globalplaylist list` - List all your global playlists
+        `/globalplaylist delete <n>` - Delete a global playlist
 
         **Settings:**
         `/setmusicchannel` - Set the channel for music messages
