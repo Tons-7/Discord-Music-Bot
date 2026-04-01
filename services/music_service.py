@@ -106,10 +106,9 @@ class MusicService:
                             logger.warning(f"Attempt {attempt + 1} failed: {e}")
                             if attempt < 1:
                                 await asyncio.sleep(1)
+                    return None
             else:
-                data = await self.search_youtube(url_or_query)
-
-            return data
+                return await self.search_youtube(url_or_query)
         except Exception as e:
             logger.error(f"Error getting song info: {e}")
         return None
@@ -220,10 +219,14 @@ class MusicService:
         if not self.bot.spotify:
             return None
 
+        loop = asyncio.get_running_loop()
+
         try:
             if "track/" in url:
                 track_id = url.split("track/")[-1].split("?")[0]
-                track = self.bot.spotify.track(track_id)
+                track = await loop.run_in_executor(
+                    self.bot.executor, lambda: self.bot.spotify.track(track_id)
+                )
                 search_query = self._spotify_search_query(track)
                 if not search_query:
                     return None
@@ -231,8 +234,12 @@ class MusicService:
 
             elif "playlist/" in url:
                 playlist_id = url.split("playlist/")[-1].split("?")[0]
-                first_page = self.bot.spotify.playlist_tracks(playlist_id)
-                all_tracks = self._collect_spotify_tracks(first_page, is_playlist=True)
+                first_page = await loop.run_in_executor(
+                    self.bot.executor, lambda: self.bot.spotify.playlist_tracks(playlist_id)
+                )
+                all_tracks = await loop.run_in_executor(
+                    self.bot.executor, lambda: self._collect_spotify_tracks(first_page, is_playlist=True)
+                )
                 songs = []
                 for track in all_tracks:
                     search_query = self._spotify_search_query(track)
@@ -246,8 +253,12 @@ class MusicService:
 
             elif "album/" in url:
                 album_id = url.split("album/")[-1].split("?")[0]
-                first_page = self.bot.spotify.album_tracks(album_id)
-                all_tracks = self._collect_spotify_tracks(first_page, is_playlist=False)
+                first_page = await loop.run_in_executor(
+                    self.bot.executor, lambda: self.bot.spotify.album_tracks(album_id)
+                )
+                all_tracks = await loop.run_in_executor(
+                    self.bot.executor, lambda: self._collect_spotify_tracks(first_page, is_playlist=False)
+                )
                 songs = []
                 for track in all_tracks:
                     search_query = self._spotify_search_query(track)
