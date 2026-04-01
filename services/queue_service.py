@@ -136,9 +136,6 @@ class QueueService:
         guild_data = self.bot.get_guild_data(guild_id)
         guild_data["loop_mode"] = mode
 
-        if mode == "queue":
-            self.sync_loop_backup(guild_id)
-
     def add_song_to_queue(self, guild_id: int, song: Song):
         guild_data = self.bot.get_guild_data(guild_id)
         guild_data["queue"].append(song)
