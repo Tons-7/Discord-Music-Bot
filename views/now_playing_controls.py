@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 import discord
 
 from utils.ban_system import is_banned
+from config import COLOR
+from utils.helpers import create_embed
 
 if TYPE_CHECKING:
     from cogs.music_commands import MusicCommands
@@ -22,8 +24,8 @@ class NowPlayingControls(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if is_banned(interaction.user.id):
             await interaction.response.send_message(
-                "You are banned from using this bot.",
-                ephemeral=True
+                embed=create_embed("Access Denied", "You are banned from using this bot.", COLOR, self.bot.user),
+                ephemeral=True,
             )
             return False
 
@@ -31,22 +33,22 @@ class NowPlayingControls(discord.ui.View):
 
         if not interaction.user.voice:
             await interaction.response.send_message(
-                "You must be in a voice channel to use these controls!",
-                ephemeral=True
+                embed=create_embed("Error", "You must be in a voice channel to use these controls!", COLOR, self.bot.user),
+                ephemeral=True,
             )
             return False
 
         if not guild_data.get("voice_client"):
             await interaction.response.send_message(
-                "Bot is not connected to voice!",
-                ephemeral=True
+                embed=create_embed("Error", "Bot is not connected to voice!", COLOR, self.bot.user),
+                ephemeral=True,
             )
             return False
 
         if guild_data["voice_client"].channel != interaction.user.voice.channel:
             await interaction.response.send_message(
-                f"You must be in the same voice channel as the bot!",
-                ephemeral=True
+                embed=create_embed("Error", "You must be in the same voice channel as the bot!", COLOR, self.bot.user),
+                ephemeral=True,
             )
             return False
 
