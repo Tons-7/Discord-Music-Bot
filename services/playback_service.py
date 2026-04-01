@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 class PlaybackService:
     def __init__(self, bot):
         self.bot = bot
+        self.queue_service = QueueService(bot)
+        self.music_service = MusicService(bot)
 
     def handle_pause(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
@@ -31,10 +33,10 @@ class PlaybackService:
     def handle_resume(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
         if guild_data["voice_client"] and guild_data["voice_client"].is_paused():
-            if "pause_position" in guild_data:
+            if guild_data.get("pause_position") is not None:
                 guild_data["seek_offset"] = guild_data["pause_position"]
                 guild_data["start_time"] = datetime.now()
-                del guild_data["pause_position"]
+                guild_data["pause_position"] = None
             guild_data["voice_client"].resume()
             return True
         return False
@@ -53,7 +55,7 @@ class PlaybackService:
             return guild_data["seek_offset"]
 
         if voice_client.is_paused():
-            if "pause_position" in guild_data:
+            if guild_data.get("pause_position") is not None:
                 return guild_data["pause_position"]
             elapsed = int((datetime.now() - guild_data["start_time"]).total_seconds())
             return elapsed + guild_data["seek_offset"]
@@ -183,41 +185,45 @@ class PlaybackService:
         except discord.HTTPException:
             return False
 
-    def _build_timestamp_embed(self, guild_data: dict, current_position: int, is_paused: bool) -> discord.Embed:
+    def _build_now_playing_description(
+            self, guild_data: dict, current_position: int, is_paused: bool
+    ) -> tuple:
+        """Shared description builder used by both the initial embed and 1-second updates."""
         current = guild_data["current"]
-
         progress = build_progress_bar(current_position, current.duration)
+        voice_client = guild_data.get("voice_client")
 
         if is_paused:
-            status = "Paused"
-            status_emoji = "\u23f8\ufe0f"
+            status, status_emoji = "Paused", "\u23f8\ufe0f"
+        elif not voice_client or not voice_client.is_playing():
+            status, status_emoji = "Stopped", "\u23f9\ufe0f"
         else:
-            status = "Playing"
-            status_emoji = "\U0001f3b5"
+            status, status_emoji = "Playing", "\U0001f3b5"
 
-        embed = discord.Embed(
-            title=f"{status_emoji} Now {status}",
-            description=(
-                f"**{current.title}**\n"
-                f"*by {current.uploader}*\n\n"
-                f"`{format_duration(current_position)} {progress} {format_duration(current.duration)}`\n\n"
-                f"\U0001f50a Volume: {guild_data['volume']}%\n"
-                f"\U0001f501 Loop: {guild_data['loop_mode'].title()}\n"
-                f"\U0001f500 Shuffle: {'On' if guild_data['shuffle'] else 'Off'}\n"
-                f"Autoplay: {'Enabled' if guild_data['autoplay'] else 'Disabled'}\n"
-                f"\U0001f464 Requested by: {current.requested_by}\n"
-                f"\U0001f4cb Queue length: {len(guild_data['queue'])}"
-            ),
-            color=COLOR,
+        title = f"{status_emoji} Now {status}"
+        description = (
+            f"**{current.title}**\n"
+            f"*by {current.uploader}*\n\n"
+            f"`{format_duration(current_position)} {progress} {format_duration(current.duration)}`\n\n"
+            f"\U0001f50a Volume: {guild_data['volume']}%\n"
+            f"\U0001f501 Loop: {guild_data['loop_mode'].title()}\n"
+            f"\U0001f500 Shuffle: {'On' if guild_data['shuffle'] else 'Off'}\n"
+            f"Autoplay: {'Enabled' if guild_data['autoplay'] else 'Disabled'}\n"
+            f"\U0001f464 Requested by: {current.requested_by}\n"
+            f"\U0001f4cb Queue length: {len(guild_data['queue'])}"
         )
+        return title, description
+
+    def _build_timestamp_embed(self, guild_data: dict, current_position: int, is_paused: bool) -> discord.Embed:
+        current = guild_data["current"]
+        title, description = self._build_now_playing_description(guild_data, current_position, is_paused)
+        embed = discord.Embed(title=title, description=description, color=COLOR)
         embed.set_footer(
             text="Music Bot",
             icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None,
         )
-
         if current.thumbnail:
             embed.set_thumbnail(url=current.thumbnail)
-
         return embed
 
     @staticmethod
@@ -233,7 +239,7 @@ class PlaybackService:
             logger.warning(f"Unexpected message edit error: {e}")
 
     async def play_next(self, guild_id: int):
-        queue_service = QueueService(self.bot)
+        queue_service = self.queue_service
 
         guild_data = self.bot.get_guild_data(guild_id)
 
@@ -328,7 +334,7 @@ class PlaybackService:
         return False
 
     async def _start_playback(self, guild_id: int, song: Song) -> bool:
-        queue_service = QueueService(self.bot)
+        queue_service = self.queue_service
 
         guild_data = self.bot.get_guild_data(guild_id)
 
@@ -405,15 +411,14 @@ class PlaybackService:
             return False
 
     async def _handle_empty_queue(self, guild_id: int) -> bool:
-        queue_service = QueueService(self.bot)
+        queue_service = self.queue_service
         guild_data = self.bot.get_guild_data(guild_id)
 
         if guild_data.get("autoplay", False) and guild_data.get("current"):
             logger.info(f"Autoplay enabled for guild {guild_id}, checking for pre-fetched song...")
 
             try:
-                music_service = MusicService(self.bot)
-
+                music_service = self.music_service
                 history = guild_data.get("history", [])
                 recent_titles = {
                     self._normalize_title(h.title) for h in history[-10:]
@@ -546,7 +551,7 @@ class PlaybackService:
         return normalized
 
     async def _handle_song_skip(self, guild_id: int, song: Song):
-        queue_service = QueueService(self.bot)
+        queue_service = self.queue_service
 
         guild_data = self.bot.get_guild_data(guild_id)
 
@@ -610,7 +615,7 @@ class PlaybackService:
         try:
             logger.info(f"Starting autoplay pre-fetch for guild {guild_id}: '{current_song.title}'")
 
-            music_service = MusicService(self.bot)
+            music_service = self.music_service
 
             existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
             history = guild_data.get("history", [])
