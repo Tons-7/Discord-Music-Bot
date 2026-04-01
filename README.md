@@ -37,6 +37,6 @@ This bot uses **environment variables** for secrets:
 2. Install the libraries in requirements.txt by doing `pip install -r requirements.txt`
 3. Execute main.py
 
-# License
+# Disclaimer
 
 This bot is only for personal use
