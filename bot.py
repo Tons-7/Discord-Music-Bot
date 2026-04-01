@@ -144,6 +144,10 @@ class MusicBot(commands.Bot):
             self.lastfm = None
             logger.warning(f"Last.fm setup failed: {e}")
 
+        # Shared service instances — avoids re-allocating on every call/task tick
+        self._music_service = MusicService(self)
+        self._playback_service = PlaybackService(self)
+
     @staticmethod
     def init_database():
         try:
@@ -185,6 +189,20 @@ class MusicBot(commands.Bot):
 
             cursor.execute(
                 """
+                CREATE TABLE IF NOT EXISTS global_playlists
+                (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id    INTEGER NOT NULL,
+                    name       TEXT    NOT NULL,
+                    songs      TEXT    NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (user_id, name)
+                )
+                """
+            )
+
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS guild_settings
                 (
                     guild_id
@@ -205,6 +223,18 @@ class MusicBot(commands.Bot):
                     TEXT
                 )
                 """
+            )
+
+            # Deduplicate before creating the index — safe migration for existing data.
+            # If the DB already contains duplicate (user_id, guild_id, name) rows (possible before this index existed)
+            cursor.execute(
+                "DELETE FROM playlists WHERE id NOT IN "
+                "(SELECT MIN(id) FROM playlists GROUP BY user_id, guild_id, name)"
+            )
+            # Enforce uniqueness at the DB level (prevents race-condition duplicates)
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique "
+                "ON playlists (user_id, guild_id, name)"
             )
 
             conn.commit()
@@ -278,12 +308,21 @@ class MusicBot(commands.Bot):
             }
         return self.guilds_data[guild_id]
 
+    def cancel_autoplay(self, guild_data: Dict):
+        guild_data["autoplay"] = False
+        prefetch_task = guild_data.get("autoplay_prefetch_task")
+        if prefetch_task and not prefetch_task.done():
+            prefetch_task.cancel()
+        guild_data["autoplay_prefetch"] = None
+        guild_data["autoplay_prefetch_task"] = None
+
     async def save_guild_music_channel(self, guild_id: int, channel_id: int):
         try:
             await self.execute_db_query(
                 """
-                INSERT OR REPLACE INTO guild_settings (guild_id, music_channel_id)
+                INSERT INTO guild_settings (guild_id, music_channel_id)
                 VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET music_channel_id = excluded.music_channel_id
             """,
                 (guild_id, channel_id),
             )
@@ -333,12 +372,7 @@ class MusicBot(commands.Bot):
         if before.channel and not after.channel:
             logger.warning(f"Bot disconnected from voice in guild {guild_id}")
 
-            guild_data["autoplay"] = False
-            prefetch_task = guild_data.get("autoplay_prefetch_task")
-            if prefetch_task and not prefetch_task.done():
-                prefetch_task.cancel()
-            guild_data["autoplay_prefetch"] = None
-            guild_data["autoplay_prefetch_task"] = None
+            self.cancel_autoplay(guild_data)
 
             had_current_song = guild_data.get("current") is not None
             had_queue = len(guild_data.get("queue", [])) > 0
@@ -425,7 +459,7 @@ class MusicBot(commands.Bot):
                 guild_data["voice_client"].stop()
                 await asyncio.sleep(0.5)
 
-            playback_service = PlaybackService(self)
+            playback_service = self._playback_service
 
             if guild_data.get("current"):
                 current_song = guild_data["current"]
@@ -526,8 +560,7 @@ class MusicBot(commands.Bot):
 
     @tasks.loop(seconds=1)
     async def update_now_playing_timestamps(self):
-        playback_service = PlaybackService(self)
-        await playback_service.update_timestamps_task()
+        await self._playback_service.update_timestamps_task()
 
     @tasks.loop(minutes=5)
     async def cleanup_validation_cache(self):
@@ -569,10 +602,8 @@ class MusicBot(commands.Bot):
                     if has_current and not is_playing and not is_paused and not is_seeking:
                         logger.warning(f"Detected stalled playback in guild: {guild_name} ({guild_id})")
 
-                        playback_service = PlaybackService(self)
-
                         guild_data["current"] = None
-                        await playback_service.play_next(guild_id)
+                        await self._playback_service.play_next(guild_id)
                 else:
                     if guild_data.get("current") or guild_data.get("queue"):
                         logger.warning(
@@ -634,30 +665,32 @@ class MusicBot(commands.Bot):
             self._delayed_save_guild_queue(guild_id)
         )
 
+    def _serialize_guild_queue(self, guild_data: Dict) -> str:
+        queue_data = {
+            "queue": [song.to_dict() for song in guild_data["queue"]],
+            "loop_backup": [song.to_dict() for song in guild_data["loop_backup"]],
+            "history": [song.to_dict() for song in guild_data["history"]],
+            "history_position": guild_data.get(
+                "history_position", len(guild_data["history"])
+            ),
+            "loop_mode": guild_data["loop_mode"],
+            "shuffle": guild_data["shuffle"],
+            "volume": guild_data["volume"],
+        }
+        return json.dumps(queue_data)
+
     async def _delayed_save_guild_queue(self, guild_id: int):
         await asyncio.sleep(1)
 
         try:
             guild_data = self.get_guild_data(guild_id)
 
-            queue_data = {
-                "queue": [song.to_dict() for song in guild_data["queue"]],
-                "loop_backup": [song.to_dict() for song in guild_data["loop_backup"]],
-                "history": [song.to_dict() for song in guild_data["history"]],
-                "history_position": guild_data.get(
-                    "history_position", len(guild_data["history"])
-                ),
-                "loop_mode": guild_data["loop_mode"],
-                "shuffle": guild_data["shuffle"],
-                "volume": guild_data["volume"],
-            }
-
             await self.execute_db_query(
                 """
                 INSERT OR REPLACE INTO guild_settings (guild_id, queue_data, music_channel_id)
                 VALUES (?, ?, ?)
             """,
-                (guild_id, json.dumps(queue_data), guild_data.get("music_channel_id")),
+                (guild_id, self._serialize_guild_queue(guild_data), guild_data.get("music_channel_id")),
             )
 
         except Exception as e:
@@ -670,12 +703,7 @@ class MusicBot(commands.Bot):
         try:
             guild_data = self.get_guild_data(guild_id)
 
-            guild_data["autoplay"] = False
-            prefetch_task = guild_data.get("autoplay_prefetch_task")
-            if prefetch_task and not prefetch_task.done():
-                prefetch_task.cancel()
-            guild_data["autoplay_prefetch"] = None
-            guild_data["autoplay_prefetch_task"] = None
+            self.cancel_autoplay(guild_data)
 
             queue_data = {
                 "queue": [],
@@ -701,12 +729,10 @@ class MusicBot(commands.Bot):
             logger.error(f"Failed to clear guild queue from database: {e}")
 
     async def get_song_info_cached(self, url_or_query: str) -> Optional[Dict]:
-        music_service = MusicService(self)
-        return await music_service.get_song_info_cached(url_or_query)
+        return await self._music_service.get_song_info_cached(url_or_query)
 
     async def get_song_info(self, url_or_query: str) -> Optional[Dict]:
-        music_service = MusicService(self)
-        return await music_service.get_song_info(url_or_query)
+        return await self._music_service.get_song_info(url_or_query)
 
     async def close(self):
         logger.info("Shutting down bot...")
@@ -719,23 +745,12 @@ class MusicBot(commands.Bot):
                 guild_data["autoplay"] = False
 
                 if guild_data.get("queue") or guild_data.get("current") or guild_data.get("loop_backup"):
-                    queue_data = {
-                        "queue": [song.to_dict() for song in guild_data["queue"]],
-                        "loop_backup": [song.to_dict() for song in guild_data["loop_backup"]],
-                        "history": [song.to_dict() for song in guild_data["history"]],
-                        "history_position": guild_data.get(
-                            "history_position", len(guild_data["history"])
-                        ),
-                        "loop_mode": guild_data["loop_mode"],
-                        "shuffle": guild_data["shuffle"],
-                        "volume": guild_data["volume"],
-                    }
                     await self.execute_db_query(
                         """
                         INSERT OR REPLACE INTO guild_settings (guild_id, queue_data, music_channel_id)
                         VALUES (?, ?, ?)
                     """,
-                        (guild_id, json.dumps(queue_data), guild_data.get("music_channel_id")),
+                        (guild_id, self._serialize_guild_queue(guild_data), guild_data.get("music_channel_id")),
                     )
             except Exception as e:
                 logger.error(f"Failed to save queue for guild {guild_id} on shutdown: {e}")
