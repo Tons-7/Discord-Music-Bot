@@ -8,9 +8,6 @@ from discord.ext import commands
 
 from config import COLOR, MAX_PLAYLIST_SIZE, SONGS_PER_PAGE
 from models.song import Song
-from services.music_service import MusicService
-from services.playback_service import PlaybackService
-from services.queue_service import QueueService
 from utils.helpers import get_existing_urls, interaction_check, create_embed
 from views.pagination import PaginationView
 
@@ -20,8 +17,74 @@ logger = logging.getLogger(__name__)
 class PlaylistCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.queue_service = QueueService(bot)
+        self.queue_service = bot._playback_service.queue_service
+        self.music_service = bot._music_service
         super().__init__()
+
+    # ── DB helpers ──────────────────────────────────────────────────────
+
+    async def _playlist_exists(self, user_id: int, name: str, guild_id: int = None) -> bool:
+        if guild_id is not None:
+            result = await self.bot.fetch_db_query(
+                "SELECT id FROM playlists WHERE user_id = ? AND guild_id = ? AND name = ?",
+                (user_id, guild_id, name),
+            )
+        else:
+            result = await self.bot.fetch_db_query(
+                "SELECT id FROM global_playlists WHERE user_id = ? AND name = ?",
+                (user_id, name),
+            )
+        return bool(result)
+
+    async def _create_playlist_row(self, user_id: int, name: str, guild_id: int = None):
+        if guild_id is not None:
+            await self.bot.execute_db_query(
+                "INSERT INTO playlists (user_id, guild_id, name, songs) VALUES (?, ?, ?, ?)",
+                (user_id, guild_id, name, json.dumps([])),
+            )
+        else:
+            await self.bot.execute_db_query(
+                "INSERT INTO global_playlists (user_id, name, songs) VALUES (?, ?, ?)",
+                (user_id, name, json.dumps([])),
+            )
+
+    async def _save_songs(self, user_id: int, name: str, songs: list, guild_id: int = None):
+        songs_json = json.dumps(songs)
+        if guild_id is not None:
+            await self.bot.execute_db_query(
+                "UPDATE playlists SET songs = ? WHERE user_id = ? AND guild_id = ? AND name = ?",
+                (songs_json, user_id, guild_id, name),
+            )
+        else:
+            await self.bot.execute_db_query(
+                "UPDATE global_playlists SET songs = ? WHERE user_id = ? AND name = ?",
+                (songs_json, user_id, name),
+            )
+
+    async def _delete_playlist_row(self, user_id: int, name: str, guild_id: int = None):
+        if guild_id is not None:
+            await self.bot.execute_db_query(
+                "DELETE FROM playlists WHERE user_id = ? AND guild_id = ? AND name = ?",
+                (user_id, guild_id, name),
+            )
+        else:
+            await self.bot.execute_db_query(
+                "DELETE FROM global_playlists WHERE user_id = ? AND name = ?",
+                (user_id, name),
+            )
+
+    async def _list_playlists_from_db(self, user_id: int, guild_id: int = None):
+        if guild_id is not None:
+            return await self.bot.fetch_db_query(
+                "SELECT name, songs, created_at FROM playlists WHERE user_id = ? AND guild_id = ? ORDER BY created_at DESC",
+                (user_id, guild_id),
+            )
+        return await self.bot.fetch_db_query(
+            "SELECT name, songs, created_at FROM global_playlists WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        )
+
+    # ── Shared helpers ──────────────────────────────────────────────────
 
     async def _get_music_cog(self, interaction: discord.Interaction):
         music_cog = self.bot.get_cog("MusicCommands")
@@ -38,24 +101,26 @@ class PlaylistCommands(commands.Cog):
             *,
             use_followup: bool,
             ephemeral_not_found: bool = True,
+            global_mode: bool = False,
     ) -> List[dict] | None:
 
         send = interaction.followup.send if use_followup else interaction.response.send_message
+        label = "Global playlist" if global_mode else "Playlist"
 
-        result = await self.bot.fetch_db_query(
-            """
-            SELECT songs
-            FROM playlists
-            WHERE user_id = ?
-              AND guild_id = ?
-              AND name = ?
-            """,
-            (interaction.user.id, interaction.guild.id, name),
-        )
+        if global_mode:
+            result = await self.bot.fetch_db_query(
+                "SELECT songs FROM global_playlists WHERE user_id = ? AND name = ?",
+                (interaction.user.id, name),
+            )
+        else:
+            result = await self.bot.fetch_db_query(
+                "SELECT songs FROM playlists WHERE user_id = ? AND guild_id = ? AND name = ?",
+                (interaction.user.id, interaction.guild.id, name),
+            )
 
         if not result or len(result) == 0 or len(result[0]) == 0:
             embed = create_embed(
-                "Error", f"Playlist **{name}** not found", COLOR, self.bot.user
+                "Error", f"{label} **{name}** not found", COLOR, self.bot.user
             )
             await send(embed=embed, ephemeral=ephemeral_not_found)
             return None
@@ -65,20 +130,12 @@ class PlaylistCommands(commands.Cog):
             return json.loads(songs_json) if songs_json else []
         except (json.JSONDecodeError, IndexError, KeyError) as e:
             logger.error(f"Error parsing playlist data: {e}")
-            embed = create_embed("Error", "Playlist data is corrupted", COLOR, self.bot.user)
+            embed = create_embed("Error", f"{label} data is corrupted", COLOR, self.bot.user)
             await send(embed=embed)
             return None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return await interaction_check(self, interaction)
-
-    playlist_group = discord.app_commands.Group(
-        name="playlist", description="Manage your playlists"
-    )
-
-    history_group = discord.app_commands.Group(
-        name="history", description="Manage song history"
-    )
 
     async def queue_autocomplete(
             self, interaction: discord.Interaction, current: str
@@ -110,9 +167,12 @@ class PlaylistCommands(commands.Cog):
 
         return choices[:25]
 
-    @playlist_group.command(name="create", description="Create a new empty playlist")
-    @discord.app_commands.describe(name="Name for the playlist")
-    async def playlist_create(self, interaction: discord.Interaction, name: str):
+    # ── Handler methods ─────────────────────────────────────────────────
+
+    async def _handle_create(self, interaction: discord.Interaction, name: str, global_mode: bool = False):
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
+
         if len(name) > 50:
             embed = create_embed(
                 "Error", "Playlist name must be 50 characters or less.", COLOR, self.bot.user
@@ -121,58 +181,34 @@ class PlaylistCommands(commands.Cog):
             return
 
         try:
-            existing = await self.bot.fetch_db_query(
-                """
-                SELECT id
-                FROM playlists
-                WHERE user_id = ?
-                  AND guild_id = ?
-                  AND name = ?
-                """,
-                (interaction.user.id, interaction.guild.id, name),
-            )
-
-            if existing:
+            exists = await self._playlist_exists(interaction.user.id, name, guild_id)
+            if exists:
                 embed = create_embed(
-                    "Error", f"Playlist **{name}** already exists", COLOR, self.bot.user
+                    "Error", f"{label} **{name}** already exists", COLOR, self.bot.user
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
-            await self.bot.execute_db_query(
-                """
-                INSERT INTO playlists (user_id, guild_id, name, songs)
-                VALUES (?, ?, ?, ?)
-                """,
-                (interaction.user.id, interaction.guild.id, name, json.dumps([])),
-            )
+            await self._create_playlist_row(interaction.user.id, name, guild_id)
 
             embed = create_embed(
-                "Playlist Created", f"Created empty playlist **{name}**", COLOR, self.bot.user
+                f"{label} Created", f"Created empty {label.lower()} **{name}**", COLOR, self.bot.user
             )
             await interaction.response.send_message(embed=embed, silent=True)
 
         except Exception as e:
             logger.error(f"Playlist create error: {e}")
-            embed = create_embed("Error", "Failed to create playlist.", COLOR, self.bot.user)
+            embed = create_embed("Error", f"Failed to create {label.lower()}.", COLOR, self.bot.user)
             await interaction.response.send_message(embed=embed)
 
-    @playlist_group.command(name="add", description="Add a song or playlist to a playlist")
-    @discord.app_commands.describe(
-        name="Playlist name",
-        song="Song URL, playlist URL, or search term",
-    )
-    async def playlist_add(
-            self,
-            interaction: discord.Interaction,
-            name: str,
-            song: str,
-    ):
+    async def _handle_add(self, interaction: discord.Interaction, name: str, song: str, global_mode: bool = False):
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
         await interaction.response.defer()
 
         try:
             existing_songs = await self._get_playlist_songs(
-                interaction, name, use_followup=True, ephemeral_not_found=True
+                interaction, name, use_followup=True, ephemeral_not_found=True, global_mode=global_mode
             )
             if existing_songs is None:
                 return
@@ -182,8 +218,7 @@ class PlaylistCommands(commands.Cog):
             is_spotify_album = "album" in song.lower() and "spotify.com" in song.lower()
 
             if is_youtube_playlist:
-                music_service = MusicService(self.bot)
-                youtube_songs = await music_service.handle_youtube_playlist(song)
+                youtube_songs = await self.music_service.handle_youtube_playlist(song)
 
                 if not youtube_songs:
                     embed = create_embed(
@@ -228,17 +263,7 @@ class PlaylistCommands(commands.Cog):
                     new_song.requested_by = interaction.user.mention
                     existing_songs.append(new_song.to_dict())
 
-                songs_json = json.dumps(existing_songs)
-                await self.bot.execute_db_query(
-                    """
-                    UPDATE playlists
-                    SET songs = ?
-                    WHERE user_id = ?
-                      AND guild_id = ?
-                      AND name = ?
-                    """,
-                    (songs_json, interaction.user.id, interaction.guild.id, name),
-                )
+                await self._save_songs(interaction.user.id, name, existing_songs, guild_id)
 
                 embed = create_embed(
                     "Playlist Added",
@@ -297,17 +322,7 @@ class PlaylistCommands(commands.Cog):
                     new_song.requested_by = interaction.user.mention
                     existing_songs.append(new_song.to_dict())
 
-                songs_json = json.dumps(existing_songs)
-                await self.bot.execute_db_query(
-                    """
-                    UPDATE playlists
-                    SET songs = ?
-                    WHERE user_id = ?
-                      AND guild_id = ?
-                      AND name = ?
-                    """,
-                    (songs_json, interaction.user.id, interaction.guild.id, name),
-                )
+                await self._save_songs(interaction.user.id, name, existing_songs, guild_id)
 
                 embed = create_embed(
                     "Spotify Playlist/Album Added",
@@ -347,21 +362,11 @@ class PlaylistCommands(commands.Cog):
             new_song.requested_by = interaction.user.mention
             existing_songs.append(new_song.to_dict())
 
-            songs_json = json.dumps(existing_songs)
-            await self.bot.execute_db_query(
-                """
-                UPDATE playlists
-                SET songs = ?
-                WHERE user_id = ?
-                  AND guild_id = ?
-                  AND name = ?
-                """,
-                (songs_json, interaction.user.id, interaction.guild.id, name),
-            )
+            await self._save_songs(interaction.user.id, name, existing_songs, guild_id)
 
             embed = create_embed(
                 "Song Added",
-                f"Added **{new_song.title}** to playlist **{name}**",
+                f"Added **{new_song.title}** to {label.lower()} **{name}**",
                 COLOR,
                 self.bot.user
             )
@@ -369,26 +374,19 @@ class PlaylistCommands(commands.Cog):
 
         except Exception as e:
             logger.error(f"Playlist add error: {e}")
-            embed = create_embed("Error", "Failed to add to playlist.", COLOR, self.bot.user)
+            embed = create_embed("Error", f"Failed to add to {label.lower()}.", COLOR, self.bot.user)
             await interaction.followup.send(embed=embed)
 
-    @playlist_group.command(name="add-from-queue", description="Add a song from the current queue to a playlist")
-    @discord.app_commands.describe(
-        name="Playlist name",
-        from_queue="Song from current session to add",
-    )
-    @discord.app_commands.autocomplete(from_queue=queue_autocomplete)
-    async def playlist_add_from_queue(
-            self,
-            interaction: discord.Interaction,
-            name: str,
-            from_queue: str,
+    async def _handle_add_from_queue(
+            self, interaction: discord.Interaction, name: str, from_queue: str, global_mode: bool = False
     ):
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
         await interaction.response.defer()
 
         try:
             existing_songs = await self._get_playlist_songs(
-                interaction, name, use_followup=True, ephemeral_not_found=True
+                interaction, name, use_followup=True, ephemeral_not_found=True, global_mode=global_mode
             )
             if existing_songs is None:
                 return
@@ -434,21 +432,11 @@ class PlaylistCommands(commands.Cog):
             song_copy.requested_by = interaction.user.mention
             existing_songs.append(song_copy.to_dict())
 
-            songs_json = json.dumps(existing_songs)
-            await self.bot.execute_db_query(
-                """
-                UPDATE playlists
-                SET songs = ?
-                WHERE user_id = ?
-                  AND guild_id = ?
-                  AND name = ?
-                """,
-                (songs_json, interaction.user.id, interaction.guild.id, name),
-            )
+            await self._save_songs(interaction.user.id, name, existing_songs, guild_id)
 
             embed = create_embed(
                 "Song Added",
-                f"Added **{target_song.title}** to playlist **{name}**",
+                f"Added **{target_song.title}** to {label.lower()} **{name}**",
                 COLOR,
                 self.bot.user
             )
@@ -456,23 +444,17 @@ class PlaylistCommands(commands.Cog):
 
         except Exception as e:
             logger.error(f"Playlist add from queue error: {e}")
-            embed = create_embed("Error", "Failed to add to playlist.", COLOR, self.bot.user)
+            embed = create_embed("Error", f"Failed to add to {label.lower()}.", COLOR, self.bot.user)
             await interaction.followup.send(embed=embed)
 
-    @playlist_group.command(name="add-all-queue", description="Add entire current queue to a playlist")
-    @discord.app_commands.describe(
-        name="Playlist name",
-    )
-    async def playlist_add_session(
-            self,
-            interaction: discord.Interaction,
-            name: str,
-    ):
+    async def _handle_add_session(self, interaction: discord.Interaction, name: str, global_mode: bool = False):
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
         await interaction.response.defer()
 
         try:
             existing_songs = await self._get_playlist_songs(
-                interaction, name, use_followup=True, ephemeral_not_found=True
+                interaction, name, use_followup=True, ephemeral_not_found=True, global_mode=global_mode
             )
             if existing_songs is None:
                 return
@@ -517,7 +499,7 @@ class PlaylistCommands(commands.Cog):
             if not songs_to_add:
                 embed = create_embed(
                     "Error",
-                    "All songs from current session are already in the playlist",
+                    f"All songs from current session are already in the {label.lower()}",
                     COLOR,
                     self.bot.user
                 )
@@ -529,14 +511,14 @@ class PlaylistCommands(commands.Cog):
                 songs_to_add = songs_to_add[:max_can_add]
                 embed = create_embed(
                     "Partial Add",
-                    f"Added {len(songs_to_add)} songs to playlist **{name}**\n(Playlist size limit reached)",
+                    f"Added {len(songs_to_add)} songs to {label.lower()} **{name}**\n({label} size limit reached)",
                     COLOR,
                     self.bot.user
                 )
             else:
                 embed = create_embed(
                     "Session Added",
-                    f"Added {len(songs_to_add)} songs from current session to playlist **{name}**",
+                    f"Added {len(songs_to_add)} songs from current session to {label.lower()} **{name}**",
                     COLOR,
                     self.bot.user
                 )
@@ -546,48 +528,37 @@ class PlaylistCommands(commands.Cog):
 
             existing_songs.extend(songs_to_add)
 
-            songs_json = json.dumps(existing_songs)
-            await self.bot.execute_db_query(
-                """
-                UPDATE playlists
-                SET songs = ?
-                WHERE user_id = ?
-                  AND guild_id = ?
-                  AND name = ?
-                """,
-                (songs_json, interaction.user.id, interaction.guild.id, name),
-            )
+            await self._save_songs(interaction.user.id, name, existing_songs, guild_id)
 
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
             logger.error(f"Playlist add session error: {e}")
-            embed = create_embed("Error", "Failed to add session to playlist.", COLOR, self.bot.user)
+            embed = create_embed("Error", f"Failed to add session to {label.lower()}.", COLOR, self.bot.user)
             await interaction.followup.send(embed=embed)
 
-    @playlist_group.command(name="remove", description="Remove a song from a playlist")
-    @discord.app_commands.describe(
-        name="Playlist name", position="Position of song to remove (1-based)"
-    )
-    async def playlist_remove(
-            self, interaction: discord.Interaction, name: str, position: int
+    async def _handle_remove(
+            self, interaction: discord.Interaction, name: str, position: int, global_mode: bool = False
     ):
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
+
         try:
             playlist_items = await self._get_playlist_songs(
-                interaction, name, use_followup=False, ephemeral_not_found=True
+                interaction, name, use_followup=False, ephemeral_not_found=True, global_mode=global_mode
             )
             if playlist_items is None:
                 return
 
             if not playlist_items:
-                embed = create_embed("Error", "Playlist is empty", COLOR, self.bot.user)
+                embed = create_embed("Error", f"{label} is empty", COLOR, self.bot.user)
                 await interaction.response.send_message(embed=embed)
                 return
 
             if position < 1 or position > len(playlist_items):
                 embed = create_embed(
                     "Error",
-                    f"Invalid position! Playlist has {len(playlist_items)} songs.",
+                    f"Invalid position! {label} has {len(playlist_items)} songs.",
                     COLOR,
                     self.bot.user
                 )
@@ -596,21 +567,11 @@ class PlaylistCommands(commands.Cog):
 
             removed_song = playlist_items.pop(position - 1)
 
-            songs_json = json.dumps(playlist_items)
-            await self.bot.execute_db_query(
-                """
-                UPDATE playlists
-                SET songs = ?
-                WHERE user_id = ?
-                  AND guild_id = ?
-                  AND name = ?
-                """,
-                (songs_json, interaction.user.id, interaction.guild.id, name),
-            )
+            await self._save_songs(interaction.user.id, name, playlist_items, guild_id)
 
             embed = create_embed(
                 "Song Removed",
-                f"Removed **{removed_song.get('title', 'Unknown')}** from playlist **{name}**",
+                f"Removed **{removed_song.get('title', 'Unknown')}** from {label.lower()} **{name}**",
                 COLOR,
                 self.bot.user
             )
@@ -619,32 +580,30 @@ class PlaylistCommands(commands.Cog):
         except Exception as e:
             logger.error(f"Playlist remove error: {e}")
             embed = create_embed(
-                "Error", "Failed to remove song from playlist.", COLOR, self.bot.user
+                "Error", f"Failed to remove song from {label.lower()}.", COLOR, self.bot.user
             )
             await interaction.response.send_message(embed=embed)
 
-    @playlist_group.command(name="move", description="Move a song to a different position in a playlist")
-    @discord.app_commands.describe(
-        name="Playlist name",
-        from_pos="Current position of the song (1-based)",
-        to_pos="New position for the song (1-based)",
-    )
-    async def playlist_move(
+    async def _handle_move(
             self,
             interaction: discord.Interaction,
             name: str,
             from_pos: int,
             to_pos: int,
+            global_mode: bool = False,
     ):
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
+
         try:
             playlist_items = await self._get_playlist_songs(
-                interaction, name, use_followup=False, ephemeral_not_found=True
+                interaction, name, use_followup=False, ephemeral_not_found=True, global_mode=global_mode
             )
             if playlist_items is None:
                 return
 
             if not playlist_items:
-                embed = create_embed("Error", "Playlist is empty", COLOR, self.bot.user)
+                embed = create_embed("Error", f"{label} is empty", COLOR, self.bot.user)
                 await interaction.response.send_message(embed=embed)
                 return
 
@@ -657,7 +616,7 @@ class PlaylistCommands(commands.Cog):
             ):
                 embed = create_embed(
                     "Error",
-                    f"Invalid position! Playlist has {length} songs.",
+                    f"Invalid position! {label} has {length} songs.",
                     COLOR,
                     self.bot.user
                 )
@@ -670,22 +629,12 @@ class PlaylistCommands(commands.Cog):
             song = playlist_items.pop(from_index)
             playlist_items.insert(to_index, song)
 
-            songs_json = json.dumps(playlist_items)
-            await self.bot.execute_db_query(
-                """
-                UPDATE playlists
-                SET songs = ?
-                WHERE user_id = ?
-                  AND guild_id = ?
-                  AND name = ?
-                """,
-                (songs_json, interaction.user.id, interaction.guild.id, name),
-            )
+            await self._save_songs(interaction.user.id, name, playlist_items, guild_id)
 
             title = song.get("title") or "Unknown"
             embed = create_embed(
                 "Song Moved",
-                f"Moved **{title}**\nFrom position {from_pos} to position {to_pos} in playlist **{name}**",
+                f"Moved **{title}**\nFrom position {from_pos} to position {to_pos} in {label.lower()} **{name}**",
                 COLOR,
                 self.bot.user
             )
@@ -694,13 +643,13 @@ class PlaylistCommands(commands.Cog):
         except Exception as e:
             logger.error(f"Playlist move error: {e}")
             embed = create_embed(
-                "Error", "Failed to move song in playlist.", COLOR, self.bot.user
+                "Error", f"Failed to move song in {label.lower()}.", COLOR, self.bot.user
             )
             await interaction.response.send_message(embed=embed)
 
-    @playlist_group.command(name="load", description="Load a playlist into the queue")
-    @discord.app_commands.describe(name="Playlist name")
-    async def playlist_load(self, interaction: discord.Interaction, name: str):
+    async def _handle_load(self, interaction: discord.Interaction, name: str, global_mode: bool = False):
+        label = "Global playlist" if global_mode else "Playlist"
+
         music_cog = await self._get_music_cog(interaction)
         if not music_cog:
             return
@@ -710,14 +659,14 @@ class PlaylistCommands(commands.Cog):
 
         try:
             playlist_items = await self._get_playlist_songs(
-                interaction, name, use_followup=False, ephemeral_not_found=True
+                interaction, name, use_followup=False, ephemeral_not_found=True, global_mode=global_mode
             )
             if playlist_items is None:
                 return
 
             if not playlist_items:
                 embed = create_embed(
-                    "Error", f"Playlist **{name}** is empty", COLOR, self.bot.user
+                    "Error", f"{label} **{name}** is empty", COLOR, self.bot.user
                 )
                 await interaction.response.send_message(embed=embed)
                 return
@@ -726,9 +675,8 @@ class PlaylistCommands(commands.Cog):
 
             if not guild_data.get("music_channel_id"):
                 guild_data["music_channel_id"] = interaction.channel.id
-                await self.bot.execute_db_query(
-                    "INSERT OR REPLACE INTO guild_settings (guild_id, music_channel_id) VALUES (?, ?)",
-                    (interaction.guild.id, interaction.channel.id)
+                await self.bot.save_guild_music_channel(
+                    interaction.guild.id, interaction.channel.id
                 )
 
             if not await music_cog.ensure_voice_connection(interaction):
@@ -764,21 +712,21 @@ class PlaylistCommands(commands.Cog):
 
             if loaded_count == 0:
                 embed = create_embed(
-                    "Error", "No valid songs found in playlist", COLOR, self.bot.user
+                    "Error", f"No valid songs found in {label.lower()}", COLOR, self.bot.user
                 )
                 await interaction.response.send_message(embed=embed)
                 return
 
             skip_note = f"\n({skipped_count} duplicate{'s' if skipped_count != 1 else ''} skipped)" if skipped_count > 0 else ""
             embed = create_embed(
-                "Playlist Loaded",
+                f"{label} Loaded",
                 f"Loaded **{name}** with {loaded_count} songs{skip_note}",
                 COLOR,
                 self.bot.user
             )
             await interaction.response.send_message(embed=embed, silent=True)
 
-            playback_service = PlaybackService(self.bot)
+            playback_service = self.bot._playback_service
 
             if (
                     not guild_data["voice_client"].is_playing()
@@ -791,22 +739,24 @@ class PlaylistCommands(commands.Cog):
 
         except Exception as e:
             logger.error(f"Playlist load error: {e}")
-            embed = create_embed("Error", "Failed to load playlist.", COLOR, self.bot.user)
+            embed = create_embed("Error", f"Failed to load {label.lower()}.", COLOR, self.bot.user)
             await interaction.response.send_message(embed=embed)
 
-    @playlist_group.command(name="show", description="Show songs in a playlist")
-    @discord.app_commands.describe(name="Playlist name", page="Page number to view (optional)")
-    async def playlist_show(self, interaction: discord.Interaction, name: str, page: int = 1):
+    async def _handle_show(
+            self, interaction: discord.Interaction, name: str, page: int = 1, global_mode: bool = False
+    ):
+        label = "Global Playlist" if global_mode else "Playlist"
+
         try:
             playlist_items = await self._get_playlist_songs(
-                interaction, name, use_followup=False, ephemeral_not_found=True
+                interaction, name, use_followup=False, ephemeral_not_found=True, global_mode=global_mode
             )
             if playlist_items is None:
                 return
 
             if not playlist_items:
                 embed = create_embed(
-                    f"Playlist: {name}", "Playlist is empty", COLOR, self.bot.user
+                    f"{label}: {name}", f"{label} is empty", COLOR, self.bot.user
                 )
                 await interaction.response.send_message(embed=embed, silent=True)
                 return
@@ -829,7 +779,7 @@ class PlaylistCommands(commands.Cog):
                     description += f"`{i}.` **{title}** by {uploader}\n"
 
                 embed = create_embed(
-                    f"Playlist: {name} - Page {page_num + 1}/{total_pages}",
+                    f"{label}: {name} - Page {page_num + 1}/{total_pages}",
                     description[:4000],
                     COLOR,
                     self.bot.user
@@ -849,38 +799,30 @@ class PlaylistCommands(commands.Cog):
 
         except Exception as e:
             logger.error(f"Playlist show error: {e}")
-            embed = create_embed("Error", "Failed to show playlist.", COLOR, self.bot.user)
+            embed = create_embed("Error", f"Failed to show {label.lower()}.", COLOR, self.bot.user)
             await interaction.response.send_message(embed=embed, silent=True)
 
-    @playlist_group.command(name="list", description="List all your playlists")
-    async def playlist_list(self, interaction: discord.Interaction):
+    async def _handle_list(self, interaction: discord.Interaction, global_mode: bool = False):
+        label = "Your Global Playlists" if global_mode else "Your Playlists"
+        guild_id = None if global_mode else interaction.guild.id
+
         try:
-            results = await self.bot.fetch_db_query(
-                """
-                SELECT name, songs, created_at
-                FROM playlists
-                WHERE user_id = ?
-                  AND guild_id = ?
-                ORDER BY created_at DESC
-                """,
-                (interaction.user.id, interaction.guild.id),
-            )
+            results = await self._list_playlists_from_db(interaction.user.id, guild_id)
 
             if not results:
-                embed = create_embed(
-                    "Your Playlists", "You don't have any saved playlists.", COLOR, self.bot.user
-                )
+                empty_msg = "You don't have any global playlists." if global_mode else "You don't have any saved playlists."
+                embed = create_embed(label, empty_msg, COLOR, self.bot.user)
             else:
                 description = ""
                 for playlist_name, songs_json, created_at in results:
                     try:
                         playlist_items = json.loads(songs_json) if songs_json else []
                         song_count = len(playlist_items)
-                        description += f"• **{playlist_name}** ({song_count} songs) - {created_at[:10]}\n"
+                        description += f"\u2022 **{playlist_name}** ({song_count} songs) - {created_at[:10]}\n"
                     except json.JSONDecodeError:
-                        description += f"• **{playlist_name}** (corrupted data) - {created_at[:10]}\n"
+                        description += f"\u2022 **{playlist_name}** (corrupted data) - {created_at[:10]}\n"
 
-                embed = create_embed("Your Playlists", description, COLOR, self.bot.user)
+                embed = create_embed(label, description, COLOR, self.bot.user)
 
             await interaction.response.send_message(embed=embed, silent=True)
 
@@ -889,48 +831,172 @@ class PlaylistCommands(commands.Cog):
             embed = create_embed("Error", "Failed to retrieve playlists.", COLOR, self.bot.user)
             await interaction.response.send_message(embed=embed, silent=True)
 
-    @playlist_group.command(name="delete", description="Delete a playlist")
-    @discord.app_commands.describe(name="Playlist name to delete")
-    async def playlist_delete(self, interaction: discord.Interaction, name: str):
-        try:
-            existing = await self.bot.fetch_db_query(
-                """
-                SELECT id
-                FROM playlists
-                WHERE user_id = ?
-                  AND guild_id = ?
-                  AND name = ?
-                """,
-                (interaction.user.id, interaction.guild.id, name),
-            )
+    async def _handle_delete(self, interaction: discord.Interaction, name: str, global_mode: bool = False):
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
 
-            if not existing:
+        try:
+            exists = await self._playlist_exists(interaction.user.id, name, guild_id)
+            if not exists:
                 embed = create_embed(
-                    "Error", f"Playlist **{name}** not found", COLOR, self.bot.user
+                    "Error", f"{label} **{name}** not found", COLOR, self.bot.user
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
-            await self.bot.execute_db_query(
-                """
-                DELETE
-                FROM playlists
-                WHERE user_id = ?
-                  AND guild_id = ?
-                  AND name = ?
-                """,
-                (interaction.user.id, interaction.guild.id, name),
-            )
+            await self._delete_playlist_row(interaction.user.id, name, guild_id)
 
             embed = create_embed(
-                "Playlist Deleted", f"Deleted playlist **{name}**.", COLOR, self.bot.user
+                f"{label} Deleted", f"Deleted {label.lower()} **{name}**.", COLOR, self.bot.user
             )
             await interaction.response.send_message(embed=embed, silent=True)
 
         except Exception as e:
             logger.error(f"Playlist delete error: {e}")
-            embed = create_embed("Error", "Failed to delete playlist.", COLOR, self.bot.user)
+            embed = create_embed("Error", f"Failed to delete {label.lower()}.", COLOR, self.bot.user)
             await interaction.response.send_message(embed=embed)
+
+    # ── Server Playlist commands ────────────────────────────────────────
+
+    playlist_group = discord.app_commands.Group(
+        name="playlist", description="Manage your server playlists"
+    )
+
+    @playlist_group.command(name="create", description="Create a new empty playlist")
+    @discord.app_commands.describe(name="Name for the playlist")
+    async def playlist_create(self, interaction: discord.Interaction, name: str):
+        await self._handle_create(interaction, name)
+
+    @playlist_group.command(name="add", description="Add a song or playlist to a playlist")
+    @discord.app_commands.describe(
+        name="Playlist name",
+        song="Song URL, playlist URL, or search term",
+    )
+    async def playlist_add(self, interaction: discord.Interaction, name: str, song: str):
+        await self._handle_add(interaction, name, song)
+
+    @playlist_group.command(name="add-from-queue", description="Add a song from the current queue to a playlist")
+    @discord.app_commands.describe(
+        name="Playlist name",
+        from_queue="Song from current session to add",
+    )
+    @discord.app_commands.autocomplete(from_queue=queue_autocomplete)
+    async def playlist_add_from_queue(self, interaction: discord.Interaction, name: str, from_queue: str):
+        await self._handle_add_from_queue(interaction, name, from_queue)
+
+    @playlist_group.command(name="add-all-queue", description="Add entire current queue to a playlist")
+    @discord.app_commands.describe(name="Playlist name")
+    async def playlist_add_session(self, interaction: discord.Interaction, name: str):
+        await self._handle_add_session(interaction, name)
+
+    @playlist_group.command(name="remove", description="Remove a song from a playlist")
+    @discord.app_commands.describe(
+        name="Playlist name", position="Position of song to remove (1-based)"
+    )
+    async def playlist_remove(self, interaction: discord.Interaction, name: str, position: int):
+        await self._handle_remove(interaction, name, position)
+
+    @playlist_group.command(name="move", description="Move a song to a different position in a playlist")
+    @discord.app_commands.describe(
+        name="Playlist name",
+        from_pos="Current position of the song (1-based)",
+        to_pos="New position for the song (1-based)",
+    )
+    async def playlist_move(self, interaction: discord.Interaction, name: str, from_pos: int, to_pos: int):
+        await self._handle_move(interaction, name, from_pos, to_pos)
+
+    @playlist_group.command(name="load", description="Load a playlist into the queue")
+    @discord.app_commands.describe(name="Playlist name")
+    async def playlist_load(self, interaction: discord.Interaction, name: str):
+        await self._handle_load(interaction, name)
+
+    @playlist_group.command(name="show", description="Show songs in a playlist")
+    @discord.app_commands.describe(name="Playlist name", page="Page number to view (optional)")
+    async def playlist_show(self, interaction: discord.Interaction, name: str, page: int = 1):
+        await self._handle_show(interaction, name, page)
+
+    @playlist_group.command(name="list", description="List all your playlists")
+    async def playlist_list(self, interaction: discord.Interaction):
+        await self._handle_list(interaction)
+
+    @playlist_group.command(name="delete", description="Delete a playlist")
+    @discord.app_commands.describe(name="Playlist name to delete")
+    async def playlist_delete(self, interaction: discord.Interaction, name: str):
+        await self._handle_delete(interaction, name)
+
+    # ── Global Playlist commands ────────────────────────────────────────
+
+    globalplaylist_group = discord.app_commands.Group(
+        name="globalplaylist", description="Manage your global playlists (accessible from any server)"
+    )
+
+    @globalplaylist_group.command(name="create", description="Create a new global playlist")
+    @discord.app_commands.describe(name="Name for the global playlist")
+    async def globalplaylist_create(self, interaction: discord.Interaction, name: str):
+        await self._handle_create(interaction, name, global_mode=True)
+
+    @globalplaylist_group.command(name="add", description="Add a song or playlist to a global playlist")
+    @discord.app_commands.describe(
+        name="Global playlist name",
+        song="Song URL, playlist URL, or search term",
+    )
+    async def globalplaylist_add(self, interaction: discord.Interaction, name: str, song: str):
+        await self._handle_add(interaction, name, song, global_mode=True)
+
+    @globalplaylist_group.command(name="add-from-queue", description="Add a song from the current queue to a global playlist")
+    @discord.app_commands.describe(
+        name="Global playlist name",
+        from_queue="Song from current session to add",
+    )
+    @discord.app_commands.autocomplete(from_queue=queue_autocomplete)
+    async def globalplaylist_add_from_queue(self, interaction: discord.Interaction, name: str, from_queue: str):
+        await self._handle_add_from_queue(interaction, name, from_queue, global_mode=True)
+
+    @globalplaylist_group.command(name="add-all-queue", description="Add entire current queue to a global playlist")
+    @discord.app_commands.describe(name="Global playlist name")
+    async def globalplaylist_add_session(self, interaction: discord.Interaction, name: str):
+        await self._handle_add_session(interaction, name, global_mode=True)
+
+    @globalplaylist_group.command(name="remove", description="Remove a song from a global playlist")
+    @discord.app_commands.describe(
+        name="Global playlist name", position="Position of song to remove (1-based)"
+    )
+    async def globalplaylist_remove(self, interaction: discord.Interaction, name: str, position: int):
+        await self._handle_remove(interaction, name, position, global_mode=True)
+
+    @globalplaylist_group.command(name="move", description="Move a song to a different position in a global playlist")
+    @discord.app_commands.describe(
+        name="Global playlist name",
+        from_pos="Current position of the song (1-based)",
+        to_pos="New position for the song (1-based)",
+    )
+    async def globalplaylist_move(self, interaction: discord.Interaction, name: str, from_pos: int, to_pos: int):
+        await self._handle_move(interaction, name, from_pos, to_pos, global_mode=True)
+
+    @globalplaylist_group.command(name="load", description="Load a global playlist into the queue")
+    @discord.app_commands.describe(name="Global playlist name")
+    async def globalplaylist_load(self, interaction: discord.Interaction, name: str):
+        await self._handle_load(interaction, name, global_mode=True)
+
+    @globalplaylist_group.command(name="show", description="Show songs in a global playlist")
+    @discord.app_commands.describe(name="Global playlist name", page="Page number to view (optional)")
+    async def globalplaylist_show(self, interaction: discord.Interaction, name: str, page: int = 1):
+        await self._handle_show(interaction, name, page, global_mode=True)
+
+    @globalplaylist_group.command(name="list", description="List all your global playlists")
+    async def globalplaylist_list(self, interaction: discord.Interaction):
+        await self._handle_list(interaction, global_mode=True)
+
+    @globalplaylist_group.command(name="delete", description="Delete a global playlist")
+    @discord.app_commands.describe(name="Global playlist name to delete")
+    async def globalplaylist_delete(self, interaction: discord.Interaction, name: str):
+        await self._handle_delete(interaction, name, global_mode=True)
+
+    # ── History commands ────────────────────────────────────────────────
+
+    history_group = discord.app_commands.Group(
+        name="history", description="Manage song history"
+    )
 
     @history_group.command(name="show", description="Show recently played songs")
     @discord.app_commands.describe(page="Page number to view (optional)")
@@ -1049,7 +1115,7 @@ class PlaylistCommands(commands.Cog):
         song_copy.requested_by = interaction.user.mention
         self.queue_service.add_song_to_queue(interaction.guild.id, song_copy)
 
-        playback_service = PlaybackService(self.bot)
+        playback_service = self.bot._playback_service
         voice_client = guild_data.get("voice_client")
 
         if (
@@ -1140,7 +1206,7 @@ class PlaylistCommands(commands.Cog):
 
         await interaction.followup.send(embed=embed, silent=True)
 
-        playback_service = PlaybackService(self.bot)
+        playback_service = self.bot._playback_service
 
         if not guild_data["voice_client"].is_playing() and not guild_data["current"]:
             await playback_service.play_next(interaction.guild.id)
