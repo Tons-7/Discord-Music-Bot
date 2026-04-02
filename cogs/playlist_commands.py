@@ -84,7 +84,97 @@ class PlaylistCommands(commands.Cog):
             (user_id,),
         )
 
-    # ── Shared helpers ──────────────────────────────────────────────────
+    # Collaborative helpers
+
+    async def _get_playlist_id_and_owner(
+            self, name: str, user_id: int, guild_id: int = None, *, collab_only: bool = False
+    ) -> tuple[int | None, int | None]:
+        """Return (playlist_id, owner_id) for a playlist the user owns OR collaborates on.
+        If collab_only=True, skip the ownership check — only search collab access."""
+        is_global = guild_id is None
+
+        # Check if user owns it (unless caller wants collab-only)
+        if not collab_only:
+            pid = await self.bot.get_playlist_id(user_id, name, guild_id)
+            if pid is not None:
+                return pid, user_id
+
+        # Search for a playlist with this name where user is a collaborator
+        if is_global:
+            rows = await self.bot.fetch_db_query(
+                "SELECT gp.id, gp.user_id FROM global_playlists gp "
+                "JOIN playlist_collaborators pc ON pc.playlist_id = gp.id AND pc.is_global = 1 "
+                "WHERE gp.name = ? AND pc.user_id = ?",
+                (name, user_id),
+            )
+        else:
+            rows = await self.bot.fetch_db_query(
+                "SELECT p.id, p.user_id FROM playlists p "
+                "JOIN playlist_collaborators pc ON pc.playlist_id = p.id AND pc.is_global = 0 "
+                "WHERE p.name = ? AND p.guild_id = ? AND pc.user_id = ?",
+                (name, guild_id, user_id),
+            )
+        if rows:
+            return rows[0][0], rows[0][1]
+        return None, None
+
+    async def _get_collab_playlist_songs(
+            self, interaction: discord.Interaction, name: str,
+            *, use_followup: bool, global_mode: bool = False, collab_only: bool = False,
+    ) -> tuple[list[dict] | None, int | None, int | None]:
+        """Like _get_playlist_songs but also checks collaborator access.
+        If collab_only=True, skip ownership check — only find playlists where user is a collaborator.
+        Returns (songs, owner_id, playlist_id) or (None, None, None) on failure."""
+        send = interaction.followup.send if use_followup else interaction.response.send_message
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
+
+        pid, owner_id = await self._get_playlist_id_and_owner(
+            name, interaction.user.id, guild_id, collab_only=collab_only
+        )
+        if pid is None:
+            embed = create_embed("Error", f"{label} **{name}** not found", COLOR, self.bot.user)
+            await send(embed=embed, ephemeral=True)
+            return None, None, None
+
+        if guild_id is not None:
+            result = await self.bot.fetch_db_query(
+                "SELECT songs FROM playlists WHERE id = ?", (pid,)
+            )
+        else:
+            result = await self.bot.fetch_db_query(
+                "SELECT songs FROM global_playlists WHERE id = ?", (pid,)
+            )
+
+        if not result:
+            embed = create_embed("Error", f"{label} **{name}** not found", COLOR, self.bot.user)
+            await send(embed=embed, ephemeral=True)
+            return None, None, None
+
+        try:
+            songs_json = result[0][0]
+            return (json.loads(songs_json) if songs_json else [], owner_id, pid)
+        except (json.JSONDecodeError, IndexError, KeyError) as e:
+            logger.error(f"Error parsing playlist data: {e}")
+            embed = create_embed("Error", f"{label} data is corrupted", COLOR, self.bot.user)
+            await send(embed=embed)
+            return None, None, None
+
+    async def _save_songs_by_id(self, playlist_id: int, songs: list, global_mode: bool = False):
+        """Save songs to a playlist by its row ID."""
+        songs_json = json.dumps(songs)
+        if global_mode:
+            await self.bot.execute_db_query(
+                "UPDATE global_playlists SET songs = ? WHERE id = ?",
+                (songs_json, playlist_id),
+            )
+        else:
+            await self.bot.execute_db_query(
+                "UPDATE playlists SET songs = ? WHERE id = ?",
+                (songs_json, playlist_id),
+            )
+
+    # Shared helpers
 
     async def _get_music_cog(self, interaction: discord.Interaction):
         music_cog = self.bot.get_cog("MusicCommands")
@@ -201,14 +291,16 @@ class PlaylistCommands(commands.Cog):
             embed = create_embed("Error", f"Failed to create {label.lower()}.", COLOR, self.bot.user)
             await interaction.response.send_message(embed=embed)
 
-    async def _handle_add(self, interaction: discord.Interaction, name: str, song: str, global_mode: bool = False):
+    async def _handle_add(self, interaction: discord.Interaction, name: str, song: str, global_mode: bool = False,
+                          collaborative: bool = False):
         label = "Global playlist" if global_mode else "Playlist"
         guild_id = None if global_mode else interaction.guild.id
         await interaction.response.defer()
 
         try:
-            existing_songs = await self._get_playlist_songs(
-                interaction, name, use_followup=True, ephemeral_not_found=True, global_mode=global_mode
+            # Check owner or collaborator access
+            existing_songs, owner_id, pid = await self._get_collab_playlist_songs(
+                interaction, name, use_followup=True, global_mode=global_mode, collab_only=collaborative
             )
             if existing_songs is None:
                 return
@@ -263,7 +355,7 @@ class PlaylistCommands(commands.Cog):
                     new_song.requested_by = interaction.user.mention
                     existing_songs.append(new_song.to_dict())
 
-                await self._save_songs(interaction.user.id, name, existing_songs, guild_id)
+                await self._save_songs_by_id(pid, existing_songs, global_mode)
 
                 embed = create_embed(
                     "Playlist Added",
@@ -322,7 +414,7 @@ class PlaylistCommands(commands.Cog):
                     new_song.requested_by = interaction.user.mention
                     existing_songs.append(new_song.to_dict())
 
-                await self._save_songs(interaction.user.id, name, existing_songs, guild_id)
+                await self._save_songs_by_id(pid, existing_songs, global_mode)
 
                 embed = create_embed(
                     "Spotify Playlist/Album Added",
@@ -362,7 +454,7 @@ class PlaylistCommands(commands.Cog):
             new_song.requested_by = interaction.user.mention
             existing_songs.append(new_song.to_dict())
 
-            await self._save_songs(interaction.user.id, name, existing_songs, guild_id)
+            await self._save_songs_by_id(pid, existing_songs, global_mode)
 
             embed = create_embed(
                 "Song Added",
@@ -378,15 +470,16 @@ class PlaylistCommands(commands.Cog):
             await interaction.followup.send(embed=embed)
 
     async def _handle_add_from_queue(
-            self, interaction: discord.Interaction, name: str, from_queue: str, global_mode: bool = False
+            self, interaction: discord.Interaction, name: str, from_queue: str, global_mode: bool = False,
+            collaborative: bool = False
     ):
         label = "Global playlist" if global_mode else "Playlist"
         guild_id = None if global_mode else interaction.guild.id
         await interaction.response.defer()
 
         try:
-            existing_songs = await self._get_playlist_songs(
-                interaction, name, use_followup=True, ephemeral_not_found=True, global_mode=global_mode
+            existing_songs, owner_id, pid = await self._get_collab_playlist_songs(
+                interaction, name, use_followup=True, global_mode=global_mode, collab_only=collaborative
             )
             if existing_songs is None:
                 return
@@ -432,7 +525,7 @@ class PlaylistCommands(commands.Cog):
             song_copy.requested_by = interaction.user.mention
             existing_songs.append(song_copy.to_dict())
 
-            await self._save_songs(interaction.user.id, name, existing_songs, guild_id)
+            await self._save_songs_by_id(pid, existing_songs, global_mode)
 
             embed = create_embed(
                 "Song Added",
@@ -447,14 +540,15 @@ class PlaylistCommands(commands.Cog):
             embed = create_embed("Error", f"Failed to add to {label.lower()}.", COLOR, self.bot.user)
             await interaction.followup.send(embed=embed)
 
-    async def _handle_add_session(self, interaction: discord.Interaction, name: str, global_mode: bool = False):
+    async def _handle_add_session(self, interaction: discord.Interaction, name: str, global_mode: bool = False,
+                                  collaborative: bool = False):
         label = "Global playlist" if global_mode else "Playlist"
         guild_id = None if global_mode else interaction.guild.id
         await interaction.response.defer()
 
         try:
-            existing_songs = await self._get_playlist_songs(
-                interaction, name, use_followup=True, ephemeral_not_found=True, global_mode=global_mode
+            existing_songs, owner_id, pid = await self._get_collab_playlist_songs(
+                interaction, name, use_followup=True, global_mode=global_mode, collab_only=collaborative
             )
             if existing_songs is None:
                 return
@@ -528,7 +622,7 @@ class PlaylistCommands(commands.Cog):
 
             existing_songs.extend(songs_to_add)
 
-            await self._save_songs(interaction.user.id, name, existing_songs, guild_id)
+            await self._save_songs_by_id(pid, existing_songs, global_mode)
 
             await interaction.followup.send(embed=embed)
 
@@ -538,14 +632,15 @@ class PlaylistCommands(commands.Cog):
             await interaction.followup.send(embed=embed)
 
     async def _handle_remove(
-            self, interaction: discord.Interaction, name: str, position: int, global_mode: bool = False
+            self, interaction: discord.Interaction, name: str, position: int, global_mode: bool = False,
+            collaborative: bool = False
     ):
         label = "Global playlist" if global_mode else "Playlist"
         guild_id = None if global_mode else interaction.guild.id
 
         try:
-            playlist_items = await self._get_playlist_songs(
-                interaction, name, use_followup=False, ephemeral_not_found=True, global_mode=global_mode
+            playlist_items, owner_id, pid = await self._get_collab_playlist_songs(
+                interaction, name, use_followup=False, global_mode=global_mode, collab_only=collaborative
             )
             if playlist_items is None:
                 return
@@ -567,7 +662,7 @@ class PlaylistCommands(commands.Cog):
 
             removed_song = playlist_items.pop(position - 1)
 
-            await self._save_songs(interaction.user.id, name, playlist_items, guild_id)
+            await self._save_songs_by_id(pid, playlist_items, global_mode)
 
             embed = create_embed(
                 "Song Removed",
@@ -591,13 +686,14 @@ class PlaylistCommands(commands.Cog):
             from_pos: int,
             to_pos: int,
             global_mode: bool = False,
+            collaborative: bool = False,
     ):
         label = "Global playlist" if global_mode else "Playlist"
         guild_id = None if global_mode else interaction.guild.id
 
         try:
-            playlist_items = await self._get_playlist_songs(
-                interaction, name, use_followup=False, ephemeral_not_found=True, global_mode=global_mode
+            playlist_items, owner_id, pid = await self._get_collab_playlist_songs(
+                interaction, name, use_followup=False, global_mode=global_mode, collab_only=collaborative
             )
             if playlist_items is None:
                 return
@@ -629,7 +725,7 @@ class PlaylistCommands(commands.Cog):
             song = playlist_items.pop(from_index)
             playlist_items.insert(to_index, song)
 
-            await self._save_songs(interaction.user.id, name, playlist_items, guild_id)
+            await self._save_songs_by_id(pid, playlist_items, global_mode)
 
             title = song.get("title") or "Unknown"
             embed = create_embed(
@@ -647,7 +743,8 @@ class PlaylistCommands(commands.Cog):
             )
             await interaction.response.send_message(embed=embed)
 
-    async def _handle_load(self, interaction: discord.Interaction, name: str, global_mode: bool = False):
+    async def _handle_load(self, interaction: discord.Interaction, name: str, global_mode: bool = False,
+                           collaborative: bool = False):
         label = "Global playlist" if global_mode else "Playlist"
 
         music_cog = await self._get_music_cog(interaction)
@@ -658,8 +755,8 @@ class PlaylistCommands(commands.Cog):
             return
 
         try:
-            playlist_items = await self._get_playlist_songs(
-                interaction, name, use_followup=False, ephemeral_not_found=True, global_mode=global_mode
+            playlist_items, _, _ = await self._get_collab_playlist_songs(
+                interaction, name, use_followup=False, global_mode=global_mode, collab_only=collaborative
             )
             if playlist_items is None:
                 return
@@ -729,7 +826,8 @@ class PlaylistCommands(commands.Cog):
             playback_service = self.bot._playback_service
 
             if (
-                    not guild_data["voice_client"].is_playing()
+                    guild_data["voice_client"]
+                    and not guild_data["voice_client"].is_playing()
                     and not guild_data["current"]
             ):
                 await playback_service.play_next(interaction.guild.id)
@@ -743,13 +841,14 @@ class PlaylistCommands(commands.Cog):
             await interaction.response.send_message(embed=embed)
 
     async def _handle_show(
-            self, interaction: discord.Interaction, name: str, page: int = 1, global_mode: bool = False
+            self, interaction: discord.Interaction, name: str, page: int = 1, global_mode: bool = False,
+            collaborative: bool = False
     ):
         label = "Global Playlist" if global_mode else "Playlist"
 
         try:
-            playlist_items = await self._get_playlist_songs(
-                interaction, name, use_followup=False, ephemeral_not_found=True, global_mode=global_mode
+            playlist_items, _, _ = await self._get_collab_playlist_songs(
+                interaction, name, use_followup=False, global_mode=global_mode, collab_only=collaborative
             )
             if playlist_items is None:
                 return
@@ -856,7 +955,141 @@ class PlaylistCommands(commands.Cog):
             embed = create_embed("Error", f"Failed to delete {label.lower()}.", COLOR, self.bot.user)
             await interaction.response.send_message(embed=embed)
 
-    # ── Server Playlist commands ────────────────────────────────────────
+    # Collab handler methods
+
+    async def _handle_collab_add(
+            self, interaction: discord.Interaction, name: str, user: discord.Member, global_mode: bool = False
+    ):
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
+
+        pid = await self.bot.get_playlist_id(interaction.user.id, name, guild_id)
+        if pid is None:
+            embed = create_embed("Error", f"{label} **{name}** not found (you must own it)", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        if user.id == interaction.user.id:
+            embed = create_embed("Error", "You can't add yourself as a collaborator", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        if user.bot:
+            embed = create_embed("Error", "You can't add a bot as a collaborator", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        already = await self.bot.is_collaborator(pid, user.id, global_mode)
+        if already:
+            embed = create_embed("Error", f"{user.display_name} is already a collaborator", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await self.bot.add_collaborator(pid, user.id, global_mode)
+        embed = create_embed(
+            "Collaborator Added",
+            f"Added **{user.display_name}** as a collaborator on {label.lower()} **{name}**",
+            COLOR, self.bot.user
+        )
+        await interaction.response.send_message(embed=embed, silent=True)
+
+    async def _handle_collab_remove(
+            self, interaction: discord.Interaction, name: str, user: discord.Member, global_mode: bool = False
+    ):
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
+
+        pid = await self.bot.get_playlist_id(interaction.user.id, name, guild_id)
+        if pid is None:
+            embed = create_embed("Error", f"{label} **{name}** not found (you must own it)", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        is_collab = await self.bot.is_collaborator(pid, user.id, global_mode)
+        if not is_collab:
+            embed = create_embed("Error", f"{user.display_name} is not a collaborator", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await self.bot.remove_collaborator(pid, user.id, global_mode)
+        embed = create_embed(
+            "Collaborator Removed",
+            f"Removed **{user.display_name}** from {label.lower()} **{name}**",
+            COLOR, self.bot.user
+        )
+        await interaction.response.send_message(embed=embed, silent=True)
+
+    async def _handle_collab_list(
+            self, interaction: discord.Interaction, name: str, global_mode: bool = False
+    ):
+        label = "Global playlist" if global_mode else "Playlist"
+        guild_id = None if global_mode else interaction.guild.id
+
+        pid = await self.bot.get_playlist_id(interaction.user.id, name, guild_id)
+        if pid is None:
+            embed = create_embed("Error", f"{label} **{name}** not found (you must own it)", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        collab_ids = await self.bot.get_collaborators(pid, global_mode)
+        if not collab_ids:
+            embed = create_embed(f"{label}: {name}", "No collaborators", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, silent=True)
+            return
+
+        lines = []
+        for uid in collab_ids:
+            user = interaction.guild.get_member(uid) or self.bot.get_user(uid)
+            display = user.display_name if user else f"User {uid}"
+            lines.append(f"- {display}")
+
+        embed = create_embed(
+            f"Collaborators: {name}",
+            "\n".join(lines),
+            COLOR, self.bot.user
+        )
+        await interaction.response.send_message(embed=embed, silent=True)
+
+    async def _handle_my_collabs(self, interaction: discord.Interaction, global_mode: bool = False):
+        """Show all playlists the user is a collaborator on."""
+        user_id = interaction.user.id
+
+        if global_mode:
+            rows = await self.bot.fetch_db_query(
+                "SELECT gp.name, gp.user_id, gp.songs FROM global_playlists gp "
+                "JOIN playlist_collaborators pc ON pc.playlist_id = gp.id AND pc.is_global = 1 "
+                "WHERE pc.user_id = ? ORDER BY gp.name",
+                (user_id,),
+            )
+        else:
+            rows = await self.bot.fetch_db_query(
+                "SELECT p.name, p.user_id, p.songs FROM playlists p "
+                "JOIN playlist_collaborators pc ON pc.playlist_id = p.id AND pc.is_global = 0 "
+                "WHERE pc.user_id = ? AND p.guild_id = ? ORDER BY p.name",
+                (user_id, interaction.guild.id),
+            )
+
+        label = "Your Global Collaborations" if global_mode else "Your Collaborations"
+
+        if not rows:
+            embed = create_embed(label, "You're not a collaborator on any playlists.", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        description = ""
+        for name, owner_id, songs_json in rows:
+            owner = interaction.guild.get_member(owner_id) or self.bot.get_user(owner_id)
+            owner_name = owner.display_name if owner else f"User {owner_id}"
+            try:
+                song_count = len(json.loads(songs_json)) if songs_json else 0
+            except json.JSONDecodeError:
+                song_count = 0
+            description += f"\u2022 **{name}** by {owner_name} ({song_count} songs)\n"
+
+        embed = create_embed(label, description[:4000], COLOR, self.bot.user)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # Server Playlist commands
 
     playlist_group = discord.app_commands.Group(
         name="playlist", description="Manage your server playlists"
@@ -871,49 +1104,60 @@ class PlaylistCommands(commands.Cog):
     @discord.app_commands.describe(
         name="Playlist name",
         song="Song URL, playlist URL, or search term",
+        collaborative="Target a collaborative playlist instead of your own",
     )
-    async def playlist_add(self, interaction: discord.Interaction, name: str, song: str):
-        await self._handle_add(interaction, name, song)
+    async def playlist_add(self, interaction: discord.Interaction, name: str, song: str, collaborative: bool = False):
+        await self._handle_add(interaction, name, song, collaborative=collaborative)
 
     @playlist_group.command(name="add-from-queue", description="Add a song from the current queue to a playlist")
     @discord.app_commands.describe(
         name="Playlist name",
         from_queue="Song from current session to add",
+        collaborative="Target a collaborative playlist instead of your own",
     )
     @discord.app_commands.autocomplete(from_queue=queue_autocomplete)
-    async def playlist_add_from_queue(self, interaction: discord.Interaction, name: str, from_queue: str):
-        await self._handle_add_from_queue(interaction, name, from_queue)
+    async def playlist_add_from_queue(self, interaction: discord.Interaction, name: str, from_queue: str,
+                                      collaborative: bool = False):
+        await self._handle_add_from_queue(interaction, name, from_queue, collaborative=collaborative)
 
     @playlist_group.command(name="add-all-queue", description="Add entire current queue to a playlist")
-    @discord.app_commands.describe(name="Playlist name")
-    async def playlist_add_session(self, interaction: discord.Interaction, name: str):
-        await self._handle_add_session(interaction, name)
+    @discord.app_commands.describe(name="Playlist name",
+                                   collaborative="Target a collaborative playlist instead of your own")
+    async def playlist_add_session(self, interaction: discord.Interaction, name: str, collaborative: bool = False):
+        await self._handle_add_session(interaction, name, collaborative=collaborative)
 
     @playlist_group.command(name="remove", description="Remove a song from a playlist")
     @discord.app_commands.describe(
-        name="Playlist name", position="Position of song to remove (1-based)"
+        name="Playlist name", position="Position of song to remove (1-based)",
+        collaborative="Target a collaborative playlist instead of your own",
     )
-    async def playlist_remove(self, interaction: discord.Interaction, name: str, position: int):
-        await self._handle_remove(interaction, name, position)
+    async def playlist_remove(self, interaction: discord.Interaction, name: str, position: int,
+                              collaborative: bool = False):
+        await self._handle_remove(interaction, name, position, collaborative=collaborative)
 
     @playlist_group.command(name="move", description="Move a song to a different position in a playlist")
     @discord.app_commands.describe(
         name="Playlist name",
         from_pos="Current position of the song (1-based)",
         to_pos="New position for the song (1-based)",
+        collaborative="Target a collaborative playlist instead of your own",
     )
-    async def playlist_move(self, interaction: discord.Interaction, name: str, from_pos: int, to_pos: int):
-        await self._handle_move(interaction, name, from_pos, to_pos)
+    async def playlist_move(self, interaction: discord.Interaction, name: str, from_pos: int, to_pos: int,
+                            collaborative: bool = False):
+        await self._handle_move(interaction, name, from_pos, to_pos, collaborative=collaborative)
 
     @playlist_group.command(name="load", description="Load a playlist into the queue")
-    @discord.app_commands.describe(name="Playlist name")
-    async def playlist_load(self, interaction: discord.Interaction, name: str):
-        await self._handle_load(interaction, name)
+    @discord.app_commands.describe(name="Playlist name",
+                                   collaborative="Target a collaborative playlist instead of your own")
+    async def playlist_load(self, interaction: discord.Interaction, name: str, collaborative: bool = False):
+        await self._handle_load(interaction, name, collaborative=collaborative)
 
     @playlist_group.command(name="show", description="Show songs in a playlist")
-    @discord.app_commands.describe(name="Playlist name", page="Page number to view (optional)")
-    async def playlist_show(self, interaction: discord.Interaction, name: str, page: int = 1):
-        await self._handle_show(interaction, name, page)
+    @discord.app_commands.describe(name="Playlist name", page="Page number to view (optional)",
+                                   collaborative="Target a collaborative playlist instead of your own")
+    async def playlist_show(self, interaction: discord.Interaction, name: str, page: int = 1,
+                            collaborative: bool = False):
+        await self._handle_show(interaction, name, page, collaborative=collaborative)
 
     @playlist_group.command(name="list", description="List all your playlists")
     async def playlist_list(self, interaction: discord.Interaction):
@@ -924,7 +1168,26 @@ class PlaylistCommands(commands.Cog):
     async def playlist_delete(self, interaction: discord.Interaction, name: str):
         await self._handle_delete(interaction, name)
 
-    # ── Global Playlist commands ────────────────────────────────────────
+    @playlist_group.command(name="collab-add", description="Add a collaborator to your playlist")
+    @discord.app_commands.describe(name="Playlist name", user="User to add as collaborator")
+    async def playlist_collab_add(self, interaction: discord.Interaction, name: str, user: discord.Member):
+        await self._handle_collab_add(interaction, name, user)
+
+    @playlist_group.command(name="collab-remove", description="Remove a collaborator from your playlist")
+    @discord.app_commands.describe(name="Playlist name", user="User to remove")
+    async def playlist_collab_remove(self, interaction: discord.Interaction, name: str, user: discord.Member):
+        await self._handle_collab_remove(interaction, name, user)
+
+    @playlist_group.command(name="collab-list", description="List collaborators on your playlist")
+    @discord.app_commands.describe(name="Playlist name")
+    async def playlist_collab_list(self, interaction: discord.Interaction, name: str):
+        await self._handle_collab_list(interaction, name)
+
+    @playlist_group.command(name="my-collabs", description="Show playlists you're a collaborator on")
+    async def playlist_my_collabs(self, interaction: discord.Interaction):
+        await self._handle_my_collabs(interaction)
+
+    # Global Playlist commands
 
     globalplaylist_group = discord.app_commands.Group(
         name="globalplaylist", description="Manage your global playlists (accessible from any server)"
@@ -939,49 +1202,63 @@ class PlaylistCommands(commands.Cog):
     @discord.app_commands.describe(
         name="Global playlist name",
         song="Song URL, playlist URL, or search term",
+        collaborative="Target a collaborative playlist instead of your own",
     )
-    async def globalplaylist_add(self, interaction: discord.Interaction, name: str, song: str):
-        await self._handle_add(interaction, name, song, global_mode=True)
+    async def globalplaylist_add(self, interaction: discord.Interaction, name: str, song: str,
+                                 collaborative: bool = False):
+        await self._handle_add(interaction, name, song, global_mode=True, collaborative=collaborative)
 
-    @globalplaylist_group.command(name="add-from-queue", description="Add a song from the current queue to a global playlist")
+    @globalplaylist_group.command(name="add-from-queue",
+                                  description="Add a song from the current queue to a global playlist")
     @discord.app_commands.describe(
         name="Global playlist name",
         from_queue="Song from current session to add",
+        collaborative="Target a collaborative playlist instead of your own",
     )
     @discord.app_commands.autocomplete(from_queue=queue_autocomplete)
-    async def globalplaylist_add_from_queue(self, interaction: discord.Interaction, name: str, from_queue: str):
-        await self._handle_add_from_queue(interaction, name, from_queue, global_mode=True)
+    async def globalplaylist_add_from_queue(self, interaction: discord.Interaction, name: str, from_queue: str,
+                                            collaborative: bool = False):
+        await self._handle_add_from_queue(interaction, name, from_queue, global_mode=True, collaborative=collaborative)
 
     @globalplaylist_group.command(name="add-all-queue", description="Add entire current queue to a global playlist")
-    @discord.app_commands.describe(name="Global playlist name")
-    async def globalplaylist_add_session(self, interaction: discord.Interaction, name: str):
-        await self._handle_add_session(interaction, name, global_mode=True)
+    @discord.app_commands.describe(name="Global playlist name",
+                                   collaborative="Target a collaborative playlist instead of your own")
+    async def globalplaylist_add_session(self, interaction: discord.Interaction, name: str,
+                                         collaborative: bool = False):
+        await self._handle_add_session(interaction, name, global_mode=True, collaborative=collaborative)
 
     @globalplaylist_group.command(name="remove", description="Remove a song from a global playlist")
     @discord.app_commands.describe(
-        name="Global playlist name", position="Position of song to remove (1-based)"
+        name="Global playlist name", position="Position of song to remove (1-based)",
+        collaborative="Target a collaborative playlist instead of your own",
     )
-    async def globalplaylist_remove(self, interaction: discord.Interaction, name: str, position: int):
-        await self._handle_remove(interaction, name, position, global_mode=True)
+    async def globalplaylist_remove(self, interaction: discord.Interaction, name: str, position: int,
+                                    collaborative: bool = False):
+        await self._handle_remove(interaction, name, position, global_mode=True, collaborative=collaborative)
 
     @globalplaylist_group.command(name="move", description="Move a song to a different position in a global playlist")
     @discord.app_commands.describe(
         name="Global playlist name",
         from_pos="Current position of the song (1-based)",
         to_pos="New position for the song (1-based)",
+        collaborative="Target a collaborative playlist instead of your own",
     )
-    async def globalplaylist_move(self, interaction: discord.Interaction, name: str, from_pos: int, to_pos: int):
-        await self._handle_move(interaction, name, from_pos, to_pos, global_mode=True)
+    async def globalplaylist_move(self, interaction: discord.Interaction, name: str, from_pos: int, to_pos: int,
+                                  collaborative: bool = False):
+        await self._handle_move(interaction, name, from_pos, to_pos, global_mode=True, collaborative=collaborative)
 
     @globalplaylist_group.command(name="load", description="Load a global playlist into the queue")
-    @discord.app_commands.describe(name="Global playlist name")
-    async def globalplaylist_load(self, interaction: discord.Interaction, name: str):
-        await self._handle_load(interaction, name, global_mode=True)
+    @discord.app_commands.describe(name="Global playlist name",
+                                   collaborative="Target a collaborative playlist instead of your own")
+    async def globalplaylist_load(self, interaction: discord.Interaction, name: str, collaborative: bool = False):
+        await self._handle_load(interaction, name, global_mode=True, collaborative=collaborative)
 
     @globalplaylist_group.command(name="show", description="Show songs in a global playlist")
-    @discord.app_commands.describe(name="Global playlist name", page="Page number to view (optional)")
-    async def globalplaylist_show(self, interaction: discord.Interaction, name: str, page: int = 1):
-        await self._handle_show(interaction, name, page, global_mode=True)
+    @discord.app_commands.describe(name="Global playlist name", page="Page number to view (optional)",
+                                   collaborative="Target a collaborative playlist instead of your own")
+    async def globalplaylist_show(self, interaction: discord.Interaction, name: str, page: int = 1,
+                                  collaborative: bool = False):
+        await self._handle_show(interaction, name, page, global_mode=True, collaborative=collaborative)
 
     @globalplaylist_group.command(name="list", description="List all your global playlists")
     async def globalplaylist_list(self, interaction: discord.Interaction):
@@ -991,6 +1268,25 @@ class PlaylistCommands(commands.Cog):
     @discord.app_commands.describe(name="Global playlist name to delete")
     async def globalplaylist_delete(self, interaction: discord.Interaction, name: str):
         await self._handle_delete(interaction, name, global_mode=True)
+
+    @globalplaylist_group.command(name="collab-add", description="Add a collaborator to your global playlist")
+    @discord.app_commands.describe(name="Global playlist name", user="User to add as collaborator")
+    async def globalplaylist_collab_add(self, interaction: discord.Interaction, name: str, user: discord.Member):
+        await self._handle_collab_add(interaction, name, user, global_mode=True)
+
+    @globalplaylist_group.command(name="collab-remove", description="Remove a collaborator from your global playlist")
+    @discord.app_commands.describe(name="Global playlist name", user="User to remove")
+    async def globalplaylist_collab_remove(self, interaction: discord.Interaction, name: str, user: discord.Member):
+        await self._handle_collab_remove(interaction, name, user, global_mode=True)
+
+    @globalplaylist_group.command(name="collab-list", description="List collaborators on your global playlist")
+    @discord.app_commands.describe(name="Global playlist name")
+    async def globalplaylist_collab_list(self, interaction: discord.Interaction, name: str):
+        await self._handle_collab_list(interaction, name, global_mode=True)
+
+    @globalplaylist_group.command(name="my-collabs", description="Show global playlists you're a collaborator on")
+    async def globalplaylist_my_collabs(self, interaction: discord.Interaction):
+        await self._handle_my_collabs(interaction, global_mode=True)
 
     # ── History commands ────────────────────────────────────────────────
 
@@ -1208,7 +1504,7 @@ class PlaylistCommands(commands.Cog):
 
         playback_service = self.bot._playback_service
 
-        if not guild_data["voice_client"].is_playing() and not guild_data["current"]:
+        if guild_data["voice_client"] and not guild_data["voice_client"].is_playing() and not guild_data["current"]:
             await playback_service.play_next(interaction.guild.id)
 
         guild_data["last_activity"] = datetime.now()

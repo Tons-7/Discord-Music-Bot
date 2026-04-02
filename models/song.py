@@ -10,6 +10,7 @@ class Song:
         self.uploader = data.get("uploader", "Unknown")
         self.webpage_url = data.get("webpage_url", "")
         self.requested_by = data.get("requested_by", "Unknown")
+        self.is_live = data.get("is_live", False)
 
     def __str__(self):
         return f"**{self.title}** by {self.uploader}"
@@ -23,6 +24,7 @@ class Song:
             "uploader": self.uploader,
             "webpage_url": self.webpage_url,
             "requested_by": self.requested_by,
+            "is_live": self.is_live,
         }
 
     @classmethod

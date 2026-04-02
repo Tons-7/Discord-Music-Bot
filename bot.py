@@ -14,7 +14,10 @@ import yt_dlp
 from discord.ext import commands, tasks
 from spotipy.oauth2 import SpotifyClientCredentials
 
-from config import get_intents, COLOR, MAX_CACHE_SIZE, CACHE_TTL, INACTIVE_TIMEOUT_MINUTES
+from config import (
+    get_intents, COLOR, MAX_CACHE_SIZE, CACHE_TTL,
+    INACTIVE_TIMEOUT_MINUTES, DB_VERSION,
+)
 from models.song import Song
 from services.music_service import MusicService
 from services.playback_service import PlaybackService
@@ -41,8 +44,13 @@ class MusicBot(commands.Bot):
 
         self.db_save_tasks = {}
 
+        #  Last.fm rate-limiter state
+        self._lastfm_call_times: list[float] = []
+        self._lastfm_lock = asyncio.Lock()
+        self.lastfm_rate_limit = 5  # max calls per second
+
         self.ytdl_format_options = {
-            "format": "bestaudio[ext=m4a]/bestaudio[abr<=128]/bestaudio/best",
+            "format": "bestaudio/best",
             "outtmpl": "%(extractor)s-%(id)s-%(title)s.%(ext)s",
             "restrictfilenames": True,
             "noplaylist": False,
@@ -74,7 +82,7 @@ class MusicBot(commands.Bot):
                 "Upgrade-Insecure-Requests": "1",
             },
             "geo_bypass": True,
-            "prefer_free_formats": True,
+            "prefer_free_formats": False,
             "playliststart": 1,
             "extractor_args": {
                 "youtube": {
@@ -148,41 +156,26 @@ class MusicBot(commands.Bot):
         self._music_service = MusicService(self)
         self._playback_service = PlaybackService(self)
 
+    # Database
+
     @staticmethod
     def init_database():
+        conn = None
         try:
-            conn = sqlite3.connect("music_bot.db", check_same_thread=False)
+            conn = sqlite3.connect("music_bot.db")
+            conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
 
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS playlists
                 (
-                    id
-                    INTEGER
-                    PRIMARY
-                    KEY
-                    AUTOINCREMENT,
-                    user_id
-                    INTEGER
-                    NOT
-                    NULL,
-                    guild_id
-                    INTEGER
-                    NOT
-                    NULL,
-                    name
-                    TEXT
-                    NOT
-                    NULL,
-                    songs
-                    TEXT
-                    NOT
-                    NULL,
-                    created_at
-                    TIMESTAMP
-                    DEFAULT
-                    CURRENT_TIMESTAMP
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id    INTEGER NOT NULL,
+                    guild_id   INTEGER NOT NULL,
+                    name       TEXT    NOT NULL,
+                    songs      TEXT    NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -205,49 +198,150 @@ class MusicBot(commands.Bot):
                 """
                 CREATE TABLE IF NOT EXISTS guild_settings
                 (
-                    guild_id
-                    INTEGER
-                    PRIMARY
-                    KEY,
-                    auto_disconnect
-                    INTEGER
-                    DEFAULT
-                    300,
-                    default_volume
-                    INTEGER
-                    DEFAULT
-                    100,
-                    music_channel_id
-                    INTEGER,
-                    queue_data
-                    TEXT
+                    guild_id          INTEGER PRIMARY KEY,
+                    auto_disconnect   INTEGER DEFAULT 300,
+                    default_volume    INTEGER DEFAULT 100,
+                    music_channel_id  INTEGER,
+                    queue_data        TEXT,
+                    dj_role_id        INTEGER
+                )
+                """
+            )
+
+            # Favorites table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS favorites
+                (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id   INTEGER NOT NULL,
+                    song_data TEXT    NOT NULL,
+                    song_url  TEXT    NOT NULL DEFAULT '',
+                    added_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (user_id, song_url)
+                )
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites (user_id)"
+            )
+
+            # User stats table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_stats
+                (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id           INTEGER NOT NULL,
+                    guild_id          INTEGER NOT NULL,
+                    song_url          TEXT    NOT NULL,
+                    song_title        TEXT    NOT NULL,
+                    artist            TEXT    DEFAULT '',
+                    duration_seconds  INTEGER DEFAULT 0,
+                    played_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_stats_user ON user_stats (user_id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_stats_guild ON user_stats (user_id, guild_id)"
+            )
+
+            # Collaborative playlist members
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS playlist_collaborators
+                (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    playlist_id INTEGER NOT NULL,
+                    user_id     INTEGER NOT NULL,
+                    is_global   INTEGER DEFAULT 0,
+                    added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (playlist_id, user_id, is_global)
                 )
                 """
             )
 
             # Deduplicate before creating the index — safe migration for existing data.
-            # If the DB already contains duplicate (user_id, guild_id, name) rows (possible before this index existed)
             cursor.execute(
                 "DELETE FROM playlists WHERE id NOT IN "
                 "(SELECT MIN(id) FROM playlists GROUP BY user_id, guild_id, name)"
             )
-            # Enforce uniqueness at the DB level (prevents race-condition duplicates)
             cursor.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique "
                 "ON playlists (user_id, guild_id, name)"
             )
 
+            # Schema version tracking
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_version
+                (
+                    id      INTEGER PRIMARY KEY CHECK (id = 1),
+                    version INTEGER NOT NULL
+                )
+                """
+            )
+            cursor.execute(
+                "INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, ?)",
+                (DB_VERSION,),
+            )
+
+            # Run migrations if needed
+            cursor.execute("SELECT version FROM schema_version WHERE id = 1")
+            row = cursor.fetchone()
+            current_version = row[0] if row else 1
+
+            if current_version < DB_VERSION:
+                MusicBot._run_migrations(cursor, current_version, DB_VERSION)
+                cursor.execute(
+                    "UPDATE schema_version SET version = ? WHERE id = 1",
+                    (DB_VERSION,),
+                )
+
             conn.commit()
-            conn.close()
-            logger.info("Database initialized successfully")
+            logger.info("Database initialized successfully (WAL mode, schema v%d)", DB_VERSION)
 
         except Exception as e:
             logger.error(f"Database initialization failed: {e}")
             raise
+        finally:
+            if conn:
+                conn.close()
+
+    @staticmethod
+    def _run_migrations(cursor, from_version: int, to_version: int):
+        """Run sequential schema migrations."""
+        migrations = {
+            # version 2: add dj_role_id column to guild_settings
+            2: [
+                "ALTER TABLE guild_settings ADD COLUMN dj_role_id INTEGER",
+            ],
+            # version 3: add song_url column to favorites for proper dedup
+            3: [
+                "ALTER TABLE favorites ADD COLUMN song_url TEXT NOT NULL DEFAULT ''",
+            ],
+        }
+
+        for version in range(from_version + 1, to_version + 1):
+            stmts = migrations.get(version, [])
+            for stmt in stmts:
+                try:
+                    cursor.execute(stmt)
+                    logger.info("Migration v%d applied: %s", version, stmt[:80])
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" in str(e).lower():
+                        logger.debug("Column already exists, skipping: %s", stmt[:80])
+                    else:
+                        raise
 
     @staticmethod
     def get_db_connection():
-        return sqlite3.connect("music_bot.db", check_same_thread=False)
+        conn = sqlite3.connect("music_bot.db")
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
 
     async def execute_db_query(self, query: str, params: tuple = None):
         def _execute():
@@ -261,7 +355,7 @@ class MusicBot(commands.Bot):
                 return cursor.fetchall()
 
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _execute)
+        return await loop.run_in_executor(self.executor, _execute)
 
     async def fetch_db_query(self, query: str, params: tuple = None):
         def _fetch():
@@ -274,7 +368,9 @@ class MusicBot(commands.Bot):
                 return cursor.fetchall()
 
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _fetch)
+        return await loop.run_in_executor(self.executor, _fetch)
+
+    # Guild state
 
     def get_guild_data(self, guild_id: int) -> Dict:
         if guild_id not in self.guilds_data:
@@ -305,6 +401,9 @@ class MusicBot(commands.Bot):
                 "pause_position": None,
                 "now_playing_message_sent_time": None,
                 "play_lock": asyncio.Lock(),
+                "speed": 1.0,
+                "audio_effect": "none",
+                "dj_role_id": None,
             }
         return self.guilds_data[guild_id]
 
@@ -315,6 +414,8 @@ class MusicBot(commands.Bot):
             prefetch_task.cancel()
         guild_data["autoplay_prefetch"] = None
         guild_data["autoplay_prefetch_task"] = None
+
+    # Guild settings persistence
 
     async def save_guild_music_channel(self, guild_id: int, channel_id: int):
         try:
@@ -329,6 +430,137 @@ class MusicBot(commands.Bot):
         except Exception as e:
             logger.error(f"Failed to save music channel: {e}")
 
+    async def save_guild_dj_role(self, guild_id: int, role_id: int | None):
+        try:
+            await self.execute_db_query(
+                """
+                INSERT INTO guild_settings (guild_id, dj_role_id)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET dj_role_id = excluded.dj_role_id
+            """,
+                (guild_id, role_id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to save DJ role: {e}")
+
+    # User stats tracking
+
+    async def record_listening_stat(
+            self,
+            user_id: int,
+            guild_id: int,
+            song: 'Song',
+            duration_listened: int,
+    ):
+        """Record that a user listened to a song."""
+        if duration_listened <= 0:
+            return
+        try:
+            artist = song.uploader or ""
+            await self.execute_db_query(
+                """
+                INSERT INTO user_stats (user_id, guild_id, song_url, song_title, artist, duration_seconds)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, guild_id, song.webpage_url, song.title, artist, duration_listened),
+            )
+        except Exception as e:
+            logger.debug(f"Failed to record listening stat: {e}")
+
+    # Favorites
+
+    async def add_favorite(self, user_id: int, song: 'Song') -> bool:
+        """Add a song to the user's favorites. Returns False if already exists."""
+        try:
+            # Check if this song URL is already favorited
+            existing = await self.fetch_db_query(
+                "SELECT id FROM favorites WHERE user_id = ? AND song_url = ?",
+                (user_id, song.webpage_url),
+            )
+            if existing:
+                return False
+
+            song_json = json.dumps(song.to_dict(), sort_keys=True)
+            await self.execute_db_query(
+                "INSERT INTO favorites (user_id, song_data, song_url) VALUES (?, ?, ?)",
+                (user_id, song_json, song.webpage_url),
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to add favorite: {e}")
+            return False
+
+    async def remove_favorite(self, user_id: int, position: int) -> bool:
+        """Remove favorite by 1-based position. Returns True on success."""
+        try:
+            rows = await self.fetch_db_query(
+                "SELECT id FROM favorites WHERE user_id = ? ORDER BY added_at ASC",
+                (user_id,),
+            )
+            if not rows or position < 1 or position > len(rows):
+                return False
+            fav_id = rows[position - 1][0]
+            await self.execute_db_query("DELETE FROM favorites WHERE id = ?", (fav_id,))
+            return True
+        except Exception as e:
+            logger.error(f"Failed to remove favorite: {e}")
+            return False
+
+    async def get_favorites(self, user_id: int) -> list[dict]:
+        try:
+            rows = await self.fetch_db_query(
+                "SELECT song_data FROM favorites WHERE user_id = ? ORDER BY added_at ASC",
+                (user_id,),
+            )
+            return [json.loads(row[0]) for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to get favorites: {e}")
+            return []
+
+    # Collaborative playlist helpers
+
+    async def get_playlist_id(self, user_id: int, name: str, guild_id: int = None) -> int | None:
+        """Return the playlist row id, or None if not found."""
+        if guild_id is not None:
+            rows = await self.fetch_db_query(
+                "SELECT id FROM playlists WHERE user_id = ? AND guild_id = ? AND name = ?",
+                (user_id, guild_id, name),
+            )
+        else:
+            rows = await self.fetch_db_query(
+                "SELECT id FROM global_playlists WHERE user_id = ? AND name = ?",
+                (user_id, name),
+            )
+        return rows[0][0] if rows else None
+
+    async def add_collaborator(self, playlist_id: int, user_id: int, is_global: bool = False):
+        await self.execute_db_query(
+            "INSERT OR IGNORE INTO playlist_collaborators (playlist_id, user_id, is_global) VALUES (?, ?, ?)",
+            (playlist_id, user_id, 1 if is_global else 0),
+        )
+
+    async def remove_collaborator(self, playlist_id: int, user_id: int, is_global: bool = False):
+        await self.execute_db_query(
+            "DELETE FROM playlist_collaborators WHERE playlist_id = ? AND user_id = ? AND is_global = ?",
+            (playlist_id, user_id, 1 if is_global else 0),
+        )
+
+    async def get_collaborators(self, playlist_id: int, is_global: bool = False) -> list[int]:
+        rows = await self.fetch_db_query(
+            "SELECT user_id FROM playlist_collaborators WHERE playlist_id = ? AND is_global = ?",
+            (playlist_id, 1 if is_global else 0),
+        )
+        return [row[0] for row in rows]
+
+    async def is_collaborator(self, playlist_id: int, user_id: int, is_global: bool = False) -> bool:
+        rows = await self.fetch_db_query(
+            "SELECT 1 FROM playlist_collaborators WHERE playlist_id = ? AND user_id = ? AND is_global = ?",
+            (playlist_id, user_id, 1 if is_global else 0),
+        )
+        return bool(rows)
+
+    # Lifecycle hooks
+
     async def setup_hook(self):
         pass
 
@@ -338,22 +570,34 @@ class MusicBot(commands.Bot):
 
         self.loop = asyncio.get_running_loop()
 
+        # Scale thread pool based on guild count
+        desired_workers = max(3, min(len(self.guilds), 10))
+        if self.executor._max_workers < desired_workers:
+            self.executor._max_workers = desired_workers
+            logger.info(f"ThreadPoolExecutor scaled to {desired_workers} workers")
+
         try:
             synced = await self.tree.sync()
             logger.info(f"Synced {len(synced)} slash command(s)")
         except Exception as e:
             logger.error(f"Failed to sync commands: {e}")
 
-        self.cleanup_inactive.start()
-        self.cleanup_cache.start()
-        self.cleanup_inactive_guilds.start()
-        self.update_now_playing_timestamps.start()
-        self.cleanup_validation_cache.start()
-        self.check_voice_health.start()
+        for task in [
+            self.cleanup_inactive, self.cleanup_cache,
+            self.cleanup_inactive_guilds, self.update_now_playing_timestamps,
+            self.cleanup_validation_cache, self.check_voice_health,
+        ]:
+            if not task.is_running():
+                task.start()
         await self.load_persistent_queues()
+
+    # Voice state handling
 
     async def on_voice_state_update(self, member, before, after):
         if member.id != self.user.id:
+            return
+
+        if not before.channel and not after.channel:
             return
 
         guild_id = before.channel.guild.id if before.channel else after.channel.guild.id
@@ -394,7 +638,8 @@ class MusicBot(commands.Bot):
 
             if self.voice_reconnect_enabled and (had_current_song or had_queue):
                 logger.info(f"Attempting voice reconnection for guild {guild_id}...")
-                asyncio.create_task(self._attempt_voice_reconnect(guild_id, voice_channel))
+                task = asyncio.create_task(self._attempt_voice_reconnect(guild_id, voice_channel))
+                task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
             else:
                 guild_data["current"] = None
                 guild_data["start_time"] = None
@@ -499,6 +744,8 @@ class MusicBot(commands.Bot):
                     await channel.send(embed=embed, delete_after=30)
         except Exception as e:
             logger.error(f"Error sending disconnect notification: {e}")
+
+    # Background tasks
 
     @tasks.loop(minutes=5)
     async def cleanup_inactive(self):
@@ -613,17 +860,28 @@ class MusicBot(commands.Bot):
         except Exception as e:
             logger.error(f"Voice health check error: {e}")
 
+    # Queue persistence
+
     async def load_persistent_queues(self):
         try:
             results = await self.fetch_db_query(
-                "SELECT guild_id, queue_data, music_channel_id FROM guild_settings WHERE queue_data IS NOT NULL OR music_channel_id IS NOT NULL"
+                "SELECT guild_id, queue_data, music_channel_id, dj_role_id FROM guild_settings "
+                "WHERE queue_data IS NOT NULL OR music_channel_id IS NOT NULL OR dj_role_id IS NOT NULL"
             )
 
-            for guild_id, queue_data, music_channel_id in results:
+            for row in results:
+                guild_id = row[0]
+                queue_data = row[1]
+                music_channel_id = row[2]
+                dj_role_id = row[3] if len(row) > 3 else None
+
                 guild_data = self.get_guild_data(guild_id)
 
                 if music_channel_id:
                     guild_data["music_channel_id"] = music_channel_id
+
+                if dj_role_id:
+                    guild_data["dj_role_id"] = dj_role_id
 
                 if queue_data:
                     try:
@@ -649,6 +907,8 @@ class MusicBot(commands.Bot):
                         guild_data["loop_mode"] = data.get("loop_mode", "off")
                         guild_data["shuffle"] = data.get("shuffle", False)
                         guild_data["volume"] = data.get("volume", 100)
+                        guild_data["speed"] = data.get("speed", 1.0)
+                        guild_data["audio_effect"] = data.get("audio_effect", "none")
                     except json.JSONDecodeError:
                         continue
 
@@ -659,7 +919,12 @@ class MusicBot(commands.Bot):
 
     async def save_guild_queue(self, guild_id: int):
         if guild_id in self.db_save_tasks:
-            self.db_save_tasks[guild_id].cancel()
+            old_task = self.db_save_tasks[guild_id]
+            old_task.cancel()
+            try:
+                await old_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         self.db_save_tasks[guild_id] = asyncio.create_task(
             self._delayed_save_guild_queue(guild_id)
@@ -676,6 +941,8 @@ class MusicBot(commands.Bot):
             "loop_mode": guild_data["loop_mode"],
             "shuffle": guild_data["shuffle"],
             "volume": guild_data["volume"],
+            "speed": guild_data.get("speed", 1.0),
+            "audio_effect": guild_data.get("audio_effect", "none"),
         }
         return json.dumps(queue_data)
 
@@ -687,10 +954,19 @@ class MusicBot(commands.Bot):
 
             await self.execute_db_query(
                 """
-                INSERT OR REPLACE INTO guild_settings (guild_id, queue_data, music_channel_id)
-                VALUES (?, ?, ?)
+                INSERT INTO guild_settings (guild_id, queue_data, music_channel_id, dj_role_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    queue_data = excluded.queue_data,
+                    music_channel_id = excluded.music_channel_id,
+                    dj_role_id = excluded.dj_role_id
             """,
-                (guild_id, self._serialize_guild_queue(guild_data), guild_data.get("music_channel_id")),
+                (
+                    guild_id,
+                    self._serialize_guild_queue(guild_data),
+                    guild_data.get("music_channel_id"),
+                    guild_data.get("dj_role_id"),
+                ),
             )
 
         except Exception as e:
@@ -715,14 +991,25 @@ class MusicBot(commands.Bot):
                 "loop_mode": "off",
                 "shuffle": False,
                 "volume": guild_data.get("volume", 100),
+                "speed": 1.0,
+                "audio_effect": "none",
             }
 
             await self.execute_db_query(
                 """
-                INSERT OR REPLACE INTO guild_settings (guild_id, queue_data, music_channel_id)
-                VALUES (?, ?, ?)
+                INSERT INTO guild_settings (guild_id, queue_data, music_channel_id, dj_role_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    queue_data = excluded.queue_data,
+                    music_channel_id = excluded.music_channel_id,
+                    dj_role_id = excluded.dj_role_id
             """,
-                (guild_id, json.dumps(queue_data), guild_data.get("music_channel_id")),
+                (
+                    guild_id,
+                    json.dumps(queue_data),
+                    guild_data.get("music_channel_id"),
+                    guild_data.get("dj_role_id"),
+                ),
             )
             logger.info(f"Cleared queue data from database for guild {guild_id} (history preserved)")
         except Exception as e:
@@ -734,8 +1021,24 @@ class MusicBot(commands.Bot):
     async def get_song_info(self, url_or_query: str) -> Optional[Dict]:
         return await self._music_service.get_song_info(url_or_query)
 
+    # Graceful shutdown
+
     async def close(self):
         logger.info("Shutting down bot...")
+
+        # Cancel all background tasks first
+        for task_method in [
+            self.cleanup_inactive,
+            self.cleanup_cache,
+            self.cleanup_inactive_guilds,
+            self.update_now_playing_timestamps,
+            self.cleanup_validation_cache,
+            self.check_voice_health,
+        ]:
+            try:
+                task_method.cancel()
+            except Exception:
+                pass
 
         logger.info("Saving all queues before shutdown...")
         for guild_id in list(self.guilds_data.keys()):
@@ -747,10 +1050,19 @@ class MusicBot(commands.Bot):
                 if guild_data.get("queue") or guild_data.get("current") or guild_data.get("loop_backup"):
                     await self.execute_db_query(
                         """
-                        INSERT OR REPLACE INTO guild_settings (guild_id, queue_data, music_channel_id)
-                        VALUES (?, ?, ?)
+                        INSERT INTO guild_settings (guild_id, queue_data, music_channel_id, dj_role_id)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(guild_id) DO UPDATE SET
+                            queue_data = excluded.queue_data,
+                            music_channel_id = excluded.music_channel_id,
+                            dj_role_id = excluded.dj_role_id
                     """,
-                        (guild_id, self._serialize_guild_queue(guild_data), guild_data.get("music_channel_id")),
+                        (
+                            guild_id,
+                            self._serialize_guild_queue(guild_data),
+                            guild_data.get("music_channel_id"),
+                            guild_data.get("dj_role_id"),
+                        ),
                     )
             except Exception as e:
                 logger.error(f"Failed to save queue for guild {guild_id} on shutdown: {e}")
@@ -766,6 +1078,7 @@ class MusicBot(commands.Bot):
         for guild_data in self.guilds_data.values():
             if guild_data["voice_client"]:
                 try:
+                    guild_data["intentional_disconnect"] = True
                     await guild_data["voice_client"].disconnect()
                 except Exception as e:
                     logger.debug(f"Error disconnecting voice client: {e}")
@@ -773,3 +1086,4 @@ class MusicBot(commands.Bot):
         self.executor.shutdown(wait=True)
 
         await super().close()
+        logger.info("Bot shutdown complete")

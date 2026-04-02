@@ -4,15 +4,15 @@ from datetime import datetime
 from typing import Optional
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
-from config import COLOR, SONGS_PER_PAGE
+from config import COLOR, SONGS_PER_PAGE, AUDIO_EFFECTS, COMMAND_COOLDOWN, PLAY_COOLDOWN
 from models.song import Song
 from services.music_service import MusicService
 from utils.ban_system import ban_user_id, unban_user_id
 from utils.helpers import (
     format_duration,
-    build_progress_bar,
     get_existing_urls,
     parse_time_to_seconds,
     interaction_check,
@@ -35,6 +35,40 @@ class MusicCommands(commands.Cog):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return await interaction_check(self, interaction)
+
+    # DJ role check
+
+    def _has_dj_permission(self, interaction: discord.Interaction) -> bool:
+        """Check if user has DJ permissions (DJ role, admin, or no DJ role set)."""
+        guild_data = self.bot.get_guild_data(interaction.guild.id)
+        dj_role_id = guild_data.get("dj_role_id")
+
+        if not dj_role_id:
+            return True  # No DJ role set — everyone can use commands
+
+        if interaction.user.guild_permissions.administrator:
+            return True
+
+        return any(role.id == dj_role_id for role in interaction.user.roles)
+
+    async def _check_dj(self, interaction: discord.Interaction) -> bool:
+        """Check DJ permission and send error if denied. Returns True if allowed."""
+        if self._has_dj_permission(interaction):
+            return True
+
+        guild_data = self.bot.get_guild_data(interaction.guild.id)
+        role = interaction.guild.get_role(guild_data.get("dj_role_id", 0))
+        role_name = role.name if role else "DJ"
+        embed = create_embed(
+            "DJ Only",
+            f"This command requires the **{role_name}** role or Administrator.",
+            COLOR,
+            self.bot.user,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return False
+
+    # Voice channel checks
 
     async def check_voice_channel(
             self, interaction: discord.Interaction, allow_auto_join: bool = False
@@ -242,9 +276,11 @@ class MusicCommands(commands.Cog):
         if not success:
             await self.playback_service.play_next(guild_id)
 
-    # Slash Commands Start Here
+    # ═══════════════════════════════════════════════════════════════════
+    # Slash Commands
+    # ═══════════════════════════════════════════════════════════════════
 
-    @discord.app_commands.command(name="join", description="Join your voice channel")
+    @app_commands.command(name="join", description="Join your voice channel")
     async def join_slash(self, interaction: discord.Interaction):
         if not interaction.user.voice:
             embed = create_embed(
@@ -304,10 +340,11 @@ class MusicCommands(commands.Cog):
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="play", description="Play a song or add it to queue"
     )
-    @discord.app_commands.describe(query="Song name, URL, or search term")
+    @app_commands.describe(query="Song name, URL, or search term")
+    @app_commands.checks.cooldown(1, PLAY_COOLDOWN)
     async def play_slash(self, interaction: discord.Interaction, query: str):
         if not await self.check_voice_channel(interaction, allow_auto_join=True):
             return
@@ -368,11 +405,13 @@ class MusicCommands(commands.Cog):
                         skipped_count += 1
 
                 if added_count > 0:
+                    total_duration = self.queue_service.get_queue_duration(interaction.guild.id)
                     embed = create_embed(
                         "Playlist Added",
                         f"Added {added_count} songs to queue!\n"
+                        f"Total queue duration: {format_duration(total_duration)}"
                         + (
-                            f"Skipped {skipped_count} duplicates."
+                            f"\nSkipped {skipped_count} duplicates."
                             if skipped_count > 0
                             else ""
                         ),
@@ -477,12 +516,16 @@ class MusicCommands(commands.Cog):
                     self.queue_service.add_song_to_queue(interaction.guild.id, song)
 
                     position = len(guild_data["queue"])
+                    wait_time = self.queue_service.get_estimated_wait_time(
+                        interaction.guild.id, position
+                    )
+
+                    desc = f"{song}\n\nPosition in queue: {position}"
+                    if wait_time > 0:
+                        desc += f"\nEstimated wait: {format_duration(wait_time)}"
 
                     embed = create_embed(
-                        "Added to Queue",
-                        f"{song}\n\nPosition in queue: {position}",
-                        COLOR,
-                        self.bot.user,
+                        "Added to Queue", desc, COLOR, self.bot.user,
                     )
 
                     if hasattr(song, "thumbnail") and song.thumbnail:
@@ -504,7 +547,8 @@ class MusicCommands(commands.Cog):
             )
             await interaction.edit_original_response(embed=embed)
 
-    @discord.app_commands.command(name="pause", description="Pause the current song")
+    @app_commands.command(name="pause", description="Pause the current song")
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def pause_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
             return
@@ -520,7 +564,8 @@ class MusicCommands(commands.Cog):
             )
             await interaction.response.send_message(embed=embed)
 
-    @discord.app_commands.command(name="resume", description="Resume the paused song")
+    @app_commands.command(name="resume", description="Resume the paused song")
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def resume_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
             return
@@ -536,9 +581,12 @@ class MusicCommands(commands.Cog):
             )
             await interaction.response.send_message(embed=embed)
 
-    @discord.app_commands.command(name="skip", description="Skip the current song")
+    @app_commands.command(name="skip", description="Skip the current song")
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def skip_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
@@ -565,7 +613,8 @@ class MusicCommands(commands.Cog):
             embed = create_embed("Error", "Nothing is playing!", COLOR, self.bot.user)
             await interaction.response.send_message(embed=embed)
 
-    @discord.app_commands.command(name="previous", description="Play the previous song")
+    @app_commands.command(name="previous", description="Play the previous song")
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def previous_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
             return
@@ -616,12 +665,15 @@ class MusicCommands(commands.Cog):
             )
             await interaction.response.send_message(embed=embed)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="skipto", description="Skip to a specific song in the queue"
     )
-    @discord.app_commands.describe(position="Position in queue to skip to")
+    @app_commands.describe(position="Position in queue to skip to")
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def skipto_slash(self, interaction: discord.Interaction, position: int):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
@@ -710,8 +762,8 @@ class MusicCommands(commands.Cog):
 
         await self.bot.save_guild_queue(interaction.guild.id)
 
-    @discord.app_commands.command(name="queue", description="Show the current queue")
-    @discord.app_commands.describe(page="Page number to view (optional)")
+    @app_commands.command(name="queue", description="Show the current queue")
+    @app_commands.describe(page="Page number to view (optional)")
     async def queue_slash(self, interaction: discord.Interaction, page: int = 1):
         guild_data = self.bot.get_guild_data(interaction.guild.id)
 
@@ -721,6 +773,7 @@ class MusicCommands(commands.Cog):
             return
 
         all_visible_songs = self.queue_service.get_visible_queue(interaction.guild.id)
+        total_duration = self.queue_service.get_queue_duration(interaction.guild.id)
 
         total_pages = max(
             1, (len(all_visible_songs) + SONGS_PER_PAGE - 1) // SONGS_PER_PAGE
@@ -736,14 +789,17 @@ class MusicCommands(commands.Cog):
             description = ""
 
             if guild_data["current"]:
-                description += f"**🎵 Now Playing:**\n{guild_data['current']}\n\n"
+                current = guild_data["current"]
+                dur = format_duration(current.duration) if current.duration else "LIVE"
+                description += f"**🎵 Now Playing:**\n{current} `[{dur}]` — {current.requested_by}\n\n"
 
             if all_visible_songs:
                 description += f"**📋 Up Next:**\n"
                 for i, song in enumerate(
                         all_visible_songs[start_idx:end_idx], start_idx + 1
                 ):
-                    description += f"`{i}.` {song}\n"
+                    dur = format_duration(song.duration) if song.duration else "LIVE"
+                    description += f"`{i}.` {song} `[{dur}]` — {song.requested_by}\n"
 
             if not description.strip():
                 description = "Queue is empty!"
@@ -756,15 +812,13 @@ class MusicCommands(commands.Cog):
             )
 
             embed.add_field(
-                name="Queue", value=str(len(all_visible_songs)), inline=True
+                name="Songs", value=str(len(all_visible_songs)), inline=True
             )
             embed.add_field(
-                name="Loop Mode", value=guild_data["loop_mode"].title(), inline=True
+                name="Duration", value=format_duration(total_duration) if total_duration > 0 else "—", inline=True
             )
             embed.add_field(
-                name="Shuffle",
-                value="On" if guild_data["shuffle"] else "Off",
-                inline=True,
+                name="Loop", value=guild_data["loop_mode"].title(), inline=True
             )
 
             pages.append(embed)
@@ -778,12 +832,15 @@ class MusicCommands(commands.Cog):
         await interaction.response.send_message(embed=pages[page - 1], view=view, silent=True)
         view.message = await interaction.original_response()
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="volume", description="Set or show the volume (0-100)"
     )
-    @discord.app_commands.describe(level="Volume level (0-100)")
+    @app_commands.describe(level="Volume level (0-100)")
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def volume_slash(self, interaction: discord.Interaction, level: int = None):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
@@ -809,19 +866,22 @@ class MusicCommands(commands.Cog):
 
         await interaction.response.send_message(embed=embed, silent=True)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="loop", description="Set loop mode (off/song/queue)"
     )
-    @discord.app_commands.describe(mode="Loop mode: off, song, or queue")
-    @discord.app_commands.choices(
+    @app_commands.describe(mode="Loop mode: off, song, or queue")
+    @app_commands.choices(
         mode=[
-            discord.app_commands.Choice(name="Off", value="off"),
-            discord.app_commands.Choice(name="Current Song", value="song"),
-            discord.app_commands.Choice(name="Queue", value="queue"),
+            app_commands.Choice(name="Off", value="off"),
+            app_commands.Choice(name="Current Song", value="song"),
+            app_commands.Choice(name="Queue", value="queue"),
         ]
     )
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def loop_slash(self, interaction: discord.Interaction, mode: str):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         self.queue_service.set_loop_mode(interaction.guild.id, mode)
@@ -837,9 +897,12 @@ class MusicCommands(commands.Cog):
         await self.bot.save_guild_queue(interaction.guild.id)
         await interaction.response.send_message(embed=embed, silent=True)
 
-    @discord.app_commands.command(name="shuffle", description="Toggle shuffle mode")
+    @app_commands.command(name="shuffle", description="Toggle shuffle mode")
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def shuffle_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         shuffle_state = self.queue_service.toggle_shuffle(interaction.guild.id)
@@ -854,11 +917,14 @@ class MusicCommands(commands.Cog):
         await self.bot.save_guild_queue(interaction.guild.id)
         await interaction.response.send_message(embed=embed, silent=True)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="stop", description="Stop playback and clear queue"
     )
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def stop_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
@@ -880,11 +946,14 @@ class MusicCommands(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, silent=True)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="clear", description="Clear the queue without stopping current song"
     )
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def clear_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
@@ -903,7 +972,7 @@ class MusicCommands(commands.Cog):
             await self.bot.save_guild_queue(interaction.guild.id)
             await interaction.response.send_message(embed=embed, silent=True)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="leave", description="Disconnect from voice channel"
     )
     async def leave_slash(self, interaction: discord.Interaction):
@@ -933,7 +1002,7 @@ class MusicCommands(commands.Cog):
             )
             await interaction.response.send_message(embed=embed)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="nowplaying", description="Show the currently playing song"
     )
     async def nowplaying_slash(self, interaction: discord.Interaction):
@@ -953,45 +1022,28 @@ class MusicCommands(commands.Cog):
         current_position = self.playback_service.get_current_position(
             interaction.guild.id
         )
+        is_paused = self.playback_service.is_paused(interaction.guild.id)
 
-        progress = build_progress_bar(current_position, current.duration)
-
-        if self.playback_service.is_paused(interaction.guild.id):
-            status = "Paused"
-            status_emoji = "⏸️"
-        elif guild_data["voice_client"] and guild_data["voice_client"].is_playing():
-            status = "Playing"
-            status_emoji = "🎵"
-        else:
-            status = "Stopped"
-            status_emoji = "⏹️"
-
-        embed = create_embed(
-            f"{status_emoji} Now {status}",
-            f"**{current.title}**\n"
-            f"*by {current.uploader}*\n\n"
-            f"`{format_duration(current_position)} {progress} {format_duration(current.duration)}`\n\n"
-            f"🔊 Volume: {guild_data['volume']}%\n"
-            f"🔁 Loop: {guild_data['loop_mode'].title()}\n"
-            f"🔀 Shuffle: {'On' if guild_data['shuffle'] else 'Off'}\n"
-            f"Autoplay: {'Enabled' if guild_data['autoplay'] else 'Disabled'}\n"
-            f"📝 Requested by: {current.requested_by}\n"
-            f"📋 Queue length: {len(guild_data['queue'])}",
-            COLOR,
-            self.bot.user,
+        title, description = self.playback_service._build_now_playing_description(
+            guild_data, current_position, is_paused
         )
+
+        embed = create_embed(title, description, COLOR, self.bot.user)
 
         if current.thumbnail:
             embed.set_thumbnail(url=current.thumbnail)
 
         await interaction.response.send_message(embed=embed, silent=True)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="remove", description="Remove a song from the queue permanently"
     )
-    @discord.app_commands.describe(position="Position of the song to remove (1-based)")
+    @app_commands.describe(position="Position of the song to remove (1-based)")
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def remove_slash(self, interaction: discord.Interaction, position: int):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
@@ -1041,16 +1093,19 @@ class MusicCommands(commands.Cog):
         await self.bot.save_guild_queue(interaction.guild.id)
         await interaction.response.send_message(embed=embed, silent=True)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="move", description="Move a song to a different position in queue"
     )
-    @discord.app_commands.describe(
+    @app_commands.describe(
         from_pos="Current position of the song", to_pos="New position for the song"
     )
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def move_slash(
             self, interaction: discord.Interaction, from_pos: int, to_pos: int
     ):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
@@ -1092,13 +1147,19 @@ class MusicCommands(commands.Cog):
         await self.bot.save_guild_queue(interaction.guild.id)
         await interaction.response.send_message(embed=embed, silent=True)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="search", description="Search for songs and choose which to play"
     )
-    @discord.app_commands.describe(query="Search term")
-    async def search_slash(self, interaction: discord.Interaction, query: str):
+    @app_commands.describe(
+        query="Search term",
+        results="Number of results to show (1-25, default 5)",
+    )
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
+    async def search_slash(self, interaction: discord.Interaction, query: str, results: int = 5):
         if not await self.check_voice_channel(interaction, allow_auto_join=True):
             return
+
+        results = max(1, min(25, results))
 
         searching_embed = create_embed(
             "Searching...", f"Looking for: `{query}`", COLOR, self.bot.user
@@ -1110,7 +1171,7 @@ class MusicCommands(commands.Cog):
             data = await loop.run_in_executor(
                 self.bot.executor,
                 lambda: self.bot.ytdl.extract_info(
-                    f"ytsearch5:{query}", download=False
+                    f"ytsearch{results}:{query}", download=False
                 ),
             )
 
@@ -1135,13 +1196,13 @@ class MusicCommands(commands.Cog):
                 return
 
             description = ""
-            for i, entry in enumerate(valid_entries[:5], 1):
+            for i, entry in enumerate(valid_entries[:results], 1):
                 duration = entry.get("duration", 0)
                 if duration:
                     minutes, seconds = divmod(int(duration), 60)
                     duration_str = f"{minutes}:{seconds:02d}"
                 else:
-                    duration_str = "0:00"
+                    duration_str = "LIVE" if entry.get("is_live") else "0:00"
 
                 title = entry["title"]
                 if len(title) > 50:
@@ -1154,7 +1215,7 @@ class MusicCommands(commands.Cog):
 
             embed = create_embed("🔍 Search Results", description, COLOR, self.bot.user)
 
-            view = SongSelectView(valid_entries, interaction.user, self)
+            view = SongSelectView(valid_entries[:results], interaction.user, self)
             message = await interaction.edit_original_response(embed=embed, view=view)
             view.message = message
 
@@ -1258,7 +1319,7 @@ class MusicCommands(commands.Cog):
             except discord.HTTPException:
                 pass
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="setmusicchannel", description="Set the channel for music messages"
     )
     async def set_music_channel_slash(self, interaction: discord.Interaction):
@@ -1296,12 +1357,13 @@ class MusicCommands(commands.Cog):
 
         await interaction.response.send_message(embed=embed, silent=True)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="seek", description="Seek to a specific position in the current song"
     )
-    @discord.app_commands.describe(
+    @app_commands.describe(
         position="Time position (e.g., '1:30', '90', '2:15')"
     )
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def seek_slash(self, interaction: discord.Interaction, position: str):
         if not await self.check_voice_channel(interaction):
             return
@@ -1311,6 +1373,14 @@ class MusicCommands(commands.Cog):
         if not guild_data["current"]:
             embed = create_embed(
                 "Error", "No song is currently playing!", COLOR, self.bot.user
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Block seek on livestreams
+        if not guild_data["current"].duration or guild_data["current"].duration == 0:
+            embed = create_embed(
+                "Error", "Cannot seek in a livestream!", COLOR, self.bot.user
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -1415,10 +1485,14 @@ class MusicCommands(commands.Cog):
                 await interaction.edit_original_response(embed=embed)
                 return
 
+            # Build FFmpeg options with seek + speed/effects
+            ffmpeg_opts = self.playback_service._build_ffmpeg_options(guild_data)
+
             seek_strategies = [
                 {
                     "before_options": f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss {seek_seconds} -nostdin -user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'",
-                    "options": "-vn -bufsize 1024k",
+                    "options": ffmpeg_opts["options"].replace(self.bot.ffmpeg_options["options"],
+                                                              "").strip() or "-vn -bufsize 1024k",
                 },
                 {
                     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'",
@@ -1429,6 +1503,13 @@ class MusicCommands(commands.Cog):
                     "options": "-vn",
                 },
             ]
+
+            # For strategy 0 & 1, prepend the audio filter if we have effects/speed
+            base_opts = self.bot.ffmpeg_options["options"]
+            extra_af = ffmpeg_opts["options"].replace(base_opts, "").strip()
+            if extra_af:
+                seek_strategies[0]["options"] = f"-vn -bufsize 1024k {extra_af}"
+                seek_strategies[1]["options"] = f"-vn -ss {seek_seconds} -bufsize 1024k {extra_af}"
 
             source = None
             strategy_used = 0
@@ -1519,10 +1600,11 @@ class MusicCommands(commands.Cog):
             if "seeking_start_time" in guild_data:
                 del guild_data["seeking_start_time"]
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="autoplay",
         description="Toggle autoplay mode (automatically plays related songs when queue ends)"
     )
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def autoplay_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
             return
@@ -1563,7 +1645,373 @@ class MusicCommands(commands.Cog):
         await interaction.followup.send(embed=embed, silent=True)
         await self.bot.save_guild_queue(interaction.guild.id)
 
-    @discord.app_commands.command(
+    # Speed, Effects, Lyrics, Favorites, Stats, DJ, Queue Search
+
+    @app_commands.command(name="speed", description="Set playback speed (0.5x to 2.0x)")
+    @app_commands.describe(rate="Playback speed multiplier (0.5 - 2.0)")
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
+    async def speed_slash(self, interaction: discord.Interaction, rate: float):
+        if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
+            return
+
+        rate = max(0.5, min(2.0, rate))
+        guild_data = self.bot.get_guild_data(interaction.guild.id)
+        guild_data["speed"] = rate
+
+        embed = create_embed(
+            "⏩ Playback Speed",
+            f"Speed set to **{rate:.1f}x**\n"
+            "The change takes effect on the **next song** (or use `/seek` to re-apply now).",
+            COLOR,
+            self.bot.user,
+        )
+        await self.bot.save_guild_queue(interaction.guild.id)
+        await interaction.response.send_message(embed=embed, silent=True)
+
+    @app_commands.command(name="effects", description="Apply an audio effect")
+    @app_commands.describe(effect="Choose an audio effect")
+    @app_commands.choices(
+        effect=[
+            app_commands.Choice(name="None (reset)", value="none"),
+            app_commands.Choice(name="Bass Boost", value="bass_boost"),
+            app_commands.Choice(name="Nightcore", value="nightcore"),
+            app_commands.Choice(name="Vaporwave", value="vaporwave"),
+            app_commands.Choice(name="Treble Boost", value="treble_boost"),
+            app_commands.Choice(name="8D Audio", value="8d"),
+        ]
+    )
+    @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
+    async def effects_slash(self, interaction: discord.Interaction, effect: str):
+        if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
+            return
+
+        guild_data = self.bot.get_guild_data(interaction.guild.id)
+        guild_data["audio_effect"] = effect
+
+        effect_name = AUDIO_EFFECTS.get(effect, {}).get("name", effect)
+        embed = create_embed(
+            "🎧 Audio Effect",
+            f"Effect set to **{effect_name}**\n"
+            "The change takes effect on the **next song** (or use `/seek` to re-apply now).",
+            COLOR,
+            self.bot.user,
+        )
+        await self.bot.save_guild_queue(interaction.guild.id)
+        await interaction.response.send_message(embed=embed, silent=True)
+
+    @app_commands.command(name="lyrics", description="Show lyrics for the current song")
+    @app_commands.checks.cooldown(1, 5)
+    async def lyrics_slash(self, interaction: discord.Interaction):
+        guild_data = self.bot.get_guild_data(interaction.guild.id)
+
+        if not guild_data.get("current"):
+            embed = create_embed("Error", "No song is currently playing!", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        current = guild_data["current"]
+
+        from utils.lyrics import fetch_lyrics
+        result = await fetch_lyrics(current.title, current.uploader)
+
+        if not result or not result.get("lyrics"):
+            embed = create_embed(
+                "Lyrics Not Found",
+                f"Could not find lyrics for **{current.title}**",
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        lyrics_text = result["lyrics"]
+        title = result.get("title", current.title)
+        artist = result.get("artist", current.uploader)
+
+        # Split lyrics into pages if too long (embed limit ~4000 chars)
+        max_len = 3800
+        if len(lyrics_text) <= max_len:
+            embed = create_embed(
+                f"🎤 {title} — {artist}",
+                lyrics_text,
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.followup.send(embed=embed)
+        else:
+            # Paginate
+            pages = []
+            chunks = [lyrics_text[i:i + max_len] for i in range(0, len(lyrics_text), max_len)]
+            for idx, chunk in enumerate(chunks):
+                embed = create_embed(
+                    f"🎤 {title} — {artist} ({idx + 1}/{len(chunks)})",
+                    chunk,
+                    COLOR,
+                    self.bot.user,
+                )
+                pages.append(embed)
+
+            view = PaginationView(pages, interaction.user)
+            await interaction.followup.send(embed=pages[0], view=view)
+            view.message = await interaction.original_response()
+
+    @app_commands.command(name="favorite", description="Add the current song to your favorites")
+    async def favorite_slash(self, interaction: discord.Interaction):
+        guild_data = self.bot.get_guild_data(interaction.guild.id)
+
+        if not guild_data.get("current"):
+            embed = create_embed("Error", "No song is currently playing!", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        current = guild_data["current"]
+        success = await self.bot.add_favorite(interaction.user.id, current)
+
+        if success:
+            embed = create_embed(
+                "❤️ Favorited",
+                f"Added **{current.title}** to your favorites!",
+                COLOR,
+                self.bot.user,
+            )
+        else:
+            embed = create_embed(
+                "Already Favorited",
+                f"**{current.title}** is already in your favorites.",
+                COLOR,
+                self.bot.user,
+            )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="favorites", description="Show or play your favorite songs")
+    @app_commands.describe(action="What to do", position="Song position (for play/remove)")
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="Show all", value="show"),
+            app_commands.Choice(name="Play a song", value="play"),
+            app_commands.Choice(name="Remove a song", value="remove"),
+        ]
+    )
+    async def favorites_slash(
+            self, interaction: discord.Interaction, action: str = "show", position: int = None
+    ):
+        favs = await self.bot.get_favorites(interaction.user.id)
+
+        if not favs:
+            embed = create_embed(
+                "❤️ Favorites",
+                "You have no favorites yet! Use `/favorite` while a song plays.",
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        if action == "show":
+            description = ""
+            for i, song_data in enumerate(favs, 1):
+                title = song_data.get("title", "Unknown")
+                uploader = song_data.get("uploader", "Unknown")
+                description += f"`{i}.` **{title}** by {uploader}\n"
+
+            embed = create_embed(
+                f"❤️ Your Favorites ({len(favs)} songs)",
+                description[:4000],
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        elif action == "play":
+            if position is None or position < 1 or position > len(favs):
+                embed = create_embed(
+                    "Error",
+                    f"Please provide a valid position (1-{len(favs)}).",
+                    COLOR,
+                    self.bot.user,
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            if not await self.check_voice_channel(interaction, allow_auto_join=True):
+                return
+            if not await self.ensure_voice_connection(interaction):
+                embed = create_embed("Error", "Failed to connect to voice!", COLOR, self.bot.user)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            guild_data = self.bot.get_guild_data(interaction.guild.id)
+            song_data = favs[position - 1]
+            song = Song(song_data)
+            song.requested_by = interaction.user.mention
+            self.queue_service.add_song_to_queue(interaction.guild.id, song)
+
+            if guild_data["voice_client"] and not guild_data["voice_client"].is_playing() and not guild_data.get(
+                    "current"):
+                asyncio.create_task(self.playback_service.play_next(interaction.guild.id))
+
+            embed = create_embed(
+                "❤️ Playing Favorite",
+                f"Added **{song.title}** to queue!",
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.response.send_message(embed=embed, silent=True)
+
+        elif action == "remove":
+            if position is None or position < 1 or position > len(favs):
+                embed = create_embed(
+                    "Error",
+                    f"Please provide a valid position (1-{len(favs)}).",
+                    COLOR,
+                    self.bot.user,
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            removed_title = favs[position - 1].get("title", "Unknown")
+            success = await self.bot.remove_favorite(interaction.user.id, position)
+            if success:
+                embed = create_embed(
+                    "Removed",
+                    f"Removed **{removed_title}** from your favorites.",
+                    COLOR,
+                    self.bot.user,
+                )
+            else:
+                embed = create_embed("Error", "Failed to remove.", COLOR, self.bot.user)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="stats", description="Show your listening statistics")
+    async def stats_slash(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        user_id = interaction.user.id
+        guild_id = interaction.guild.id
+
+        # Total listening time & play count
+        totals = await self.bot.fetch_db_query(
+            "SELECT COUNT(*), COALESCE(SUM(duration_seconds), 0) "
+            "FROM user_stats WHERE user_id = ? AND guild_id = ?",
+            (user_id, guild_id),
+        )
+        play_count = totals[0][0] if totals else 0
+        total_seconds = totals[0][1] if totals else 0
+
+        if play_count == 0:
+            embed = create_embed(
+                "📊 Your Stats",
+                "No listening history yet! Play some songs first.",
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        # Top songs
+        top_songs = await self.bot.fetch_db_query(
+            "SELECT song_title, COUNT(*) as cnt FROM user_stats "
+            "WHERE user_id = ? AND guild_id = ? "
+            "GROUP BY song_title ORDER BY cnt DESC LIMIT 5",
+            (user_id, guild_id),
+        )
+
+        # Top artists
+        top_artists = await self.bot.fetch_db_query(
+            "SELECT artist, COUNT(*) as cnt FROM user_stats "
+            "WHERE user_id = ? AND guild_id = ? AND artist != '' "
+            "GROUP BY artist ORDER BY cnt DESC LIMIT 5",
+            (user_id, guild_id),
+        )
+
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+
+        desc = f"**Total plays:** {play_count}\n"
+        desc += f"**Total listening time:** {hours}h {minutes}m\n\n"
+
+        if top_songs:
+            desc += "**Top Songs:**\n"
+            for i, (title, cnt) in enumerate(top_songs, 1):
+                desc += f"`{i}.` {title} ({cnt} plays)\n"
+            desc += "\n"
+
+        if top_artists:
+            desc += "**Top Artists:**\n"
+            for i, (artist, cnt) in enumerate(top_artists, 1):
+                desc += f"`{i}.` {artist} ({cnt} plays)\n"
+
+        embed = create_embed("📊 Your Stats", desc, COLOR, self.bot.user)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="setdj", description="Set or remove the DJ role for this server")
+    @app_commands.describe(role="The DJ role (leave empty to remove)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setdj_slash(self, interaction: discord.Interaction, role: discord.Role = None):
+        guild_data = self.bot.get_guild_data(interaction.guild.id)
+
+        if role:
+            guild_data["dj_role_id"] = role.id
+            await self.bot.save_guild_dj_role(interaction.guild.id, role.id)
+            embed = create_embed(
+                "🎧 DJ Role Set",
+                f"DJ role set to **{role.name}**.\n"
+                f"Only members with this role (or admins) can use skip, stop, volume, loop, shuffle, speed, effects, clear, remove, and move.",
+                COLOR,
+                self.bot.user,
+            )
+        else:
+            guild_data["dj_role_id"] = None
+            await self.bot.save_guild_dj_role(interaction.guild.id, None)
+            embed = create_embed(
+                "🎧 DJ Role Removed",
+                "DJ role restriction removed. All members can use all commands.",
+                COLOR,
+                self.bot.user,
+            )
+
+        await interaction.response.send_message(embed=embed, silent=True)
+
+    @app_commands.command(name="queuesearch", description="Search for a song in the queue")
+    @app_commands.describe(query="Search term to find in queue")
+    async def queuesearch_slash(self, interaction: discord.Interaction, query: str):
+        results = self.queue_service.search_queue(interaction.guild.id, query)
+
+        if not results:
+            embed = create_embed(
+                "🔍 Queue Search",
+                f"No songs matching **{query}** found in queue.",
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        description = ""
+        for pos, song in results[:15]:
+            dur = format_duration(song.duration) if song.duration else "LIVE"
+            description += f"`{pos}.` **{song.title}** by {song.uploader} `[{dur}]`\n"
+
+        if len(results) > 15:
+            description += f"\n*...and {len(results) - 15} more*"
+
+        embed = create_embed(
+            f"🔍 Queue Search: \"{query}\" ({len(results)} found)",
+            description[:4000],
+            COLOR,
+            self.bot.user,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # Help
+
+    @app_commands.command(
         name="help", description="Shows all available commands and how to use them"
     )
     async def help_slash(self, interaction: discord.Interaction):
@@ -1571,7 +2019,7 @@ class MusicCommands(commands.Cog):
 
         **Basic Commands:**
         `/join` - Join your voice channel
-        `/play <query>` - Play a song or add it to queue (supports YouTube URLs, Spotify links, or search terms)
+        `/play <query>` - Play a song or add it to queue (YouTube, Spotify, Apple Music, Tidal, or search)
         `/pause` - Pause the current song
         `/resume` - Resume the paused song
         `/skip` - Skip the current song
@@ -1581,80 +2029,91 @@ class MusicCommands(commands.Cog):
         `/leave` - Disconnect from voice channel
 
         **Queue Management:**
-        `/queue [page]` - Show the current queue (paginated)
+        `/queue [page]` - Show the current queue (with durations & requesters)
         `/clear` - Clear the queue without stopping current song
         `/remove <position>` - Remove a song from queue by position
         `/move <from_pos> <to_pos>` - Move a song to different position
         `/skipto <position>` - Skip to a specific song in queue
+        `/queuesearch <query>` - Search for a song in the queue
 
         **Playback Controls:**
         `/volume [level]` - Set or show volume (0-100)
         `/loop <mode>` - Set loop mode: off, song, or queue
         `/shuffle` - Toggle shuffle mode
-        `/seek <position>` - Seek to specific time (e.g., '1:30', '90', etc)
+        `/seek <position>` - Seek to specific time (e.g., '1:30', '90')
         `/nowplaying` - Show currently playing song info
+        `/speed <rate>` - Set playback speed (0.5x to 2.0x)
+        `/effects <effect>` - Apply audio effect (bass boost, nightcore, vaporwave, etc.)
+        `/lyrics` - Show lyrics for the current song
 
         **Search & Discovery:**
-        `/search <query>` - Search for songs and choose which to play
+        `/search <query> [results]` - Search for songs (configurable result count, 1-25)
         `/history show [page]` - Show recently played songs
-        `/history play <number>` - Play a song from history by number
+        `/history play <number>` - Play a song from history
         `/history add_all` - Add all songs from history to queue
         `/history clear` - Clear all history songs
 
+        **Favorites:**
+        `/favorite` - Add the current song to your favorites
+        `/favorites show` - Show your favorite songs
+        `/favorites play <position>` - Play a song from your favorites
+        `/favorites remove <position>` - Remove a song from your favorites
+
+        **Stats:**
+        `/stats` - Show your listening statistics (top songs, artists, total time)
+
         **Playlist Commands: (your playlist(s) are server specific)**
-        `/playlist create <n>` - Create a new empty playlist
-        `/playlist add <n> <song>` - Add a song to playlist by searching
-        `/playlist add-from-queue <n> <from_queue>` - Add song from current queue to playlist
-        `/playlist add-all-queue <n>` - Add entire current queue to playlist
-        `/playlist remove <n> <position>` - Remove a song from playlist
-        `/playlist move <n> <from_pos> <to_pos>` - Move song in playlist
-        `/playlist load <n>` - Load a playlist into the queue
-        `/playlist show <n> [page]` - Show songs in a playlist
-        `/playlist list` - List all your playlists
-        `/playlist delete <n>` - Delete a playlist
+        `/playlist create/add/remove/move/load/show/list/delete`
+        `/playlist add-from-queue` - Add a song from current queue
+        `/playlist add-all-queue` - Add entire queue to playlist
+        `/playlist collab-add <playlist> <user>` - Add a collaborator to your playlist
+        `/playlist collab-remove <playlist> <user>` - Remove a collaborator
+        `/playlist collab-list <playlist>` - List collaborators on a playlist
+        `/playlist my-collabs` - Show playlists you collaborate on
+        Use `collaborative: True` on add/remove/load/show to access collab playlists
 
         **Global Playlist Commands: (accessible from any server)**
-        `/globalplaylist create <n>` - Create a new global playlist
-        `/globalplaylist add <n> <song>` - Add a song to global playlist
-        `/globalplaylist add-from-queue <n> <from_queue>` - Add song from queue to global playlist
-        `/globalplaylist add-all-queue <n>` - Add entire queue to global playlist
-        `/globalplaylist remove <n> <position>` - Remove a song from global playlist
-        `/globalplaylist move <n> <from_pos> <to_pos>` - Move song in global playlist
-        `/globalplaylist load <n>` - Load a global playlist into the queue
-        `/globalplaylist show <n> [page]` - Show songs in a global playlist
-        `/globalplaylist list` - List all your global playlists
-        `/globalplaylist delete <n>` - Delete a global playlist
+        `/globalplaylist create/add/remove/move/load/show/list/delete`
+        `/globalplaylist collab-add/collab-remove/collab-list/my-collabs`
 
         **Settings:**
         `/setmusicchannel` - Set the channel for music messages
+        `/setdj [role]` - Set or remove DJ role (admin only)
 
         **Tips:**
-        • Use button controls on the 'Now Playing' message: 
-        ⏯️ Pause/Resume, ⏮️ Previous, ⏭️ Skip, 🔀 Shuffle, 🔁 Loop, ⏹️ Stop, 🔊/🔉 Volume
-        • Supports YouTube URLs, YouTube playlists, Spotify links, and search queries
+        • Use button controls on the 'Now Playing' message
+        • Supports YouTube, Spotify, Apple Music, Tidal, SoundCloud & search
+        • Queue shows duration estimates and who requested each song
+        • Use `/speed` and `/effects` for playback customization
         • Queue persists across bot restarts
-        • You must be in the same voice channel as the bot to control playback
-        • Duplicates are not allowed
         """
 
         embed = create_embed("Command Guide", description, COLOR, self.bot.user)
         await interaction.response.send_message(embed=embed, silent=True)
 
+    # Error handler
+
     async def cog_app_command_error(
             self,
             interaction: discord.Interaction,
-            error: discord.app_commands.AppCommandError,
+            error: app_commands.AppCommandError,
     ):
-        logger.error(f"Slash command error: {error}")
-
-        if isinstance(error, discord.app_commands.CommandOnCooldown):
+        if isinstance(error, app_commands.CommandOnCooldown):
             embed = create_embed(
                 "⏰ Command on Cooldown",
-                f"Try again in {error.retry_after:.2f} seconds.",
+                f"Try again in {error.retry_after:.1f} seconds.",
+                COLOR,
+                self.bot.user,
+            )
+        elif isinstance(error, app_commands.MissingPermissions):
+            embed = create_embed(
+                "❌ Missing Permissions",
+                "You need Administrator permission to use this command.",
                 COLOR,
                 self.bot.user,
             )
         else:
+            logger.error(f"Slash command error: {error}")
             embed = create_embed(
                 "❌ Error",
                 "An unexpected error occurred. Please try again.",
@@ -1668,9 +2127,11 @@ class MusicCommands(commands.Cog):
             else:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
         except discord.NotFound:
-            logger.warning(f"Could not send error response — interaction expired (10062): {error}")
+            logger.warning(f"Could not send error response — interaction expired: {error}")
         except Exception as e:
             logger.warning(f"Failed to send error response for command error: {e}")
+
+    # Owner-only prefix commands (hidden)
 
     @commands.command(name="leaveguild")
     @commands.is_owner()

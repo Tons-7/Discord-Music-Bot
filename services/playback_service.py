@@ -6,7 +6,7 @@ from datetime import datetime
 import aiohttp
 import discord
 
-from config import COLOR, NOW_PLAYING_RESEND_SECONDS
+from config import COLOR, NOW_PLAYING_RESEND_SECONDS, AUDIO_EFFECTS
 from models.song import Song
 from services.music_service import MusicService
 from services.queue_service import QueueService
@@ -20,6 +20,48 @@ class PlaybackService:
         self.bot = bot
         self.queue_service = QueueService(bot)
         self.music_service = MusicService(bot)
+
+    # FFmpeg options builder (speed + effects)
+
+    def _build_ffmpeg_options(self, guild_data: dict) -> dict:
+        """Build FFmpeg options with audio filters for speed and effects."""
+        base_before = self.bot.ffmpeg_options["before_options"]
+        base_options = self.bot.ffmpeg_options["options"]
+
+        filters = []
+        speed = guild_data.get("speed", 1.0)
+        effect = guild_data.get("audio_effect", "none")
+
+        # Speed via atempo (preserves pitch)
+        if speed != 1.0:
+            # atempo only supports 0.5–100.0; for <0.5 chain two filters
+            if speed < 0.5:
+                filters.append(f"atempo=0.5,atempo={speed / 0.5:.4f}")
+            else:
+                filters.append(f"atempo={speed:.4f}")
+
+        # Audio effect
+        if effect != "none" and effect in AUDIO_EFFECTS:
+            effect_filter = AUDIO_EFFECTS[effect]["filter"]
+            if effect_filter:
+                filters.append(effect_filter)
+
+        if filters:
+            filter_str = ",".join(filters)
+            options = f'{base_options} -af "{filter_str}"'
+        else:
+            options = base_options
+
+        return {"before_options": base_before, "options": options}
+
+    def get_effective_speed(self, guild_data: dict) -> float:
+        """Calculate the combined speed multiplier (atempo * effect speed)."""
+        speed = guild_data.get("speed", 1.0)
+        effect = guild_data.get("audio_effect", "none")
+        effect_mult = AUDIO_EFFECTS.get(effect, {}).get("speed_mult", 1.0)
+        return speed * effect_mult
+
+    # ── Pause / resume ─────────────────────────────────────────────────
 
     def handle_pause(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
@@ -54,21 +96,25 @@ class PlaybackService:
         if not voice_client:
             return guild_data["seek_offset"]
 
+        effective_speed = self.get_effective_speed(guild_data)
+
         if voice_client.is_paused():
             if guild_data.get("pause_position") is not None:
                 return guild_data["pause_position"]
-            elapsed = int((datetime.now() - guild_data["start_time"]).total_seconds())
-            return elapsed + guild_data["seek_offset"]
+            elapsed = (datetime.now() - guild_data["start_time"]).total_seconds()
+            return int(elapsed * effective_speed) + guild_data["seek_offset"]
 
         if voice_client.is_playing():
-            elapsed = int((datetime.now() - guild_data["start_time"]).total_seconds())
-            return elapsed + guild_data["seek_offset"]
+            elapsed = (datetime.now() - guild_data["start_time"]).total_seconds()
+            return int(elapsed * effective_speed) + guild_data["seek_offset"]
 
         return guild_data["seek_offset"]
 
     def is_paused(self, guild_id: int) -> bool:
         guild_data = self.bot.get_guild_data(guild_id)
         return guild_data["voice_client"] and guild_data["voice_client"].is_paused()
+
+    # ── Timestamp updates ──────────────────────────────────────────────
 
     async def update_timestamps_task(self):
         current_time = asyncio.get_running_loop().time()
@@ -185,12 +231,14 @@ class PlaybackService:
         except discord.HTTPException:
             return False
 
+    # ── Now-playing embed builders ─────────────────────────────────────
+
     def _build_now_playing_description(
             self, guild_data: dict, current_position: int, is_paused: bool
     ) -> tuple:
         """Shared description builder used by both the initial embed and 1-second updates."""
         current = guild_data["current"]
-        progress = build_progress_bar(current_position, current.duration)
+        is_live = getattr(current, "is_live", False) or not current.duration
         voice_client = guild_data.get("voice_client")
 
         if is_paused:
@@ -201,14 +249,37 @@ class PlaybackService:
             status, status_emoji = "Playing", "\U0001f3b5"
 
         title = f"{status_emoji} Now {status}"
+
+        # Progress line
+        if is_live:
+            progress_line = f"`\U0001f534 LIVE — {format_duration(current_position)}`"
+        else:
+            progress = build_progress_bar(current_position, current.duration)
+            progress_line = f"`{format_duration(current_position)} {progress} {format_duration(current.duration)}`"
+
+        # Speed/effect indicators
+        speed = guild_data.get("speed", 1.0)
+        effect = guild_data.get("audio_effect", "none")
+        modifiers = []
+        if speed != 1.0:
+            modifiers.append(f"\u23e9 Speed: {speed:.1f}x")
+        if effect != "none":
+            effect_name = AUDIO_EFFECTS.get(effect, {}).get("name", effect)
+            modifiers.append(f"\U0001f3a7 Effect: {effect_name}")
+        modifier_line = "\n".join(modifiers)
+
         description = (
             f"**{current.title}**\n"
             f"*by {current.uploader}*\n\n"
-            f"`{format_duration(current_position)} {progress} {format_duration(current.duration)}`\n\n"
+            f"{progress_line}\n\n"
             f"\U0001f50a Volume: {guild_data['volume']}%\n"
             f"\U0001f501 Loop: {guild_data['loop_mode'].title()}\n"
             f"\U0001f500 Shuffle: {'On' if guild_data['shuffle'] else 'Off'}\n"
             f"Autoplay: {'Enabled' if guild_data['autoplay'] else 'Disabled'}\n"
+        )
+        if modifier_line:
+            description += f"{modifier_line}\n"
+        description += (
             f"\U0001f464 Requested by: {current.requested_by}\n"
             f"\U0001f4cb Queue length: {len(guild_data['queue'])}"
         )
@@ -237,6 +308,8 @@ class PlaybackService:
                 logger.warning(f"Message edit failed: {e}")
         except Exception as e:
             logger.warning(f"Unexpected message edit error: {e}")
+
+    # ── Core playback loop ─────────────────────────────────────────────
 
     async def play_next(self, guild_id: int):
         queue_service = self.queue_service
@@ -321,6 +394,9 @@ class PlaybackService:
                     song.thumbnail = fresh_data["thumbnail"]
                 if fresh_data.get("uploader"):
                     song.uploader = fresh_data["uploader"]
+                # Propagate livestream flag
+                if fresh_data.get("is_live"):
+                    song.is_live = True
 
                 return await self._start_playback(guild_id, song)
 
@@ -343,8 +419,11 @@ class PlaybackService:
                 guild_data["voice_client"].stop()
                 await asyncio.sleep(0.3)
 
+            # Build FFmpeg options with speed/effect filters
+            ffmpeg_opts = self._build_ffmpeg_options(guild_data)
+
             source = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(song.url, **self.bot.ffmpeg_options),
+                discord.FFmpegPCMAudio(song.url, **ffmpeg_opts),
                 volume=guild_data["volume"] / 100,
             )
 
@@ -358,6 +437,9 @@ class PlaybackService:
                     else:
                         if guild_data["current"] and not guild_data.get("seeking", False):
                             queue_service.add_to_history(guild_id, guild_data["current"])
+
+                            # Record listening stats for the requester
+                            self._record_stat_from_callback(guild_id, guild_data)
 
                     if not guild_data.get("seeking", False):
                         coro = self.play_next(guild_id)
@@ -409,6 +491,38 @@ class PlaybackService:
             logger.error(f"Error creating audio source for {song.title}: {e}")
             await self._handle_song_skip(guild_id, song)
             return False
+
+    def _record_stat_from_callback(self, guild_id: int, guild_data: dict):
+        """Fire-and-forget stat recording from the after_playing thread callback."""
+        current = guild_data.get("current")
+        if not current:
+            return
+
+        # Parse requester mention to user ID
+        requester = current.requested_by or ""
+        match = re.search(r'<@!?(\d+)>', requester)
+        if not match:
+            return
+
+        user_id = int(match.group(1))
+
+        # Calculate actual listening time instead of full song duration
+        start_time = guild_data.get("start_time")
+        if start_time:
+            elapsed = (datetime.now() - start_time).total_seconds()
+            effective_speed = self.get_effective_speed(guild_data)
+            duration = int(elapsed * effective_speed)
+        else:
+            duration = current.duration if current.duration and current.duration > 0 else 0
+
+        if duration > 0:
+            # Cap at song duration to avoid over-counting
+            if current.duration and current.duration > 0:
+                duration = min(duration, current.duration)
+            coro = self.bot.record_listening_stat(user_id, guild_id, current, duration)
+            asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
+
+    # Empty queue / autoplay
 
     async def _handle_empty_queue(self, guild_id: int) -> bool:
         queue_service = self.queue_service
@@ -600,16 +714,7 @@ class PlaybackService:
             logger.warning(f"Failed to send max retries notification for guild {guild_id}: {e}")
 
     async def _prefetch_autoplay_song(self, guild_id: int, current_song: Song):
-        """
-        Pre-fetch the next autoplay song in the background while the current song is playing.
-
-        The result is stored in guild_data['autoplay_prefetch'] and is NOT added to the
-        queue yet. _handle_empty_queue consumes it when the queue actually runs out,
-        eliminating the silence gap caused by fetching on demand.
-
-        If autoplay is disabled before the fetch completes, the task is canceled and
-        the result is discarded — so no song is auto-queued.
-        """
+        """Pre-fetch the next autoplay song in background while the current song plays."""
         guild_data = self.bot.get_guild_data(guild_id)
 
         try:

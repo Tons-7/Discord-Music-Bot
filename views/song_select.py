@@ -26,6 +26,9 @@ class SongSelectView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
+        if not self.message:
+            return
+
         try:
             embed = create_embed(
                 "⏰ Search Timed Out",
@@ -110,6 +113,7 @@ class SongSelect(discord.ui.Select):
 
         except Exception as e:
             logger.error(f"Error in song selection: {e}")
+            self.view.selected = False
             error_embed = create_embed(
                 "❌ Error",
                 "Failed to add song to queue.",

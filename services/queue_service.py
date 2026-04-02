@@ -1,8 +1,9 @@
 import logging
 import random
 from typing import List, Optional
-from models.song import Song
+
 from config import MAX_HISTORY_SIZE
+from models.song import Song
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +52,11 @@ class QueueService:
 
         if len(guild_data["history"]) > MAX_HISTORY_SIZE:
             guild_data["history"] = guild_data["history"][-MAX_HISTORY_SIZE:]
-
+            # Clamp position to new length (use len after trim)
+            trimmed_len = len(guild_data["history"])
             guild_data["history_position"] = min(
-                guild_data.get(
-                    "history_position",
-                    len(guild_data["history"])
-                ),
-                len(guild_data["history"]),
+                guild_data.get("history_position", trimmed_len),
+                trimmed_len,
             )
 
         existing_urls = {s.webpage_url for s in guild_data["loop_backup"]}
@@ -107,21 +106,21 @@ class QueueService:
 
     def move_song_in_queue(self, guild_id: int, from_pos: int, to_pos: int) -> bool:
         guild_data = self.bot.get_guild_data(guild_id)
+        queue = guild_data["queue"]
 
-        if (from_pos < 0 or from_pos >= len(guild_data["queue"]) or
-                to_pos < 0 or to_pos >= len(guild_data["queue"])):
+        if from_pos < 0 or from_pos >= len(queue) or to_pos < 0 or to_pos >= len(queue):
             return False
 
-        song = guild_data["queue"].pop(from_pos)
-        guild_data["queue"].insert(to_pos, song)
+        song = queue.pop(from_pos)
+        # Clamp to_pos to valid range after pop (list is now 1 shorter)
+        to_pos = min(to_pos, len(queue))
+        queue.insert(to_pos, song)
         return True
 
     def shuffle_queue(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
         if guild_data["queue"]:
             random.shuffle(guild_data["queue"])
-        if guild_data["loop_backup"]:
-            random.shuffle(guild_data["loop_backup"])
 
     def toggle_shuffle(self, guild_id: int) -> bool:
         guild_data = self.bot.get_guild_data(guild_id)
@@ -140,3 +139,54 @@ class QueueService:
         guild_data = self.bot.get_guild_data(guild_id)
         guild_data["queue"].append(song)
         guild_data["loop_backup"].append(Song.from_dict(song.to_dict()))
+
+    # Queue duration & search
+
+    def get_queue_duration(self, guild_id: int) -> int:
+        """Total duration of all songs in queue (seconds). 0-duration songs are excluded."""
+        guild_data = self.bot.get_guild_data(guild_id)
+        return sum(s.duration for s in guild_data["queue"] if s.duration and s.duration > 0)
+
+    def get_estimated_wait_time(self, guild_id: int, position: int) -> int:
+        """Estimated wall-clock seconds until a given 1-based queue position starts playing.
+
+        Accounts for the remaining time of the current song plus all songs before
+        the target position, adjusted for current playback speed.
+        """
+        guild_data = self.bot.get_guild_data(guild_id)
+        playback_service = self.bot._playback_service
+        effective_speed = playback_service.get_effective_speed(guild_data)
+        wait = 0
+
+        # Add remaining time of current song
+        current = guild_data.get("current")
+        if current and current.duration:
+            current_pos = playback_service.get_current_position(guild_id)
+            remaining = max(0, current.duration - current_pos)
+            wait += remaining
+
+        # Add durations of songs before target position
+        for i, song in enumerate(guild_data["queue"]):
+            if i >= position - 1:
+                break
+            if song.duration and song.duration > 0:
+                wait += song.duration
+
+        # Adjust for playback speed (songs play faster/slower than their duration)
+        if effective_speed > 0 and effective_speed != 1.0:
+            wait = int(wait / effective_speed)
+
+        return wait
+
+    def search_queue(self, guild_id: int, query: str) -> List[tuple[int, Song]]:
+        """Search the queue for songs matching a query. Returns (1-based position, Song) pairs."""
+        guild_data = self.bot.get_guild_data(guild_id)
+        query_lower = query.lower()
+        results = []
+
+        for i, song in enumerate(guild_data["queue"]):
+            if (query_lower in song.title.lower()
+                    or query_lower in song.uploader.lower()):
+                results.append((i + 1, song))
+
+        return results
