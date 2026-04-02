@@ -7,5 +7,5 @@ __all__ = [
     'build_progress_bar',
     'get_existing_urls',
     'parse_time_to_seconds',
-    'create_embed'
+    'create_embed',
 ]

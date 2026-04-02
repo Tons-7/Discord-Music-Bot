@@ -2,7 +2,10 @@ import asyncio
 import logging
 import random
 import re
+import time
 from typing import Optional, Dict, List, Set
+
+import aiohttp
 
 from config import MAX_PLAYLIST_SIZE
 from models.song import Song
@@ -13,6 +16,28 @@ logger = logging.getLogger(__name__)
 class MusicService:
     def __init__(self, bot):
         self.bot = bot
+
+    # Rate limiter (for Last.fm)
+
+    async def _rate_limit_lastfm(self):
+        """Wait if we're exceeding the Last.fm rate limit."""
+        async with self.bot._lastfm_lock:
+            now = time.monotonic()
+            limit = self.bot.lastfm_rate_limit
+            calls = self.bot._lastfm_call_times
+
+            # Discard entries older than 1 second
+            while calls and now - calls[0] > 1.0:
+                calls.pop(0)
+
+            if len(calls) >= limit:
+                sleep_time = 1.0 - (now - calls[0])
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
+
+            self.bot._lastfm_call_times.append(time.monotonic())
+
+    # YouTube helpers
 
     @staticmethod
     def _normalize_youtube_entry(entry: Dict) -> Optional[Dict]:
@@ -44,7 +69,13 @@ class MusicService:
         if "url" not in normalized or not normalized["url"]:
             normalized["url"] = webpage_url
 
+        # Livestream flag — propagate so callers can detect it
+        if entry.get("is_live"):
+            normalized["is_live"] = True
+
         return normalized
+
+    # Cache
 
     async def get_song_info_cached(self, url_or_query: str) -> Optional[Dict]:
         cache_key = url_or_query.lower().strip()
@@ -76,59 +107,76 @@ class MusicService:
 
             logger.debug(f"Cleaned cache, now has {len(self.bot.song_cache)} entries")
 
+    # Main info router
+
     async def get_song_info(self, url_or_query: str) -> Optional[Dict]:
         try:
             loop = asyncio.get_running_loop()
+            lower = url_or_query.lower()
 
-            if any(
-                    platform in url_or_query.lower()
-                    for platform in [
-                        "youtube.com",
-                        "youtu.be",
-                        "soundcloud.com",
-                        "spotify.com",
-                    ]
-            ):
-                if "spotify.com" in url_or_query and self.bot.spotify:
-                    return await self.handle_spotify_url(url_or_query)
-                else:
-                    for attempt in range(2):
-                        try:
-                            data = await loop.run_in_executor(
-                                self.bot.executor,
-                                lambda: self.bot.ytdl.extract_info(
-                                    url_or_query, download=False
-                                ),
-                            )
-                            if data:
-                                return data
-                        except Exception as e:
-                            logger.warning(f"Attempt {attempt + 1} failed: {e}")
-                            if attempt < 1:
-                                await asyncio.sleep(1)
-                    return None
-            else:
-                return await self.search_youtube(url_or_query)
+            # Platform-specific handling
+            if "spotify.com" in lower and self.bot.spotify:
+                return await self.handle_spotify_url(url_or_query)
+
+            if "music.apple.com" in lower:
+                return await self._handle_apple_music_url(url_or_query)
+
+            if "tidal.com" in lower:
+                return await self._handle_tidal_url(url_or_query)
+
+            if any(p in lower for p in ["youtube.com", "youtu.be", "soundcloud.com"]):
+                return await self._extract_with_retries(url_or_query, max_retries=3)
+
+            # Fallback: text search
+            return await self.search_youtube(url_or_query)
+
         except Exception as e:
             logger.error(f"Error getting song info: {e}")
         return None
 
-    async def search_youtube(self, query: str) -> Optional[Dict]:
+    async def _extract_with_retries(
+            self, url: str, max_retries: int = 3
+    ) -> Optional[Dict]:
+        """Extract info with exponential backoff."""
+        loop = asyncio.get_running_loop()
+        for attempt in range(max_retries):
+            try:
+                data = await loop.run_in_executor(
+                    self.bot.executor,
+                    lambda: self.bot.ytdl.extract_info(url, download=False),
+                )
+                if data:
+                    return data
+            except Exception as e:
+                logger.warning(f"Extract attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+        return None
+
+    # YouTube search
+
+    async def search_youtube(self, query: str, limit: int = 1) -> Optional[Dict]:
         try:
             loop = asyncio.get_running_loop()
+            search_prefix = f"ytsearch{limit}:" if limit > 1 else "ytsearch:"
             data = await loop.run_in_executor(
                 self.bot.executor,
-                lambda: self.bot.ytdl.extract_info(f"ytsearch:{query}", download=False),
+                lambda: self.bot.ytdl.extract_info(f"{search_prefix}{query}", download=False),
             )
 
             if data and "entries" in data and data["entries"]:
-                for raw_entry in data["entries"]:
-                    normalized = self._normalize_youtube_entry(raw_entry)
-                    if normalized:
-                        return normalized
+                if limit == 1:
+                    for raw_entry in data["entries"]:
+                        normalized = self._normalize_youtube_entry(raw_entry)
+                        if normalized:
+                            return normalized
+                else:
+                    return data  # Return full results for multi-search
         except Exception as e:
             logger.error(f"YouTube search error: {e}")
         return None
+
+    # Playlist handling
 
     async def handle_youtube_playlist(self, url: str) -> List[Dict]:
         try:
@@ -170,10 +218,11 @@ class MusicService:
             logger.error(f"Playlist handling error: {e}")
             return []
 
+    # Spotify
+
     @staticmethod
     def _spotify_search_query(track: Dict) -> Optional[str]:
-        """Build a YouTube search query from a Spotify track dict.
-        Returns None if the track has no usable name."""
+        """Build a YouTube search query from a Spotify track dict."""
         track_name = track.get("name", "").strip()
         if not track_name:
             return None
@@ -186,12 +235,7 @@ class MusicService:
         return track_name
 
     def _collect_spotify_tracks(self, first_page: Dict, is_playlist: bool) -> List[Dict]:
-        """
-        Walk all Spotify pages and return a flat list of track dicts,  capped at MAX_PLAYLIST_SIZE.
-
-        - is_playlist=True  → each page item is {"track": {...}, "added_at": ...}
-        - is_playlist=False → each page item is the track dict directly (album tracks)
-        """
+        """Walk all Spotify pages and return a flat list of track dicts."""
         tracks = []
         page = first_page
 
@@ -200,7 +244,6 @@ class MusicService:
                 if len(tracks) >= MAX_PLAYLIST_SIZE:
                     break
                 track = item.get("track") if is_playlist else item
-                # track can be None for removed/unavailable playlist entries
                 if track and track.get("name"):
                     tracks.append(track)
 
@@ -274,12 +317,96 @@ class MusicService:
             logger.error(f"Spotify error: {e}")
         return None
 
+    # Apple Music (free via iTunes Lookup API)
+
+    async def _handle_apple_music_url(self, url: str) -> Optional[Dict]:
+        """Extract song info from Apple Music URL via the free iTunes Lookup API."""
+        try:
+            # Extract track ID from URL
+            # Formats: .../album/name/123?i=456  or  .../song/name/456
+            track_id = None
+            if "i=" in url:
+                track_id = url.split("i=")[-1].split("&")[0]
+            elif "/song/" in url:
+                track_id = url.rstrip("/").split("/")[-1]
+
+            if track_id and track_id.isdigit():
+                timeout = aiohttp.ClientTimeout(total=10)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    api_url = f"https://itunes.apple.com/lookup?id={track_id}&entity=song"
+                    async with session.get(api_url) as resp:
+                        if resp.status == 200:
+                            data = await resp.json(content_type=None)
+                            results = data.get("results", [])
+                            for item in results:
+                                if item.get("wrapperType") == "track":
+                                    track = item.get("trackName", "")
+                                    artist = item.get("artistName", "")
+                                    if track:
+                                        return await self.search_youtube(f"{track} {artist}".strip())
+
+            # Fallback: extract from URL path
+            return await self._search_from_url_path(url)
+
+        except Exception as e:
+            logger.warning(f"Apple Music URL handling failed: {e}")
+            return await self._search_from_url_path(url)
+
+    # Tidal
+
+    async def _handle_tidal_url(self, url: str) -> Optional[Dict]:
+        """Extract song info from Tidal URL by scraping page title."""
+        try:
+            return await self._search_from_url_path(url)
+        except Exception as e:
+            logger.warning(f"Tidal URL handling failed: {e}")
+            return None
+
+    # Generic URL → search fallback
+
+    async def _search_from_url_path(self, url: str) -> Optional[Dict]:
+        """Try to extract a useful search query from any music URL's HTML title."""
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        # Read only first 20KB to find <title>
+                        html = await resp.text(encoding="utf-8", errors="replace")
+                        html = html[:20000]
+                        match = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
+                        if match:
+                            title = match.group(1).strip()
+                            # Remove common suffixes
+                            for suffix in [" - Apple Music", " on Apple Music", " - Tidal",
+                                           " | Tidal", " - Listen on", " | Listen"]:
+                                title = title.replace(suffix, "")
+                            title = title.strip()
+                            if title and len(title) > 2:
+                                logger.info(f"Extracted search query from URL: {title}")
+                                return await self.search_youtube(title)
+        except Exception as e:
+            logger.debug(f"URL title extraction failed: {e}")
+        return None
+
+    # Livestream detection
+
+    @staticmethod
+    def is_livestream(song_data: Dict) -> bool:
+        """Check if extracted data represents a livestream/radio."""
+        if song_data.get("is_live"):
+            return True
+        # Only flag as livestream if duration is 0 AND is_live is explicitly True
+        duration = song_data.get("duration")
+        if duration == 0 and song_data.get("is_live") is True:
+            return True
+        return False
+
+    # Artist/title extraction for Last.fm
+
     @staticmethod
     def _clean_artist_name(name: str) -> str:
-        """
-        Strip genre/label markers that YouTube uploaders often prepend to OST titles.
-        """
-        # Remove content inside CJK bracket pairs like 「Soundtrack」
+        """Strip genre/label markers from artist names."""
         name = re.sub(r'[「」【】『』〔〕][^「」【】『』〔〕]*[「」【】『』〔〕]', '', name)
         name = re.sub(
             r'[\(\[【「]?\s*(ost|o\.s\.t\.?|soundtrack|bgm|music|theme|score|original)s?\s*[\)\]】」]?',
@@ -289,9 +416,7 @@ class MusicService:
 
     @staticmethod
     def _extract_artist_from_title(title: str, uploader: str) -> str:
-        """
-        Extract a clean artist name from a YouTube title and uploader.
-        """
+        """Extract a clean artist name from a YouTube title and uploader."""
         for sep in [' - ', ' \u2013 ', ' \u2014 ']:
             if sep in title:
                 parts = [p.strip() for p in title.split(sep)]
@@ -324,9 +449,7 @@ class MusicService:
 
     @staticmethod
     def _extract_song_title(title: str) -> str:
-        """
-        Return a lightly cleaned version of the YouTube title for Last.fm lookup.
-        """
+        """Return a lightly cleaned version of the YouTube title for Last.fm lookup."""
         clean = re.sub(
             r'\s*[\(\[](official(\s*(music\s*)?video|[\s\w]*audio)?|lyric\s*video|lyrics|hd|hq|4k|mv)[\)\]]',
             '', title, flags=re.IGNORECASE
@@ -335,11 +458,7 @@ class MusicService:
 
     @staticmethod
     def _extract_content_name(title: str) -> Optional[str]:
-        """
-        For OST-style titles extract the franchise/game name.
-        Returns None if no clear content name is found.
-        """
-        # Pattern: optional_bracket_label  CONTENT_NAME  separator  track_name
+        """For OST-style titles extract the franchise/game name."""
         match = re.match(
             r'^[「\[\(【]?\s*(?:soundtrack|ost|o\.s\.t\.?|bgm|music|score|theme)s?\s*[」\]\)】]?\s*'
             r'([A-Za-z0-9][A-Za-z0-9\s\'\-:!]+?)\s*[-\u2013\u2014|]',
@@ -348,6 +467,16 @@ class MusicService:
         if match:
             return match.group(1).strip()
         return None
+
+    def _normalize_track_name(self, name: str) -> str:
+        if not name:
+            return ""
+        normalized = name.lower().strip()
+        normalized = re.sub(r'[^\w\s]', '', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized)
+        return normalized
+
+    # Related songs (Last.fm autoplay)
 
     async def get_related_songs(self, song: 'Song', limit: int = 1) -> List[Dict]:
         try:
@@ -370,7 +499,10 @@ class MusicService:
 
             loop = asyncio.get_running_loop()
 
+            # Similar tracks
             try:
+                await self._rate_limit_lastfm()
+
                 def _fetch_similar_tracks():
                     t = self.bot.lastfm.get_track(original_artist, clean_title)
                     return t.get_similar(limit=limit * 5)
@@ -408,8 +540,11 @@ class MusicService:
             except Exception as e:
                 logger.warning(f"Error getting similar tracks: {e}")
 
+            # Similar artists
             if len(candidate_tracks) < limit * 5:
                 try:
+                    await self._rate_limit_lastfm()
+
                     def _fetch_similar_artists():
                         a = self.bot.lastfm.get_artist(original_artist)
                         return a.get_similar(limit=5)
@@ -423,12 +558,15 @@ class MusicService:
                                 similar_artist_name = artist_item.get_name()
                                 normalized_artist = similar_artist_name.lower()
 
+                                await self._rate_limit_lastfm()
+
                                 def _fetch_artist_top_tracks(name=similar_artist_name):
                                     obj = self.bot.lastfm.get_artist(name)
                                     return obj.get_top_tracks(limit=5)
 
-                                similar_top_tracks = await loop.run_in_executor(self.bot.executor,
-                                                                                _fetch_artist_top_tracks)
+                                similar_top_tracks = await loop.run_in_executor(
+                                    self.bot.executor, _fetch_artist_top_tracks
+                                )
 
                                 for top_track in similar_top_tracks:
                                     track_item = top_track.item
@@ -465,8 +603,11 @@ class MusicService:
                 except Exception as e:
                     logger.warning(f"Error getting similar artists: {e}")
 
+            # Tag-based fallback
             if len(candidate_tracks) < limit * 5:
                 try:
+                    await self._rate_limit_lastfm()
+
                     def _fetch_top_tags():
                         t = self.bot.lastfm.get_track(original_artist, clean_title)
                         return t.get_top_tags(limit=2)
@@ -478,6 +619,8 @@ class MusicService:
                             try:
                                 tag_name = tag_item.item.get_name()
                                 logger.info(f"Fetching tracks from tag: {tag_name}")
+
+                                await self._rate_limit_lastfm()
 
                                 def _fetch_tag_tracks(name=tag_name):
                                     g = self.bot.lastfm.get_tag(name)
@@ -520,11 +663,14 @@ class MusicService:
                 except Exception as e:
                     logger.warning(f"Error getting tag-based recommendations: {e}")
 
+            # Content-name tag fallback (OST/soundtrack)
             if len(candidate_tracks) < limit * 5:
                 content_name = self._extract_content_name(song.title)
                 if content_name:
                     logger.info(f"Trying content tag lookup for: '{content_name}'")
                     try:
+                        await self._rate_limit_lastfm()
+
                         def _fetch_content_tag_tracks(name=content_name.lower()):
                             g = self.bot.lastfm.get_tag(name)
                             return g.get_top_tracks(limit=10)
@@ -616,13 +762,3 @@ class MusicService:
         except Exception as e:
             logger.error(f"Error in get_related_songs: {e}", exc_info=True)
             return []
-
-    def _normalize_track_name(self, name: str) -> str:
-        if not name:
-            return ""
-
-        normalized = name.lower().strip()
-        normalized = re.sub(r'[^\w\s]', '', normalized)
-        normalized = re.sub(r'\s+', ' ', normalized)
-
-        return normalized
