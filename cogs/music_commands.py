@@ -648,6 +648,8 @@ class MusicCommands(commands.Cog):
 
         previous_song_title = guild_data["history"][target_position].title
 
+        await interaction.response.defer(thinking=False)
+
         success = await self.play_previous(interaction.guild.id)
 
         if success:
@@ -658,12 +660,12 @@ class MusicCommands(commands.Cog):
                 self.bot.user,
             )
             await self.bot.save_guild_queue(interaction.guild.id)
-            await interaction.response.send_message(embed=embed, silent=True)
+            await interaction.followup.send(embed=embed, silent=True)
         else:
             embed = create_embed(
                 "❌ Error", "Could not play previous song!", COLOR, self.bot.user
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
 
     @app_commands.command(
         name="skipto", description="Skip to a specific song in the queue"
