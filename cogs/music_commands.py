@@ -1736,8 +1736,8 @@ class MusicCommands(commands.Cog):
         title = result.get("title", current.title)
         artist = result.get("artist", current.uploader)
 
-        # Split lyrics into pages if too long (embed limit ~4000 chars)
-        max_len = 3800
+        # Split lyrics into pages for readability
+        max_len = 600
         if len(lyrics_text) <= max_len:
             embed = create_embed(
                 f"🎤 {title} — {artist}",
@@ -1747,9 +1747,23 @@ class MusicCommands(commands.Cog):
             )
             await interaction.followup.send(embed=embed)
         else:
-            # Paginate
+            # Paginate by splitting at verse breaks, falling back to single lines
             pages = []
-            chunks = [lyrics_text[i:i + max_len] for i in range(0, len(lyrics_text), max_len)]
+            chunks = []
+            current_chunk = ""
+            # Try verse breaks first, fall back to individual lines
+            has_verses = "\n\n" in lyrics_text
+            parts = lyrics_text.split("\n\n") if has_verses else lyrics_text.split("\n")
+            separator = "\n\n" if has_verses else "\n"
+            sep_len = len(separator)
+            for part in parts:
+                if len(current_chunk) + len(part) + sep_len > max_len and current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = part
+                else:
+                    current_chunk = current_chunk + separator + part if current_chunk else part
+            if current_chunk:
+                chunks.append(current_chunk)
             for idx, chunk in enumerate(chunks):
                 embed = create_embed(
                     f"🎤 {title} — {artist} ({idx + 1}/{len(chunks)})",
@@ -2132,6 +2146,11 @@ class MusicCommands(commands.Cog):
             logger.warning(f"Could not send error response — interaction expired: {error}")
         except Exception as e:
             logger.warning(f"Failed to send error response for command error: {e}")
+
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.NotOwner):
+            return  # Silently ignore non-owners trying owner commands
+        logger.error(f"Prefix command error: {error}")
 
     # Owner-only prefix commands (hidden)
 
