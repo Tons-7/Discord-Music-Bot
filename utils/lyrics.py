@@ -73,6 +73,16 @@ async def fetch_lyrics(title: str, uploader: str = "") -> Optional[Dict]:
                         if best.get("plainLyrics") or best.get("syncedLyrics"):
                             return _format(best, clean_t, clean_a)
 
+            # 3) Fallback: title-only search (helps when "artist" is wrong, e.g. game OSTs)
+            if clean_a and clean_t != query:
+                async with session.get(f"{LYRICS_API_BASE}/search", params={"q": clean_t}) as resp:
+                    if resp.status == 200:
+                        results = await resp.json()
+                        if results:
+                            best = results[0]
+                            if best.get("plainLyrics") or best.get("syncedLyrics"):
+                                return _format(best, clean_t, clean_a)
+
     except asyncio.TimeoutError:
         logger.debug("Lyrics request timed out")
     except Exception as e:
