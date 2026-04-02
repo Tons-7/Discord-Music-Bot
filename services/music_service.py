@@ -415,12 +415,55 @@ class MusicService:
         return name.strip(' \u2013\u2014-|:')
 
     @staticmethod
-    def _extract_artist_from_title(title: str, uploader: str) -> str:
-        """Extract a clean artist name from a YouTube title and uploader."""
+    def _strip_brackets(text: str) -> str:
+        """Strip CJK bracket content (「」【】『』〔〕) and trailing 'Official'."""
+        text = re.sub(r'「[^」]*」|【[^】]*】|『[^』]*』|〔[^〕]*〕', '', text)
+        text = re.sub(r'\s*Official\s*$', '', text, flags=re.IGNORECASE)
+        return re.sub(r'\s+', ' ', text).strip()
+
+    @staticmethod
+    def _clean_uploader(uploader: str) -> str:
+        """Strip VEVO / Topic / Official suffixes from an uploader name."""
+        cleaned = uploader.strip()
+        cleaned = re.sub(r'VEVO$', '', cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r'\s*[-\u2013]\s*Topic$', '', cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r'\s*Official$', '', cleaned, flags=re.IGNORECASE).strip()
+        return cleaned if cleaned else uploader
+
+    @staticmethod
+    def _name_match(a: str, b: str) -> bool:
+        """Case/space-insensitive name matching"""
+        a, b = a.lower().replace(" ", ""), b.lower().replace(" ", "")
+        return bool(a and b and (a == b or a in b or b in a))
+
+    @staticmethod
+    def _split_title(title: str, uploader: str = "") -> tuple[str, str]:
+        """Split a YouTube title into (artist, song_title).
+
+        Strips noise and CJK brackets, then uses the uploader name to
+        determine which side of a dash separator is the artist.
+        Returns (artist, song_title) where artist may be empty.
+        """
+        # Strip YouTube noise patterns and CJK brackets
+        clean = re.sub(
+            r'\s*[\(\[](official(\s*(music\s*)?video|[\s\w]*audio)?|lyric\s*video|lyrics|hd|hq|4k|mv)[\)\]]',
+            '', title, flags=re.IGNORECASE
+        ).strip() or title
+        clean = MusicService._strip_brackets(clean) or clean
+
+        cleaned_up = MusicService._clean_uploader(uploader) if uploader else ""
+
         for sep in [' - ', ' \u2013 ', ' \u2014 ']:
-            if sep in title:
-                parts = [p.strip() for p in title.split(sep)]
+            if sep in clean:
+                parts = [p.strip() for p in clean.split(sep)]
                 first, last = parts[0], parts[-1]
+
+                # Use uploader to disambiguate which side is the artist
+                if cleaned_up:
+                    if MusicService._name_match(cleaned_up, last):
+                        return last, first
+                    if MusicService._name_match(cleaned_up, first):
+                        return first, last
 
                 first_is_track_id = (
                         bool(re.search(r'\d', first))
@@ -429,36 +472,36 @@ class MusicService:
                 )
 
                 if not first_is_track_id and len(first) <= 60:
-                    return first
+                    return first, last
 
                 if (last and len(last) <= 60
                         and not re.search(r'\d', last)
                         and '(' not in last
                         and '[' not in last):
-                    return last
+                    return last, first
 
                 if first and len(first) <= 60:
-                    return first
+                    return first, last
                 break
 
-        cleaned = uploader.strip()
-        cleaned = re.sub(r'VEVO$', '', cleaned, flags=re.IGNORECASE).strip()
-        cleaned = re.sub(r'\s*[-\u2013]\s*Topic$', '', cleaned, flags=re.IGNORECASE).strip()
-        cleaned = re.sub(r'\s*Official$', '', cleaned, flags=re.IGNORECASE).strip()
-        return cleaned if cleaned else uploader
+        return "", clean
 
     @staticmethod
-    def _extract_song_title(title: str) -> str:
-        """Return a lightly cleaned version of the YouTube title for Last.fm lookup."""
-        clean = re.sub(
-            r'\s*[\(\[](official(\s*(music\s*)?video|[\s\w]*audio)?|lyric\s*video|lyrics|hd|hq|4k|mv)[\)\]]',
-            '', title, flags=re.IGNORECASE
-        ).strip()
-        return clean if clean else title
+    def _extract_artist_from_title(title: str, uploader: str) -> str:
+        """Extract a clean artist name from a YouTube title and uploader."""
+        artist, _ = MusicService._split_title(title, uploader)
+        return artist if artist else MusicService._clean_uploader(uploader)
+
+    @staticmethod
+    def _extract_song_title(title: str, uploader: str = "") -> str:
+        """Return a clean song title for Last.fm lookup."""
+        _, song = MusicService._split_title(title, uploader)
+        return song
 
     @staticmethod
     def _extract_content_name(title: str) -> Optional[str]:
         """For OST-style titles extract the franchise/game name."""
+        # Title starts with OST/soundtrack keyword
         match = re.match(
             r'^[「\[\(【]?\s*(?:soundtrack|ost|o\.s\.t\.?|bgm|music|score|theme)s?\s*[」\]\)】]?\s*'
             r'([A-Za-z0-9][A-Za-z0-9\s\'\-:!]+?)\s*[-\u2013\u2014|]',
@@ -466,6 +509,18 @@ class MusicService:
         )
         if match:
             return match.group(1).strip()
+
+        # "Game Name OST" pattern anywhere
+        match = re.search(
+            r'([A-Za-z][A-Za-z0-9\s\'\-:!,]{2,}?)\s+'
+            r'(?:OST|O\.S\.T\.?|Soundtrack|Original\s*Soundtrack)\b',
+            title, re.IGNORECASE
+        )
+        if match:
+            name = match.group(1).strip()
+            if len(name) > 3:
+                return name
+
         return None
 
     def _normalize_track_name(self, name: str) -> str:
@@ -487,7 +542,7 @@ class MusicService:
             original_artist = self._clean_artist_name(
                 self._extract_artist_from_title(song.title, song.uploader)
             )
-            clean_title = self._extract_song_title(song.title)
+            clean_title = self._extract_song_title(song.title, song.uploader)
             logger.info(
                 f"Finding songs similar to: '{clean_title}' by '{original_artist}' "
                 f"(uploader: '{song.uploader}')"
@@ -707,6 +762,51 @@ class MusicService:
 
                     except Exception as e:
                         logger.debug(f"Content tag lookup failed for '{content_name}': {e}")
+
+            # Last resort: search Last.fm by title (no artist/title split needed)
+            if not candidate_tracks:
+                try:
+                    await self._rate_limit_lastfm()
+
+                    def _search_track(q=clean_title):
+                        results = self.bot.lastfm.search_for_track("", q)
+                        page = results.get_next_page()
+                        return page[0] if page else None
+
+                    found = await loop.run_in_executor(self.bot.executor, _search_track)
+
+                    if found:
+                        found_artist = found.get_artist().get_name()
+                        found_name = found.get_name()
+                        logger.info(f"Title search found: '{found_name}' by '{found_artist}'")
+
+                        await self._rate_limit_lastfm()
+
+                        def _similar_from_found():
+                            return found.get_similar(limit=limit * 5)
+
+                        similar = await loop.run_in_executor(self.bot.executor, _similar_from_found)
+
+                        for s in similar:
+                            try:
+                                track_item = s.item
+                                name = track_item.get_name()
+                                artist = track_item.get_artist().get_name()
+                                norm = self._normalize_track_name(name)
+                                if norm not in seen_track_names:
+                                    candidate_tracks.append({
+                                        'name': name, 'artist': artist,
+                                        'priority': 2, 'source': 'title_search'
+                                    })
+                                    seen_track_names.add(norm)
+                            except Exception:
+                                continue
+
+                        if candidate_tracks:
+                            logger.info(f"Title search fallback found {len(candidate_tracks)} candidates")
+
+                except Exception as e:
+                    logger.debug(f"Title search fallback failed: {e}")
 
             if not candidate_tracks:
                 logger.warning(f"No candidate tracks found for {song.title}")
