@@ -303,12 +303,13 @@ class MusicCommands(commands.Cog):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
             else:
+                await interaction.response.defer()
                 try:
                     await guild_data["voice_client"].move_to(voice_channel)
                     embed = create_embed(
                         "Moved", f"Moved to {voice_channel.name}!", COLOR, self.bot.user
                     )
-                    await interaction.response.send_message(embed=embed)
+                    await interaction.followup.send(embed=embed)
                     return
                 except Exception as e:
                     logger.error(f"Failed to move to voice channel: {e}")
@@ -318,9 +319,10 @@ class MusicCommands(commands.Cog):
                         COLOR,
                         self.bot.user,
                     )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
+        await interaction.response.defer()
         try:
             guild_data["voice_client"] = await voice_channel.connect()
             guild_data["last_activity"] = datetime.now()
@@ -328,7 +330,7 @@ class MusicCommands(commands.Cog):
             embed = create_embed(
                 "Connected", f"Joined {voice_channel.name}!", COLOR, self.bot.user
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
 
         except Exception as e:
             logger.error(f"Failed to connect to voice channel: {e}")
@@ -338,7 +340,7 @@ class MusicCommands(commands.Cog):
                 COLOR,
                 self.bot.user,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(
         name="play", description="Play a song or add it to queue"
@@ -348,6 +350,9 @@ class MusicCommands(commands.Cog):
     async def play_slash(self, interaction: discord.Interaction, query: str):
         if not await self.check_voice_channel(interaction, allow_auto_join=True):
             return
+
+        # Defer immediately — voice connect/move below can exceed 3s timeout
+        await interaction.response.defer()
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
 
@@ -361,7 +366,7 @@ class MusicCommands(commands.Cog):
             embed = create_embed(
                 "Error", "Failed to connect to voice channel!", COLOR, self.bot.user
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         if guild_data["voice_client"].channel != interaction.user.voice.channel:
@@ -373,7 +378,7 @@ class MusicCommands(commands.Cog):
         searching_embed = create_embed(
             "Searching...", f"Looking for: `{query}`", COLOR, self.bot.user
         )
-        await interaction.response.send_message(embed=searching_embed)
+        await interaction.edit_original_response(embed=searching_embed)
 
         try:
             is_playlist = "playlist" in query.lower() and "youtube.com" in query.lower()
@@ -1857,9 +1862,12 @@ class MusicCommands(commands.Cog):
 
             if not await self.check_voice_channel(interaction, allow_auto_join=True):
                 return
+
+            await interaction.response.defer()
+
             if not await self.ensure_voice_connection(interaction):
                 embed = create_embed("Error", "Failed to connect to voice!", COLOR, self.bot.user)
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
             guild_data = self.bot.get_guild_data(interaction.guild.id)
@@ -1878,7 +1886,7 @@ class MusicCommands(commands.Cog):
                 COLOR,
                 self.bot.user,
             )
-            await interaction.response.send_message(embed=embed, silent=True)
+            await interaction.followup.send(embed=embed, silent=True)
 
         elif action == "remove":
             if position is None or position < 1 or position > len(favs):
