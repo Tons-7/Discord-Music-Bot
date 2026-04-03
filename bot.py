@@ -164,6 +164,7 @@ class MusicBot(commands.Bot):
         try:
             conn = sqlite3.connect("music_bot.db")
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
             cursor = conn.cursor()
 
             cursor.execute(
@@ -264,6 +265,28 @@ class MusicBot(commands.Bot):
                 """
             )
 
+            # Auto-cleanup collaborators when a playlist is deleted
+            cursor.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS trg_delete_playlist_collabs
+                AFTER DELETE ON playlists
+                BEGIN
+                    DELETE FROM playlist_collaborators
+                    WHERE playlist_id = OLD.id AND is_global = 0;
+                END
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS trg_delete_global_playlist_collabs
+                AFTER DELETE ON global_playlists
+                BEGIN
+                    DELETE FROM playlist_collaborators
+                    WHERE playlist_id = OLD.id AND is_global = 1;
+                END
+                """
+            )
+
             # Deduplicate before creating the index — safe migration for existing data.
             cursor.execute(
                 "DELETE FROM playlists WHERE id NOT IN "
@@ -315,14 +338,7 @@ class MusicBot(commands.Bot):
     def _run_migrations(cursor, from_version: int, to_version: int):
         """Run sequential schema migrations."""
         migrations = {
-            # version 2: add dj_role_id column to guild_settings
-            2: [
-                "ALTER TABLE guild_settings ADD COLUMN dj_role_id INTEGER",
-            ],
-            # version 3: add song_url column to favorites for proper dedup
-            3: [
-                "ALTER TABLE favorites ADD COLUMN song_url TEXT NOT NULL DEFAULT ''",
-            ],
+            # Next migration goes here as version 5
         }
 
         for version in range(from_version + 1, to_version + 1):
@@ -341,6 +357,7 @@ class MusicBot(commands.Bot):
     def get_db_connection():
         conn = sqlite3.connect("music_bot.db")
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
     async def execute_db_query(self, query: str, params: tuple = None):
