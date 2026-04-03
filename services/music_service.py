@@ -446,9 +446,13 @@ class MusicService:
         """
         # Strip YouTube noise patterns and CJK brackets
         clean = re.sub(
-            r'\s*[\(\[](official(\s*(music\s*)?video|[\s\w]*audio)?|lyric\s*video|lyrics|hd|hq|4k|mv)[\)\]]',
+            r'\s*[\(\[](official(\s*(music\s*)?video|[\s\w]*audio)?|lyric\s*video|lyrics|hd|hq|4k|mv|extended(\s+(mix|version|edit|remix))?)[\)\]]',
             '', title, flags=re.IGNORECASE
         ).strip() or title
+        clean = re.sub(
+            r'\s+extended(?:\s+(?:mix|version|edit|remix))?\s*$',
+            '', clean, flags=re.IGNORECASE
+        ).strip() or clean
         clean = MusicService._strip_brackets(clean) or clean
 
         cleaned_up = MusicService._clean_uploader(uploader) if uploader else ""

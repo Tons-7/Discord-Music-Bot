@@ -26,6 +26,7 @@ _TITLE_NOISE = re.compile(
     r'|visuali[sz]er'  # (Visualizer)
     r'|remaster(?:ed)?(?:\s+\d{4})?'  # (Remastered), (Remastered 2023)
     r'|(?:short\s+)?film'  # (Short Film), (Film)
+    r'|extended(?:\s+(?:mix|version|edit|remix))?'  # (Extended), (Extended Mix), etc.
     r')'
     r'[\)\]]',
     re.IGNORECASE,
@@ -39,9 +40,16 @@ _TOPIC_SUFFIX = re.compile(r'\s*[-\u2013]\s*Topic$', re.IGNORECASE)
 _CJK_BRACKETS = re.compile(r'[「『【〔][^」』】〕]*[」』】〕]')
 
 
+_EXTENDED_BARE = re.compile(
+    r'\s+extended(?:\s+(?:mix|version|edit|remix))?\s*$',
+    re.IGNORECASE,
+)
+
+
 def _clean_title(title: str) -> str:
     """Strip known YouTube noise from a title."""
     cleaned = _TITLE_NOISE.sub("", title).strip()
+    cleaned = _EXTENDED_BARE.sub("", cleaned).strip()
     return cleaned or title
 
 
