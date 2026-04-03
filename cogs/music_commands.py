@@ -1570,7 +1570,7 @@ class MusicCommands(commands.Cog):
 
                     fut.add_done_callback(_handle_seek_callback)
 
-            guild_data["voice_client"].play(source, after=after_seeking)
+            guild_data["voice_client"].play(source, after=after_seeking, bitrate=384)
 
             if was_paused:
                 await asyncio.sleep(0.2)
