@@ -40,7 +40,7 @@ AUDIO_EFFECTS = {
 LYRICS_API_BASE = "https://lrclib.net/api"
 
 # Database
-DB_VERSION = 3  # bump when adding migrations
+DB_VERSION = 4  # bump when adding migrations
 
 
 def get_intents():
