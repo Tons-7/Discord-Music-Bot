@@ -1805,14 +1805,14 @@ class MusicCommands(commands.Cog):
         if success:
             embed = create_embed(
                 "❤️ Favorited",
-                f"Added **{current.title}** to your favorites!",
+                f"Added {current.linked_title} to your favorites!",
                 COLOR,
                 self.bot.user,
             )
         else:
             embed = create_embed(
                 "Already Favorited",
-                f"**{current.title}** is already in your favorites.",
+                f"{current.linked_title} is already in your favorites.",
                 COLOR,
                 self.bot.user,
             )
@@ -1890,7 +1890,7 @@ class MusicCommands(commands.Cog):
 
             embed = create_embed(
                 "❤️ Playing Favorite",
-                f"Added **{song.title}** to queue!",
+                f"Added {song.linked_title} to queue!",
                 COLOR,
                 self.bot.user,
             )
@@ -2028,7 +2028,7 @@ class MusicCommands(commands.Cog):
         description = ""
         for pos, song in results[:15]:
             dur = format_duration(song.duration) if song.duration else "LIVE"
-            description += f"`{pos}.` **{song.title}** by {song.uploader} `[{dur}]`\n"
+            description += f"`{pos}.` {song.linked_title} by {song.uploader} `[{dur}]`\n"
 
         if len(results) > 15:
             description += f"\n*...and {len(results) - 15} more*"

@@ -458,7 +458,7 @@ class PlaylistCommands(commands.Cog):
 
             embed = create_embed(
                 "Song Added",
-                f"Added **{new_song.title}** to {label.lower()} **{name}**",
+                f"Added {new_song.linked_title} to {label.lower()} **{name}**",
                 COLOR,
                 self.bot.user
             )
@@ -529,7 +529,7 @@ class PlaylistCommands(commands.Cog):
 
             embed = create_embed(
                 "Song Added",
-                f"Added **{target_song.title}** to {label.lower()} **{name}**",
+                f"Added {target_song.linked_title} to {label.lower()} **{name}**",
                 COLOR,
                 self.bot.user
             )
@@ -875,7 +875,9 @@ class PlaylistCommands(commands.Cog):
                 for i, song_info in enumerate(playlist_items[start_idx:end_idx], start_idx + 1):
                     title = song_info.get("title", "Unknown Title")
                     uploader = song_info.get("uploader", "Unknown")
-                    description += f"`{i}.` **{title}** by {uploader}\n"
+                    url = song_info.get("webpage_url", "")
+                    title_str = f"**[{title}]({url})**" if url else f"**{title}**"
+                    description += f"`{i}.` {title_str} by {uploader}\n"
 
                 embed = create_embed(
                     f"{label}: {name} - Page {page_num + 1}/{total_pages}",
@@ -1317,7 +1319,7 @@ class PlaylistCommands(commands.Cog):
 
             description = ""
             for i, song in enumerate(guild_data["history"][start_idx:end_idx], start_idx + 1):
-                description += f"`{i}.` **{song.title}** by {song.uploader}\n"
+                description += f"`{i}.` {song}\n"
 
             embed = create_embed(
                 f"Recent History - Page {page_num + 1}/{total_pages}",

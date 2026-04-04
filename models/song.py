@@ -12,8 +12,15 @@ class Song:
         self.requested_by = data.get("requested_by", "Unknown")
         self.is_live = data.get("is_live", False)
 
+    @property
+    def linked_title(self):
+        """Bold title as a clickable markdown link when URL is available."""
+        if self.webpage_url:
+            return f"**[{self.title}]({self.webpage_url})**"
+        return f"**{self.title}**"
+
     def __str__(self):
-        return f"**{self.title}** by {self.uploader}"
+        return f"{self.linked_title} by {self.uploader}"
 
     def to_dict(self):
         return {

@@ -268,8 +268,9 @@ class PlaybackService:
             modifiers.append(f"\U0001f3a7 Effect: {effect_name}")
         modifier_line = "\n".join(modifiers)
 
+        title_line = f"**[{current.title}]({current.webpage_url})**" if current.webpage_url else f"**{current.title}**"
         description = (
-            f"**{current.title}**\n"
+            f"{title_line}\n"
             f"*by {current.uploader}*\n\n"
             f"{progress_line}\n\n"
             f"\U0001f50a Volume: {guild_data['volume']}%\n"
