@@ -187,12 +187,20 @@ class PlaybackService:
             if self._should_resend_message(guild_id):
                 music_cog = self.bot.get_cog("MusicCommands")
                 if music_cog:
-                    embed = self._build_timestamp_embed(guild_data, current_position, is_paused)
-                    await music_cog.create_now_playing_message(guild_id, embed)
+                    await music_cog.create_now_playing_message(
+                        guild_id, current_position=current_position, is_paused=is_paused,
+                    )
                 return
 
-            embed = self._build_timestamp_embed(guild_data, current_position, is_paused)
-            await self._safe_message_edit(guild_data["now_playing_message"], embed)
+            music_cog = self.bot.get_cog("MusicCommands")
+            if music_cog:
+                from views.now_playing_controls import NowPlayingControls
+                view = NowPlayingControls(
+                    music_cog, guild_id,
+                    current_position=current_position,
+                    is_paused=is_paused,
+                )
+                await self._safe_message_edit(guild_data["now_playing_message"], view)
 
         except Exception as e:
             logger.warning(f"Timestamp update failed for guild {guild_id}: {e}")
@@ -286,22 +294,13 @@ class PlaybackService:
         )
         return title, description
 
-    def _build_timestamp_embed(self, guild_data: dict, current_position: int, is_paused: bool) -> discord.Embed:
-        current = guild_data["current"]
-        title, description = self._build_now_playing_description(guild_data, current_position, is_paused)
-        embed = discord.Embed(title=title, description=description, color=COLOR)
-        embed.set_footer(
-            text="Music Bot",
-            icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None,
-        )
-        if current.thumbnail:
-            embed.set_thumbnail(url=current.thumbnail)
-        return embed
-
     @staticmethod
-    async def _safe_message_edit(message: discord.Message, embed: discord.Embed):
+    async def _safe_message_edit(message: discord.Message, content):
         try:
-            await message.edit(embed=embed)
+            if isinstance(content, discord.ui.LayoutView):
+                await message.edit(view=content)
+            else:
+                await message.edit(embed=content)
         except discord.NotFound:
             pass
         except discord.HTTPException as e:
@@ -440,7 +439,7 @@ class PlaybackService:
                         if guild_data["current"] and not guild_data.get("seeking", False):
                             queue_service.add_to_history(guild_id, guild_data["current"])
 
-                            # Record listening stats for the requester
+                            # Record listening stats for all voice listeners
                             self._record_stat_from_callback(guild_id, guild_data)
 
                     if not guild_data.get("seeking", False):
@@ -495,18 +494,19 @@ class PlaybackService:
             return False
 
     def _record_stat_from_callback(self, guild_id: int, guild_data: dict):
-        """Fire-and-forget stat recording from the after_playing thread callback."""
+        """Fire-and-forget stat recording for all voice channel listeners."""
         current = guild_data.get("current")
         if not current:
             return
 
-        # Parse requester mention to user ID
-        requester = current.requested_by or ""
-        match = re.search(r'<@!?(\d+)>', requester)
-        if not match:
+        # Get all human listeners in the voice channel
+        voice_client = guild_data.get("voice_client")
+        if not voice_client or not voice_client.channel:
             return
 
-        user_id = int(match.group(1))
+        listeners = [m for m in voice_client.channel.members if not m.bot]
+        if not listeners:
+            return
 
         # Calculate actual listening time instead of full song duration
         start_time = guild_data.get("start_time")
@@ -521,8 +521,9 @@ class PlaybackService:
             # Cap at song duration to avoid over-counting
             if current.duration and current.duration > 0:
                 duration = min(duration, current.duration)
-            coro = self.bot.record_listening_stat(user_id, guild_id, current, duration)
-            asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
+            for member in listeners:
+                coro = self.bot.record_listening_stat(member.id, guild_id, current, duration)
+                asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
 
     # Empty queue / autoplay
 
@@ -626,18 +627,25 @@ class PlaybackService:
 
         if guild_data.get("now_playing_message"):
             try:
-                await guild_data["now_playing_message"].edit(
-                    embed=create_embed(
-                        "Queue Empty",
-                        "Add songs with `/play` or enable `/autoplay`",
-                        COLOR,
-                        self.bot.user
-                    ),
-                    view=None
-                )
-            except Exception as e:
-                logger.warning(f"Failed to edit now playing message on queue empty: {e}")
+                await guild_data["now_playing_message"].delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
             guild_data["now_playing_message"] = None
+
+            try:
+                music_cog = self.bot.get_cog("MusicCommands")
+                if music_cog:
+                    channel = await music_cog.get_music_channel(guild_id)
+                    if channel:
+                        embed = create_embed(
+                            "Queue Empty",
+                            "Add songs with `/play` or enable `/autoplay`",
+                            COLOR,
+                            self.bot.user
+                        )
+                        await channel.send(embed=embed, delete_after=30)
+            except Exception as e:
+                logger.warning(f"Failed to send queue empty message: {e}")
 
         await self.bot.save_guild_queue(guild_id)
         return False
