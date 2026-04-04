@@ -249,6 +249,9 @@ class MusicBot(commands.Bot):
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_stats_guild ON user_stats (user_id, guild_id)"
             )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_stats_guild_id ON user_stats (guild_id)"
+            )
 
             # Collaborative playlist members
             cursor.execute(
