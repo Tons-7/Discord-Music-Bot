@@ -17,6 +17,7 @@ from utils.helpers import (
     parse_time_to_seconds,
     interaction_check,
     create_embed,
+    create_v2_embed,
 )
 from views.now_playing_controls import NowPlayingControls
 from views.pagination import PaginationView
@@ -150,7 +151,8 @@ class MusicCommands(commands.Cog):
         return None
 
     async def create_now_playing_message(
-            self, guild_id: int, embed: discord.Embed
+            self, guild_id: int,
+            *, current_position: int = 0, is_paused: bool = False,
     ) -> Optional[discord.Message]:
         try:
             channel = await self.get_music_channel(guild_id)
@@ -168,12 +170,18 @@ class MusicCommands(commands.Cog):
                     pass
                 guild_data["now_playing_message"] = None
 
-            msg = await channel.send(embed=embed)
+            view = NowPlayingControls(
+                self, guild_id,
+                current_position=current_position,
+                is_paused=is_paused,
+            )
+            msg = await channel.send(
+                view=view, silent=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             guild_data["now_playing_message"] = msg
             guild_data["now_playing_message_sent_time"] = datetime.now()
 
-            view = NowPlayingControls(self, guild_id)
-            await msg.edit(view=view)
             await asyncio.sleep(0.2)
             guild_data["message_ready_for_timestamps"] = True
 
@@ -201,15 +209,10 @@ class MusicCommands(commands.Cog):
 
         current_position = self.playback_service.get_current_position(guild_id)
         is_paused = self.playback_service.is_paused(guild_id)
-        title, description = self.playback_service._build_now_playing_description(
-            guild_data, current_position, is_paused
+
+        await self.create_now_playing_message(
+            guild_id, current_position=current_position, is_paused=is_paused,
         )
-        embed = create_embed(title, description, COLOR, self.bot.user)
-
-        if current.thumbnail:
-            embed.set_thumbnail(url=current.thumbnail)
-
-        await self.create_now_playing_message(guild_id, embed)
 
     async def play_previous(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
@@ -532,7 +535,6 @@ class MusicCommands(commands.Cog):
                     embed = create_embed(
                         "Added to Queue", desc, COLOR, self.bot.user,
                     )
-
                     if hasattr(song, "thumbnail") and song.thumbnail:
                         embed.set_thumbnail(url=song.thumbnail)
 
@@ -781,8 +783,9 @@ class MusicCommands(commands.Cog):
         guild_data = self.bot.get_guild_data(interaction.guild.id)
 
         if not guild_data["current"] and not guild_data["queue"]:
-            embed = create_embed("📋 Queue", "Queue is empty!", COLOR, self.bot.user)
-            await interaction.response.send_message(embed=embed, silent=True)
+            await interaction.response.send_message(
+                view=create_v2_embed("\U0001f4cb Queue", "Queue is empty!"), silent=True,
+            )
             return
 
         all_visible_songs = self.queue_service.get_visible_queue(interaction.guild.id)
@@ -794,6 +797,9 @@ class MusicCommands(commands.Cog):
 
         page = max(1, min(page, total_pages))
 
+        dur_str = format_duration(total_duration) if total_duration > 0 else "\u2014"
+        stats_line = f"-# {len(all_visible_songs)} songs \u2022 {dur_str} \u2022 Loop: {guild_data['loop_mode'].title()}"
+
         pages = []
         for page_num in range(total_pages):
             start_idx = page_num * SONGS_PER_PAGE
@@ -804,45 +810,27 @@ class MusicCommands(commands.Cog):
             if guild_data["current"]:
                 current = guild_data["current"]
                 dur = format_duration(current.duration) if current.duration else "LIVE"
-                description += f"**🎵 Now Playing:**\n{current} `[{dur}]` — {current.requested_by}\n\n"
+                description += f"**\U0001f3b5 Now Playing:**\n{current} `[{dur}]` \u2014 {current.requested_by}\n\n"
 
             if all_visible_songs:
-                description += f"**📋 Up Next:**\n"
+                description += f"**\U0001f4cb Up Next:**\n"
                 for i, song in enumerate(
                         all_visible_songs[start_idx:end_idx], start_idx + 1
                 ):
                     dur = format_duration(song.duration) if song.duration else "LIVE"
-                    description += f"`{i}.` {song} `[{dur}]` — {song.requested_by}\n"
+                    description += f"`{i}.` {song} `[{dur}]` \u2014 {song.requested_by}\n"
 
             if not description.strip():
                 description = "Queue is empty!"
 
-            embed = create_embed(
-                f"📋 Queue - Page {page_num + 1}/{total_pages}",
-                description[:4000],
-                COLOR,
-                self.bot.user,
-            )
-
-            embed.add_field(
-                name="Songs", value=str(len(all_visible_songs)), inline=True
-            )
-            embed.add_field(
-                name="Duration", value=format_duration(total_duration) if total_duration > 0 else "—", inline=True
-            )
-            embed.add_field(
-                name="Loop", value=guild_data["loop_mode"].title(), inline=True
-            )
-
-            pages.append(embed)
+            text = f"### \U0001f4cb Queue \u2014 Page {page_num + 1}/{total_pages}\n{description[:3900]}\n{stats_line}"
+            pages.append(text)
 
         view = PaginationView(pages, interaction.user)
         view.current_page = page - 1
+        view._rebuild()
 
-        view.previous_button.disabled = view.current_page == 0
-        view.next_button.disabled = view.current_page == len(pages) - 1
-
-        await interaction.response.send_message(embed=pages[page - 1], view=view, silent=True)
+        await interaction.response.send_message(view=view, silent=True)
         view.message = await interaction.original_response()
 
     @app_commands.command(
@@ -1041,12 +1029,9 @@ class MusicCommands(commands.Cog):
             guild_data, current_position, is_paused
         )
 
-        embed = create_embed(title, description, COLOR, self.bot.user)
+        view = create_v2_embed(title, description, COLOR)
 
-        if current.thumbnail:
-            embed.set_thumbnail(url=current.thumbnail)
-
-        await interaction.response.send_message(embed=embed, silent=True)
+        await interaction.response.send_message(view=view, silent=True)
 
     @app_commands.command(
         name="remove", description="Remove a song from the queue permanently"
@@ -1174,10 +1159,10 @@ class MusicCommands(commands.Cog):
 
         results = max(1, min(25, results))
 
-        searching_embed = create_embed(
-            "Searching...", f"Looking for: `{query}`", COLOR, self.bot.user
+        await interaction.response.send_message(
+            view=create_v2_embed("Searching...", f"Looking for: `{query}`", COLOR),
+            silent=True,
         )
-        await interaction.response.send_message(embed=searching_embed, silent=True)
 
         try:
             loop = asyncio.get_running_loop()
@@ -1189,10 +1174,8 @@ class MusicCommands(commands.Cog):
             )
 
             if not data or "entries" not in data or not data["entries"]:
-                embed = create_embed(
-                    "❌ Error", "No results found!", COLOR, self.bot.user
-                )
-                await interaction.edit_original_response(embed=embed)
+                await interaction.edit_original_response(
+                    view=create_v2_embed("\u274c Error", "No results found!", COLOR))
                 return
 
             valid_entries = []
@@ -1202,42 +1185,21 @@ class MusicCommands(commands.Cog):
                     valid_entries.append(normalized)
 
             if not valid_entries:
-                embed = create_embed(
-                    "❌ Error", "No valid results found!", COLOR, self.bot.user
-                )
-                await interaction.edit_original_response(embed=embed)
+                await interaction.edit_original_response(
+                    view=create_v2_embed("\u274c Error", "No valid results found!", COLOR))
                 return
 
-            description = ""
-            for i, entry in enumerate(valid_entries[:results], 1):
-                duration = entry.get("duration", 0)
-                if duration:
-                    minutes, seconds = divmod(int(duration), 60)
-                    duration_str = f"{minutes}:{seconds:02d}"
-                else:
-                    duration_str = "LIVE" if entry.get("is_live") else "0:00"
-
-                title = entry["title"]
-                if len(title) > 50:
-                    title = title[:47] + "..."
-
-                description += f"`{i}.` **{title}**\n"
-                description += (
-                    f"    by {entry.get('uploader', 'Unknown')} • {duration_str}\n\n"
-                )
-
-            embed = create_embed("🔍 Search Results", description, COLOR, self.bot.user)
-
             view = SongSelectView(valid_entries[:results], interaction.user, self)
-            message = await interaction.edit_original_response(embed=embed, view=view)
+            message = await interaction.edit_original_response(view=view)
             view.message = message
 
         except Exception as e:
             logger.error(f"Search command error: {e}")
-            embed = create_embed(
-                "❌ Error", "An error occurred during search.", COLOR, self.bot.user
-            )
-            await interaction.edit_original_response(embed=embed)
+            try:
+                await interaction.edit_original_response(
+                    view=create_v2_embed("\u274c Error", "An error occurred during search.", COLOR))
+            except discord.HTTPException:
+                pass
 
     async def process_selected_song(
             self, interaction: discord.Interaction, selected_song: dict
@@ -1256,10 +1218,8 @@ class MusicCommands(commands.Cog):
                     or not guild_data["voice_client"].is_connected()
             ):
                 if not interaction.user.voice:
-                    embed = create_embed(
-                        "Error", "You must be in a voice channel!", COLOR, self.bot.user
-                    )
-                    await interaction.edit_original_response(embed=embed, view=None)
+                    await interaction.edit_original_response(
+                        view=create_v2_embed("Error", "You must be in a voice channel!", COLOR))
                     return
 
                 try:
@@ -1268,13 +1228,8 @@ class MusicCommands(commands.Cog):
                     )
                 except Exception as e:
                     logger.error(f"Failed to connect to voice: {e}")
-                    embed = create_embed(
-                        "Error",
-                        "Failed to connect to voice channel!",
-                        COLOR,
-                        self.bot.user,
-                    )
-                    await interaction.edit_original_response(embed=embed, view=None)
+                    await interaction.edit_original_response(
+                        view=create_v2_embed("Error", "Failed to connect to voice channel!", COLOR))
                     return
             elif interaction.user.voice and guild_data["voice_client"].channel != interaction.user.voice.channel:
                 try:
@@ -1289,13 +1244,8 @@ class MusicCommands(commands.Cog):
 
             existing_urls = get_existing_urls(guild_data)
             if song.webpage_url in existing_urls:
-                embed = create_embed(
-                    "Duplicate Song",
-                    "This song is already in queue or playing!",
-                    COLOR,
-                    self.bot.user,
-                )
-                await interaction.edit_original_response(embed=embed, view=None)
+                await interaction.edit_original_response(
+                    view=create_v2_embed("Duplicate Song", "This song is already in queue or playing!", COLOR))
                 return
 
             self.queue_service.add_song_to_queue(interaction.guild.id, song)
@@ -1305,30 +1255,24 @@ class MusicCommands(commands.Cog):
                     and not guild_data["current"]
             ):
                 await self.playback_service.play_next(interaction.guild.id)
-                embed = create_embed("🎵 Now Playing", str(song), COLOR, self.bot.user)
+                result_view = create_v2_embed("🎵 Now Playing", str(song), COLOR)
             else:
                 position = len(guild_data["queue"])
-                embed = create_embed(
+                result_view = create_v2_embed(
                     "📋 Added to Queue",
                     f"{song}\n\nPosition in queue: {position}",
                     COLOR,
-                    self.bot.user,
                 )
 
-            if song.thumbnail:
-                embed.set_thumbnail(url=song.thumbnail)
-
-            await interaction.edit_original_response(embed=embed, view=None)
+            await interaction.edit_original_response(view=result_view)
             guild_data["last_activity"] = datetime.now()
             await self.bot.save_guild_queue(interaction.guild.id)
 
         except Exception as e:
             logger.error(f"Error processing selected song: {e}")
-            embed = create_embed(
-                "❌ Error", "Failed to add song to queue.", COLOR, self.bot.user
-            )
             try:
-                await interaction.edit_original_response(embed=embed, view=None)
+                await interaction.edit_original_response(
+                    view=create_v2_embed("\u274c Error", "Failed to add song to queue.", COLOR))
             except discord.HTTPException:
                 pass
 
@@ -1752,13 +1696,12 @@ class MusicCommands(commands.Cog):
         # Split lyrics into pages for readability
         max_len = 600
         if len(lyrics_text) <= max_len:
-            embed = create_embed(
+            view = create_v2_embed(
                 f"🎤 {title} — {artist}",
                 lyrics_text,
                 COLOR,
-                self.bot.user,
             )
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(view=view)
         else:
             # Paginate by splitting at verse breaks, falling back to single lines
             pages = []
@@ -1778,16 +1721,11 @@ class MusicCommands(commands.Cog):
             if current_chunk:
                 chunks.append(current_chunk)
             for idx, chunk in enumerate(chunks):
-                embed = create_embed(
-                    f"🎤 {title} — {artist} ({idx + 1}/{len(chunks)})",
-                    chunk,
-                    COLOR,
-                    self.bot.user,
-                )
-                pages.append(embed)
+                page_text = f"### 🎤 {title} — {artist} ({idx + 1}/{len(chunks)})\n{chunk}"
+                pages.append(page_text)
 
             view = PaginationView(pages, interaction.user)
-            await interaction.followup.send(embed=pages[0], view=view)
+            await interaction.followup.send(view=view)
             view.message = await interaction.original_response()
 
     @app_commands.command(name="favorite", description="Add the current song to your favorites")
@@ -1849,13 +1787,12 @@ class MusicCommands(commands.Cog):
                 uploader = song_data.get("uploader", "Unknown")
                 description += f"`{i}.` **{title}** by {uploader}\n"
 
-            embed = create_embed(
+            view = create_v2_embed(
                 f"❤️ Your Favorites ({len(favs)} songs)",
                 description[:4000],
                 COLOR,
-                self.bot.user,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.response.send_message(view=view, ephemeral=True)
 
         elif action == "play":
             if position is None or position < 1 or position > len(favs):
@@ -1979,8 +1916,41 @@ class MusicCommands(commands.Cog):
             for i, (artist, cnt) in enumerate(top_artists, 1):
                 desc += f"`{i}.` {artist} ({cnt} plays)\n"
 
-        embed = create_embed("📊 Your Stats", desc, COLOR, self.bot.user)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        view = create_v2_embed("📊 Your Stats", desc, COLOR)
+        await interaction.followup.send(view=view, ephemeral=True)
+
+    @app_commands.command(name="leaderboard", description="Show the server's top listeners")
+    async def leaderboard_slash(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        rows = await self.bot.fetch_db_query(
+            "SELECT user_id, COUNT(*) as play_count, COALESCE(SUM(duration_seconds), 0) as total_seconds "
+            "FROM user_stats WHERE guild_id = ? "
+            "GROUP BY user_id ORDER BY total_seconds DESC LIMIT 10",
+            (interaction.guild.id,),
+        )
+
+        if not rows or all(r[2] == 0 for r in rows):
+            embed = create_embed(
+                "🏆 Leaderboard",
+                "No listening data yet! Play some songs first.",
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        desc = ""
+        for rank, (user_id, play_count, total_seconds) in enumerate(rows, 1):
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            medal = medals.get(rank, f"`{rank}.`")
+            desc += f"{medal} <@{user_id}> — **{hours}h {minutes}m** ({play_count} plays)\n"
+
+        desc += f"\n-# {interaction.guild.name} • Use /stats for your personal stats"
+        view = create_v2_embed("🏆 Leaderboard", desc, COLOR)
+        await interaction.followup.send(view=view)
 
     @app_commands.command(name="setdj", description="Set or remove the DJ role for this server")
     @app_commands.describe(role="The DJ role (leave empty to remove)")
@@ -2033,13 +2003,12 @@ class MusicCommands(commands.Cog):
         if len(results) > 15:
             description += f"\n*...and {len(results) - 15} more*"
 
-        embed = create_embed(
+        view = create_v2_embed(
             f"🔍 Queue Search: \"{query}\" ({len(results)} found)",
             description[:4000],
             COLOR,
-            self.bot.user,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(view=view, ephemeral=True)
 
     # Help
 
@@ -2047,81 +2016,64 @@ class MusicCommands(commands.Cog):
         name="help", description="Shows all available commands and how to use them"
     )
     async def help_slash(self, interaction: discord.Interaction):
-        description = """**Music Bot Commands Guide**
+        description = (
+            "**Music Bot Commands Guide**\n\n"
+            "**Basic Commands:**\n"
+            "  `/join` - Join your voice channel\n"
+            "  `/play <query>` - Play a song or add it to queue\n"
+            "  `/pause` - Pause the current song\n"
+            "  `/resume` - Resume the paused song\n"
+            "  `/skip` - Skip the current song\n"
+            "  `/previous` - Play the previous song from history\n"
+            "  `/autoplay` - Auto play related songs after queue ends\n"
+            "  `/stop` - Stop playback and clear queue\n"
+            "  `/leave` - Disconnect from voice channel\n\n"
+            "**Queue Management:**\n"
+            "  `/queue [page]` - Show the current queue\n"
+            "  `/clear` - Clear the queue without stopping current song\n"
+            "  `/remove <position>` - Remove a song by position\n"
+            "  `/move <from> <to>` - Move a song to different position\n"
+            "  `/skipto <position>` - Skip to a specific song\n"
+            "  `/queuesearch <query>` - Search for a song in the queue\n\n"
+            "**Playback Controls:**\n"
+            "  `/volume [level]` - Set or show volume (0-100)\n"
+            "  `/loop <mode>` - Set loop mode: off, song, or queue\n"
+            "  `/shuffle` - Toggle shuffle mode\n"
+            "  `/seek <position>` - Seek to specific time (e.g., '1:30')\n"
+            "  `/nowplaying` - Show currently playing song info\n"
+            "  `/speed <rate>` - Set playback speed (0.5x to 2.0x)\n"
+            "  `/effects <effect>` - Apply audio effect\n"
+            "  `/lyrics` - Show lyrics for the current song\n\n"
+            "**Search & Discovery:**\n"
+            "  `/search <query> [results]` - Search for songs\n"
+            "  `/history show [page]` - Show recently played songs\n"
+            "  `/history play <number>` - Play a song from history\n"
+            "  `/history add_all` - Add all history to queue\n"
+            "  `/history clear` - Clear all history\n\n"
+            "**Favorites:**\n"
+            "  `/favorite` - Add the current song to favorites\n"
+            "  `/favorites show` - Show your favorite songs\n"
+            "  `/favorites play <pos>` - Play a favorite\n"
+            "  `/favorites remove <pos>` - Remove a favorite\n\n"
+            "**Stats:**\n"
+            "  `/stats` - Your listening statistics\n"
+            "  `/leaderboard` - Server's top listeners\n\n"
+            "**Playlists:** (server-specific)\n"
+            "  `/playlist create/add/remove/move/load/show/list/delete`\n"
+            "  `/playlist add-from-queue` - Add from current queue\n"
+            "  `/playlist add-all-queue` - Add entire queue\n"
+            "  `/playlist collab-add/remove/list` - Manage collaborators\n"
+            "  `/playlist my-collabs` - Your collaborations\n\n"
+            "**Global Playlists:** (accessible from any server)\n"
+            "  `/globalplaylist` - Same commands as above\n\n"
+            "**Settings:**\n"
+            "  `/setmusicchannel` - Set music messages channel\n"
+            "  `/setdj [role]` - Set or remove DJ role\n\n"
+            "-# Supports YouTube, Spotify, Apple Music, Tidal & SoundCloud"
+        )
 
-        **Basic Commands:**
-        `/join` - Join your voice channel
-        `/play <query>` - Play a song or add it to queue (YouTube, Spotify, Apple Music, Tidal, or search)
-        `/pause` - Pause the current song
-        `/resume` - Resume the paused song
-        `/skip` - Skip the current song
-        `/previous` - Play the previous song from history
-        `/autoplay` - Auto play related songs after queue ends
-        `/stop` - Stop playback and clear queue
-        `/leave` - Disconnect from voice channel
-
-        **Queue Management:**
-        `/queue [page]` - Show the current queue (with durations & requesters)
-        `/clear` - Clear the queue without stopping current song
-        `/remove <position>` - Remove a song from queue by position
-        `/move <from_pos> <to_pos>` - Move a song to different position
-        `/skipto <position>` - Skip to a specific song in queue
-        `/queuesearch <query>` - Search for a song in the queue
-
-        **Playback Controls:**
-        `/volume [level]` - Set or show volume (0-100)
-        `/loop <mode>` - Set loop mode: off, song, or queue
-        `/shuffle` - Toggle shuffle mode
-        `/seek <position>` - Seek to specific time (e.g., '1:30', '90')
-        `/nowplaying` - Show currently playing song info
-        `/speed <rate>` - Set playback speed (0.5x to 2.0x)
-        `/effects <effect>` - Apply audio effect (bass boost, nightcore, vaporwave, etc.)
-        `/lyrics` - Show lyrics for the current song
-
-        **Search & Discovery:**
-        `/search <query> [results]` - Search for songs (configurable result count, 1-25)
-        `/history show [page]` - Show recently played songs
-        `/history play <number>` - Play a song from history
-        `/history add_all` - Add all songs from history to queue
-        `/history clear` - Clear all history songs
-
-        **Favorites:**
-        `/favorite` - Add the current song to your favorites
-        `/favorites show` - Show your favorite songs
-        `/favorites play <position>` - Play a song from your favorites
-        `/favorites remove <position>` - Remove a song from your favorites
-
-        **Stats:**
-        `/stats` - Show your listening statistics (top songs, artists, total time)
-
-        **Playlist Commands: (your playlist(s) are server specific)**
-        `/playlist create/add/remove/move/load/show/list/delete`
-        `/playlist add-from-queue` - Add a song from current queue
-        `/playlist add-all-queue` - Add entire queue to playlist
-        `/playlist collab-add <playlist> <user>` - Add a collaborator to your playlist
-        `/playlist collab-remove <playlist> <user>` - Remove a collaborator
-        `/playlist collab-list <playlist>` - List collaborators on a playlist
-        `/playlist my-collabs` - Show playlists you collaborate on
-        Use `collaborative: True` on add/remove/load/show to access collab playlists
-
-        **Global Playlist Commands: (accessible from any server)**
-        `/globalplaylist create/add/remove/move/load/show/list/delete`
-        `/globalplaylist collab-add/collab-remove/collab-list/my-collabs`
-
-        **Settings:**
-        `/setmusicchannel` - Set the channel for music messages
-        `/setdj [role]` - Set or remove DJ role (admin only)
-
-        **Tips:**
-        • Use button controls on the 'Now Playing' message
-        • Supports YouTube, Spotify, Apple Music, Tidal, SoundCloud & search
-        • Queue shows duration estimates and who requested each song
-        • Use `/speed` and `/effects` for playback customization
-        • Queue persists across bot restarts
-        """
-
-        embed = create_embed("Command Guide", description, COLOR, self.bot.user)
-        await interaction.response.send_message(embed=embed, silent=True)
+        view = create_v2_embed("Command Guide", description, COLOR)
+        await interaction.response.send_message(view=view, silent=True)
 
     # Error handler
 
