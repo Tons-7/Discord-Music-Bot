@@ -46,7 +46,7 @@ class MusicBot(commands.Bot):
 
         #  Last.fm rate-limiter state
         self._lastfm_call_times: list[float] = []
-        self._lastfm_lock = asyncio.Lock()
+        self._lastfm_lock = None  # Created in on_ready when event loop is running
         self.lastfm_rate_limit = 5  # max calls per second
 
         self.ytdl_format_options = {
@@ -587,6 +587,10 @@ class MusicBot(commands.Bot):
 
         self.loop = asyncio.get_running_loop()
 
+        # Create asyncio.Lock now that the event loop is running
+        if self._lastfm_lock is None:
+            self._lastfm_lock = asyncio.Lock()
+
         # Scale thread pool based on guild count
         desired_workers = max(3, min(len(self.guilds), 10))
         if self.executor._max_workers < desired_workers:
@@ -656,7 +660,10 @@ class MusicBot(commands.Bot):
             if self.voice_reconnect_enabled and (had_current_song or had_queue):
                 logger.info(f"Attempting voice reconnection for guild {guild_id}...")
                 task = asyncio.create_task(self._attempt_voice_reconnect(guild_id, voice_channel))
-                task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
+                task.add_done_callback(
+                    lambda t: logger.error(f"Voice reconnect failed: {t.exception()}")
+                    if not t.cancelled() and t.exception() else None
+                )
             else:
                 guild_data["current"] = None
                 guild_data["start_time"] = None

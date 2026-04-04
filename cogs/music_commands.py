@@ -557,6 +557,8 @@ class MusicCommands(commands.Cog):
     async def pause_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
             return
+        if not await self._check_dj(interaction):
+            return
 
         if self.playback_service.handle_pause(interaction.guild.id):
             embed = create_embed(
@@ -573,6 +575,8 @@ class MusicCommands(commands.Cog):
     @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def resume_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         if self.playback_service.handle_resume(interaction.guild.id):
@@ -622,6 +626,8 @@ class MusicCommands(commands.Cog):
     @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def previous_slash(self, interaction: discord.Interaction):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)
@@ -1373,6 +1379,8 @@ class MusicCommands(commands.Cog):
     @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
     async def seek_slash(self, interaction: discord.Interaction, position: str):
         if not await self.check_voice_channel(interaction):
+            return
+        if not await self._check_dj(interaction):
             return
 
         guild_data = self.bot.get_guild_data(interaction.guild.id)

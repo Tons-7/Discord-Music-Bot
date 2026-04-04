@@ -337,6 +337,7 @@ class PlaybackService:
                 guild_data["current"] = None
                 guild_data["position"] = 0
                 guild_data["start_time"] = None
+                guild_data["seeking"] = False
                 guild_data["last_activity"] = datetime.now()
                 return
 
