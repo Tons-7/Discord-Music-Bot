@@ -1,7 +1,7 @@
 import discord
 
 # Appearance
-COLOR = 0x00CCFF
+COLOR = 0x5865F2
 
 # Pagination & limits
 SONGS_PER_PAGE = 15

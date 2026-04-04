@@ -98,3 +98,13 @@ def create_embed(title: str, description: str = "", color: int = COLOR, bot_user
     )
     embed.timestamp = datetime.now()
     return embed
+
+
+def create_v2_embed(title: str, description: str = "", colour: int = COLOR) -> discord.ui.LayoutView:
+    """Create a simple Components V2 display — Container with accent colour and text."""
+    view = discord.ui.LayoutView(timeout=None)
+    container = discord.ui.Container(accent_colour=discord.Colour(colour))
+    text = f"### {title}\n{description}" if title else description
+    container.add_item(discord.ui.TextDisplay(text))
+    view.add_item(container)
+    return view

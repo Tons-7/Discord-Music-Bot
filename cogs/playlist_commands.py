@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from config import COLOR, MAX_PLAYLIST_SIZE, SONGS_PER_PAGE
 from models.song import Song
-from utils.helpers import get_existing_urls, interaction_check, create_embed
+from utils.helpers import get_existing_urls, interaction_check, create_embed, create_v2_embed
 from views.pagination import PaginationView
 
 logger = logging.getLogger(__name__)
@@ -879,23 +879,14 @@ class PlaylistCommands(commands.Cog):
                     title_str = f"**[{title}]({url})**" if url else f"**{title}**"
                     description += f"`{i}.` {title_str} by {uploader}\n"
 
-                embed = create_embed(
-                    f"{label}: {name} - Page {page_num + 1}/{total_pages}",
-                    description[:4000],
-                    COLOR,
-                    self.bot.user
-                )
-                embed.add_field(name="Total Songs", value=str(len(playlist_items)), inline=True)
-
-                pages.append(embed)
+                page_text = f"### {label}: {name} - Page {page_num + 1}/{total_pages}\n{description[:4000]}\n-# {len(playlist_items)} songs"
+                pages.append(page_text)
 
             view = PaginationView(pages, interaction.user)
             view.current_page = page - 1
+            view._rebuild()
 
-            view.previous_button.disabled = view.current_page == 0
-            view.next_button.disabled = view.current_page == len(pages) - 1
-
-            await interaction.response.send_message(embed=pages[page - 1], view=view, silent=True)
+            await interaction.response.send_message(view=view, silent=True)
             view.message = await interaction.original_response()
 
         except Exception as e:
@@ -912,7 +903,7 @@ class PlaylistCommands(commands.Cog):
 
             if not results:
                 empty_msg = "You don't have any global playlists." if global_mode else "You don't have any saved playlists."
-                embed = create_embed(label, empty_msg, COLOR, self.bot.user)
+                view = create_v2_embed(label, empty_msg, COLOR)
             else:
                 description = ""
                 for playlist_name, songs_json, created_at in results:
@@ -923,9 +914,9 @@ class PlaylistCommands(commands.Cog):
                     except json.JSONDecodeError:
                         description += f"\u2022 **{playlist_name}** (corrupted data) - {created_at[:10]}\n"
 
-                embed = create_embed(label, description, COLOR, self.bot.user)
+                view = create_v2_embed(label, description, COLOR)
 
-            await interaction.response.send_message(embed=embed, silent=True)
+            await interaction.response.send_message(view=view, silent=True)
 
         except Exception as e:
             logger.error(f"Playlist list error: {e}")
@@ -1035,8 +1026,8 @@ class PlaylistCommands(commands.Cog):
 
         collab_ids = await self.bot.get_collaborators(pid, global_mode)
         if not collab_ids:
-            embed = create_embed(f"{label}: {name}", "No collaborators", COLOR, self.bot.user)
-            await interaction.response.send_message(embed=embed, silent=True)
+            view = create_v2_embed(f"{label}: {name}", "No collaborators", COLOR)
+            await interaction.response.send_message(view=view, silent=True)
             return
 
         lines = []
@@ -1045,12 +1036,12 @@ class PlaylistCommands(commands.Cog):
             display = user.display_name if user else f"User {uid}"
             lines.append(f"- {display}")
 
-        embed = create_embed(
+        view = create_v2_embed(
             f"Collaborators: {name}",
             "\n".join(lines),
-            COLOR, self.bot.user
+            COLOR
         )
-        await interaction.response.send_message(embed=embed, silent=True)
+        await interaction.response.send_message(view=view, silent=True)
 
     async def _handle_my_collabs(self, interaction: discord.Interaction, global_mode: bool = False):
         """Show all playlists the user is a collaborator on."""
@@ -1074,8 +1065,8 @@ class PlaylistCommands(commands.Cog):
         label = "Your Global Collaborations" if global_mode else "Your Collaborations"
 
         if not rows:
-            embed = create_embed(label, "You're not a collaborator on any playlists.", COLOR, self.bot.user)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            view = create_v2_embed(label, "You're not a collaborator on any playlists.", COLOR)
+            await interaction.response.send_message(view=view, ephemeral=True)
             return
 
         description = ""
@@ -1088,8 +1079,8 @@ class PlaylistCommands(commands.Cog):
                 song_count = 0
             description += f"\u2022 **{name}** by {owner_name} ({song_count} songs)\n"
 
-        embed = create_embed(label, description[:4000], COLOR, self.bot.user)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        view = create_v2_embed(label, description[:4000], COLOR)
+        await interaction.response.send_message(view=view, ephemeral=True)
 
     # Server Playlist commands
 
@@ -1321,30 +1312,19 @@ class PlaylistCommands(commands.Cog):
             for i, song in enumerate(guild_data["history"][start_idx:end_idx], start_idx + 1):
                 description += f"`{i}.` {song}\n"
 
-            embed = create_embed(
-                f"Recent History - Page {page_num + 1}/{total_pages}",
-                description[:4000],
-                COLOR,
-                self.bot.user
+            page_text = (
+                f"### Recent History - Page {page_num + 1}/{total_pages}\n"
+                f"{description[:4000]}\n"
+                f"-# {len(guild_data['history'])} songs total\n"
+                f"-# Use /history play <number> to replay a song or /history add_all to add all songs"
             )
-            embed.add_field(name="Total", value=str(len(guild_data["history"])), inline=True)
-            embed.set_footer(
-                text="Use /history play <number> to replay a song or /history add_all to add all songs"
-            )
-
-            pages.append(embed)
+            pages.append(page_text)
 
         view = PaginationView(pages, interaction.user)
         view.current_page = page - 1
+        view._rebuild()
 
-        view.previous_button.disabled = view.current_page == 0
-        view.next_button.disabled = view.current_page == len(pages) - 1
-
-        await interaction.response.send_message(
-            embed=pages[page - 1],
-            view=view,
-            silent=True
-        )
+        await interaction.response.send_message(view=view, silent=True)
         view.message = await interaction.original_response()
 
     @history_group.command(name="play", description="Play a song from history by number")
