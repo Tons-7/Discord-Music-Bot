@@ -1,42 +1,68 @@
 # Discord Music Bot
 
 A **modular Discord music bot** written in Python using `discord.py`.  
-This bot supports music playback, queue and playlist management, and more.
+Supports YouTube, Spotify, and SoundCloud playback with queue management, playlists, audio effects, lyrics, and
+autoplay.
 
 ## Features
 
-- Play music from supported sources, also with a normal search, instead of a link
-- Queue, history, and playlist management
-- Skip, pause, resume, and stop playback
-- Autoplay mode using Last.fm (similar tracks, artist top tracks, similar artists)
-- Modular command system
+- Play music from YouTube, Spotify, SoundCloud, or by search query
+- Queue, history, and playlist management (server and global playlists)
+- Playback controls: skip, pause, resume, seek, loop, shuffle
+- Audio effects: bass boost, nightcore, vaporwave, treble boost, 8D audio
+- Speed control with pitch preservation
+- Autoplay mode using Last.fm recommendations
+- Synced lyrics via lrclib.net
+- Audio file caching for near-instant seeking
+- Leaderboard and listening statistics
+- DJ role support for permission control
+- Auto-reconnect on voice disconnection
+- Queue persistence across bot restarts
 
-# Configuration
+## Requirements
 
-This bot uses **environment variables** for secrets:
+- Python 3.11+
+- [FFmpeg](https://www.ffmpeg.org/download.html) installed and on PATH
 
-1. Create a `.env` file in the root directory.
-2. Add your Discord token:
-    - BOT_TOKEN=your_token
+## Setup
 
-3. For spotify, you will have to go to the website and get the spotify client id and secret, then put in the .env
-   like this:
-    - SPOTIFY_CLIENT_ID=client_id
-    - SPOTIFY_CLIENT_SECRET=client_secret
+1. Clone the repository
+2. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+3. Copy `.env.example` to `.env` and fill in your tokens:
+   ```
+   cp .env.example .env
+   ```
+4. Run the bot:
+   ```
+   python main.py
+   ```
 
-4. For Last.fm (required for autoplay feature), get your API credentials from https://www.last.fm/api/account/create
-   and add them to the .env:
-    - LASTFM_API_KEY=your_api_key
-    - LASTFM_API_SECRET=your_api_secret
+## Docker
 
-5. Make sure `.env` remains in `.gitignore` so it is **never committed**.
+```
+docker compose up --build
+```
 
-# How to run
+## Configuration
 
-1. ffmpeg must be installed on your PC. Download from -> https://www.ffmpeg.org/download.html
-2. Install the libraries in requirements.txt by doing `pip install -r requirements.txt`
-3. Execute main.py
+All configuration is done through environment variables in `.env`:
 
-# Disclaimer
+| Variable                | Required | Description                    |
+|-------------------------|----------|--------------------------------|
+| `BOT_TOKEN`             | Yes      | Discord bot token              |
+| `SPOTIFY_CLIENT_ID`     | No       | Spotify API client ID          |
+| `SPOTIFY_CLIENT_SECRET` | No       | Spotify API client secret      |
+| `LASTFM_API_KEY`        | No       | Last.fm API key (for autoplay) |
+| `LASTFM_API_SECRET`     | No       | Last.fm API secret             |
 
-This bot is only for personal use
+Spotify credentials can be obtained from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).  
+Last.fm credentials can be obtained from [Last.fm API](https://www.last.fm/api/account/create).
+
+Make sure `.env` remains in `.gitignore` so it is **never committed**.
+
+## Disclaimer
+
+This bot is only for personal use.

@@ -23,9 +23,9 @@ class PlaybackService:
 
     # FFmpeg options builder (speed + effects)
 
-    def _build_ffmpeg_options(self, guild_data: dict) -> dict:
+    def _build_ffmpeg_options(self, guild_data: dict, local_file: bool = False) -> dict:
         """Build FFmpeg options with audio filters for speed and effects."""
-        base_before = self.bot.ffmpeg_options["before_options"]
+        base_before = "-nostdin" if local_file else self.bot.ffmpeg_options["before_options"]
         base_options = self.bot.ffmpeg_options["options"]
 
         filters = []
@@ -369,6 +369,18 @@ class PlaybackService:
         guild_data = self.bot.get_guild_data(guild_id)
         max_retries = 3
 
+        # Check local audio cache first
+        if not getattr(song, "is_live", False) and song.webpage_url:
+            cached_path = self.bot.audio_cache.get_cached_file(song.webpage_url)
+            if cached_path:
+                logger.info(f"Playing from cache: {song.title}")
+                song.url = cached_path
+                try:
+                    return await self._start_playback(guild_id, song, local_file=True)
+                except Exception as e:
+                    logger.warning(f"Cached playback failed for {song.title}, falling back to stream: {e}")
+                    self.bot.audio_cache.remove_cached(song.webpage_url)
+
         for attempt in range(max_retries):
             try:
                 logger.info(f"Extracting fresh stream URL for: {song.title} (attempt {attempt + 1})")
@@ -410,7 +422,7 @@ class PlaybackService:
         await self._handle_song_skip(guild_id, song)
         return False
 
-    async def _start_playback(self, guild_id: int, song: Song) -> bool:
+    async def _start_playback(self, guild_id: int, song: Song, local_file: bool = False) -> bool:
         queue_service = self.queue_service
 
         guild_data = self.bot.get_guild_data(guild_id)
@@ -421,7 +433,7 @@ class PlaybackService:
                 await asyncio.sleep(0.3)
 
             # Build FFmpeg options with speed/effect filters
-            ffmpeg_opts = self._build_ffmpeg_options(guild_data)
+            ffmpeg_opts = self._build_ffmpeg_options(guild_data, local_file=local_file)
 
             source = discord.PCMVolumeTransformer(
                 discord.FFmpegPCMAudio(song.url, **ffmpeg_opts),
@@ -466,6 +478,10 @@ class PlaybackService:
             guild_data["voice_client"].play(source, after=after_playing, bitrate=384)
 
             await asyncio.sleep(0.2)
+
+            # Trigger background audio download for faster future seeks/replays
+            if not local_file and not getattr(song, "is_live", False) and song.webpage_url:
+                await self.bot.audio_cache.ensure_cached(song.webpage_url, song.title)
 
             music_cog = self.bot.get_cog("MusicCommands")
             if music_cog:
