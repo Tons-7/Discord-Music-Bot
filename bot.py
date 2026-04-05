@@ -64,15 +64,15 @@ class MusicBot(commands.Bot):
             "default_search": "auto",
             "source_address": "0.0.0.0",
             "age_limit": 18,
-            "retries": 15,
-            "fragment_retries": 15,
+            "retries": 5,
+            "fragment_retries": 5,
             "skip_unavailable_fragments": True,
             "keep_fragments": False,
-            "concurrent_fragment_downloads": 1,
-            "extractor_retries": 10,
-            "file_access_retries": 10,
-            "socket_timeout": 60,
-            "http_chunk_size": 10485760,
+            "concurrent_fragment_downloads": 5,
+            "extractor_retries": 3,
+            "file_access_retries": 3,
+            "socket_timeout": 30,
+            "http_chunk_size": 1048576,
             "http_headers": {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -100,14 +100,14 @@ class MusicBot(commands.Bot):
                 "-reconnect_delay_max 5 "
                 "-reconnect_on_network_error 1 "
                 "-reconnect_on_http_error 5xx "
+                "-probesize 1M "
+                "-analyzeduration 1M "
                 "-nostdin "
                 "-user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'"
             ),
             "options": (
                 "-vn "
-                "-threads 0 "
-                "-probesize 1M "
-                "-analyzeduration 1M "
+                "-threads 1 "
                 "-fflags +discardcorrupt+genpts "
                 "-flags +low_delay"
             ),
