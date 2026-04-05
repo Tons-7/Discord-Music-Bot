@@ -1418,85 +1418,109 @@ class MusicCommands(commands.Cog):
 
             await asyncio.sleep(0.2)
 
-            fresh_data = None
-            for attempt in range(3):
+            # Check local audio cache for instant seek
+            cached_path = self.bot.audio_cache.get_cached_file(current_song.webpage_url) if current_song.webpage_url else None
+
+            if cached_path:
+                # Local file seek — single strategy, near-instant
                 try:
-                    fresh_data = await self.bot.get_song_info_cached(
-                        current_song.webpage_url
-                    )
-                    if fresh_data and fresh_data.get("url"):
-                        break
-                    await asyncio.sleep(0.5)
-                except Exception as e:
-                    logger.warning(
-                        f"Stream extraction attempt {attempt + 1} failed: {e}"
-                    )
-                    if attempt < 2:
-                        await asyncio.sleep(1)
-
-            if not fresh_data or not fresh_data.get("url"):
-                embed = create_embed(
-                    "Error",
-                    "Failed to seek - could not get fresh stream URL",
-                    COLOR,
-                    self.bot.user,
-                )
-                await interaction.edit_original_response(embed=embed)
-                return
-
-            # Build FFmpeg options with seek + speed/effects
-            ffmpeg_opts = self.playback_service._build_ffmpeg_options(guild_data)
-
-            seek_strategies = [
-                {
-                    "before_options": f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss {seek_seconds} -nostdin -user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'",
-                    "options": ffmpeg_opts["options"].replace(self.bot.ffmpeg_options["options"],
-                                                              "").strip() or "-vn -bufsize 1024k",
-                },
-                {
-                    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'",
-                    "options": f"-vn -ss {seek_seconds} -bufsize 1024k",
-                },
-                {
-                    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin",
-                    "options": "-vn",
-                },
-            ]
-
-            # For strategy 0 & 1, prepend the audio filter if we have effects/speed
-            base_opts = self.bot.ffmpeg_options["options"]
-            extra_af = ffmpeg_opts["options"].replace(base_opts, "").strip()
-            if extra_af:
-                seek_strategies[0]["options"] = f"-vn -bufsize 1024k {extra_af}"
-                seek_strategies[1]["options"] = f"-vn -ss {seek_seconds} -bufsize 1024k {extra_af}"
-
-            source = None
-            strategy_used = 0
-
-            for i, ffmpeg_options in enumerate(seek_strategies):
-                try:
+                    ffmpeg_opts = self.playback_service._build_ffmpeg_options(guild_data, local_file=True)
+                    seek_opts = {
+                        "before_options": f"-nostdin -ss {seek_seconds}",
+                        "options": ffmpeg_opts["options"],
+                    }
                     source = discord.PCMVolumeTransformer(
-                        discord.FFmpegPCMAudio(fresh_data["url"], **ffmpeg_options),
+                        discord.FFmpegPCMAudio(cached_path, **seek_opts),
                         volume=guild_data["volume"] / 100,
                     )
-                    strategy_used = i
-                    break
+                    strategy_used = 0
+                    logger.info(f"Seeking from cache: {current_song.title} to {seek_seconds}s")
                 except Exception as e:
-                    logger.warning(f"Seek strategy {i + 1} failed: {e}")
-                    if i < len(seek_strategies) - 1:
-                        continue
-                    else:
-                        raise e
+                    logger.warning(f"Cached seek failed, falling back to stream: {e}")
+                    self.bot.audio_cache.remove_cached(current_song.webpage_url)
+                    cached_path = None  # Fall through to remote path
 
-            if not source:
-                embed = create_embed(
-                    "Error",
-                    "Failed to seek - stream format not supported",
-                    COLOR,
-                    self.bot.user,
-                )
-                await interaction.edit_original_response(embed=embed)
-                return
+            if not cached_path:
+                # Remote stream seek — fetch fresh URL with retries
+                fresh_data = None
+                for attempt in range(3):
+                    try:
+                        fresh_data = await self.bot.get_song_info_cached(
+                            current_song.webpage_url
+                        )
+                        if fresh_data and fresh_data.get("url"):
+                            break
+                        await asyncio.sleep(0.5)
+                    except Exception as e:
+                        logger.warning(
+                            f"Stream extraction attempt {attempt + 1} failed: {e}"
+                        )
+                        if attempt < 2:
+                            await asyncio.sleep(1)
+
+                if not fresh_data or not fresh_data.get("url"):
+                    embed = create_embed(
+                        "Error",
+                        "Failed to seek - could not get fresh stream URL",
+                        COLOR,
+                        self.bot.user,
+                    )
+                    await interaction.edit_original_response(embed=embed)
+                    return
+
+                # Build FFmpeg options with seek + speed/effects
+                ffmpeg_opts = self.playback_service._build_ffmpeg_options(guild_data)
+
+                seek_strategies = [
+                    {
+                        "before_options": f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss {seek_seconds} -nostdin -user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'",
+                        "options": ffmpeg_opts["options"].replace(self.bot.ffmpeg_options["options"],
+                                                                  "").strip() or "-vn -bufsize 1024k",
+                    },
+                    {
+                        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'",
+                        "options": f"-vn -ss {seek_seconds} -bufsize 1024k",
+                    },
+                    {
+                        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin",
+                        "options": "-vn",
+                    },
+                ]
+
+                # For strategy 0 & 1, prepend the audio filter if we have effects/speed
+                base_opts = self.bot.ffmpeg_options["options"]
+                extra_af = ffmpeg_opts["options"].replace(base_opts, "").strip()
+                if extra_af:
+                    seek_strategies[0]["options"] = f"-vn -bufsize 1024k {extra_af}"
+                    seek_strategies[1]["options"] = f"-vn -ss {seek_seconds} -bufsize 1024k {extra_af}"
+
+                source = None
+                strategy_used = 0
+
+                for i, ffmpeg_options in enumerate(seek_strategies):
+                    try:
+                        source = discord.PCMVolumeTransformer(
+                            discord.FFmpegPCMAudio(fresh_data["url"], **ffmpeg_options),
+                            volume=guild_data["volume"] / 100,
+                        )
+                        strategy_used = i
+                        break
+                    except Exception as e:
+                        logger.warning(f"Seek strategy {i + 1} failed: {e}")
+                        if i < len(seek_strategies) - 1:
+                            continue
+                        else:
+                            raise e
+
+                if not source:
+                    embed = create_embed(
+                        "Error",
+                        "Failed to seek - stream format not supported",
+                        COLOR,
+                        self.bot.user,
+                    )
+                    await interaction.edit_original_response(embed=embed)
+                    return
 
             guild_data["seek_offset"] = seek_seconds if strategy_used <= 1 else 0
             guild_data["start_time"] = datetime.now()
@@ -1529,7 +1553,9 @@ class MusicCommands(commands.Cog):
                 guild_data["voice_client"].pause()
                 guild_data["pause_position"] = seek_seconds
 
-            if strategy_used <= 1:
+            if cached_path:
+                result_desc = f"Moved to {format_duration(seek_seconds)} in **{current_song.title}**"
+            elif strategy_used <= 1:
                 result_desc = f"Moved to {format_duration(seek_seconds)} in **{current_song.title}**"
                 if strategy_used == 1:
                     result_desc += " (strategy 2)"

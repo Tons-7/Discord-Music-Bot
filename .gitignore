@@ -11,3 +11,5 @@ music_bot.db
 __pycache__
 
 .cache
+
+audio_cache
