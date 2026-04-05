@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+music_bot.db
+.git/
+.claude/
+.gitignore
+CLAUDE.md
+README.md
+*.md
+bot_data.json
+command_queue.json
+audio_cache/

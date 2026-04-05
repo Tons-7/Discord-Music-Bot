@@ -1,0 +1,8 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    volumes:
+      - ./music_bot.db:/app/music_bot.db
+      - ./audio_cache:/app/audio_cache
+    restart: unless-stopped
