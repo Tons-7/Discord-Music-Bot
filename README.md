@@ -12,7 +12,7 @@ autoplay.
 - Audio effects: bass boost, nightcore, vaporwave, treble boost, 8D audio
 - Speed control with pitch preservation
 - Autoplay mode using Last.fm recommendations
-- Synced lyrics via lrclib.net
+- Lyrics via lrclib.net
 - Audio file caching for near-instant seeking
 - Leaderboard and listening statistics
 - DJ role support for permission control
