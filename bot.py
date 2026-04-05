@@ -19,7 +19,6 @@ from config import (
     INACTIVE_TIMEOUT_MINUTES, DB_VERSION,
 )
 from models.song import Song
-from services.audio_cache import AudioCacheService
 from services.music_service import MusicService
 from services.playback_service import PlaybackService
 from utils import create_embed
@@ -117,7 +116,6 @@ class MusicBot(commands.Bot):
         self.voice_reconnect_delay = 2
 
         self.ytdl = yt_dlp.YoutubeDL(self.ytdl_format_options)
-        self.audio_cache = AudioCacheService(self)
 
         try:
             spotify_client_id = os.getenv("SPOTIFY_CLIENT_ID")
@@ -603,21 +601,8 @@ class MusicBot(commands.Bot):
             logger.info(f"ThreadPoolExecutor scaled to {desired_workers} workers")
 
         try:
-            payload = [cmd.to_dict(self.tree) for cmd in self.tree.get_commands()]
-            payload.append({
-                # this is not a slash command,
-                # it is needed for the music activity to appear in the activity menu
-                "name": "launch",
-                "description": "Launch the music player ui",
-                "type": 4,
-                "handler": 2,
-            })
-            await self.http.bulk_upsert_global_commands(
-                self.application_id, payload=payload,
-            )
-            logger.info(f"Synced {len(payload)} command(s)")
-            # synced = await self.tree.sync()
-            # logger.info(f"Synced {len(synced)} slash command(s)")
+            synced = await self.tree.sync()
+            logger.info(f"Synced {len(synced)} slash command(s)")
         except Exception as e:
             logger.error(f"Failed to sync commands: {e}")
 
@@ -625,11 +610,9 @@ class MusicBot(commands.Bot):
             self.cleanup_inactive, self.cleanup_cache,
             self.cleanup_inactive_guilds, self.update_now_playing_timestamps,
             self.cleanup_validation_cache, self.check_voice_health,
-            self.cleanup_audio_cache,
         ]:
             if not task.is_running():
                 task.start()
-        await self.audio_cache.startup_cleanup()
         await self.load_persistent_queues()
 
     # Voice state handling
