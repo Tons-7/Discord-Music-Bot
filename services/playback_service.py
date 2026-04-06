@@ -365,6 +365,22 @@ class PlaybackService:
             if skip_count >= max_skip_attempts:
                 await self._handle_max_retries_exceeded(guild_id)
 
+    @staticmethod
+    async def _resolve_youtube_thumbnail(webpage_url: str) -> str:
+        match = re.search(r'[?&]v=([^&]+)', webpage_url)
+        if not match:
+            return ""
+        video_id = match.group(1)
+        maxres = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
+                async with session.head(maxres) as resp:
+                    if resp.status == 200:
+                        return maxres
+        except Exception:
+            pass
+        return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
     async def _extract_and_play_song(self, guild_id: int, song: Song, skip_count: int) -> bool:
         guild_data = self.bot.get_guild_data(guild_id)
         max_retries = 3
@@ -375,6 +391,8 @@ class PlaybackService:
             if cached_path:
                 logger.info(f"Playing from cache: {song.title}")
                 song.url = cached_path
+                if not song.thumbnail and song.webpage_url:
+                    song.thumbnail = await self._resolve_youtube_thumbnail(song.webpage_url)
                 try:
                     return await self._start_playback(guild_id, song, local_file=True)
                 except Exception as e:
