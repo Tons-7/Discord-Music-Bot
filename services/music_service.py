@@ -69,6 +69,9 @@ class MusicService:
         if "url" not in normalized or not normalized["url"]:
             normalized["url"] = webpage_url
 
+        if not normalized.get("thumbnail") and video_id:
+            normalized["thumbnail"] = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+
         # Livestream flag — propagate so callers can detect it
         if entry.get("is_live"):
             normalized["is_live"] = True
@@ -204,7 +207,7 @@ class MusicService:
                         "url": None,
                         "title": entry.get("title", f"Song {i + 1}"),
                         "duration": entry.get("duration", 0),
-                        "thumbnail": entry.get("thumbnail", ""),
+                        "thumbnail": entry.get("thumbnail") or f"https://i.ytimg.com/vi/{entry['id']}/maxresdefault.jpg",
                         "uploader": entry.get("uploader", "Unknown"),
                         "webpage_url": f"https://www.youtube.com/watch?v={entry['id']}",
                         "requested_by": "Unknown",
