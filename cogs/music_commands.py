@@ -249,9 +249,11 @@ class MusicCommands(commands.Cog):
                 guild_data["voice_client"].is_playing()
                 or guild_data["voice_client"].is_paused()
         ):
+            guild_data["seeking"] = True
             guild_data["voice_client"].stop()
 
         await self.play_previous_song_directly(guild_id)
+        guild_data["seeking"] = False
         return True
 
     async def play_previous_song_directly(self, guild_id: int):
