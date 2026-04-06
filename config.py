@@ -42,7 +42,7 @@ LYRICS_API_BASE = "https://lrclib.net/api"
 # Audio file cache
 AUDIO_CACHE_DIR = "audio_cache"
 AUDIO_CACHE_MAX_SIZE_MB = 2048  # ~400 songs
-AUDIO_CACHE_MAX_AGE_HOURS = 168
+AUDIO_CACHE_MAX_AGE_HOURS = 672  # 28 days
 
 # Database
 DB_VERSION = 4  # bump when adding migrations
