@@ -65,8 +65,8 @@ class SkipButton(_NPButton):
         if gd["voice_client"] and (gd["voice_client"].is_playing() or gd["voice_client"].is_paused()):
             if gd["current"]:
                 cog.queue_service.add_to_history(v.guild_id, gd["current"])
-            gd["voice_client"].stop()
             await interaction.response.send_message("\u23ed\ufe0f Skipped", ephemeral=True, delete_after=2)
+            gd["voice_client"].stop()
         else:
             await interaction.response.send_message("Nothing to skip", ephemeral=True, delete_after=2)
 

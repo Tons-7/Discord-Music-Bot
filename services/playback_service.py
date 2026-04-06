@@ -475,6 +475,9 @@ class PlaybackService:
             guild_data["start_time"] = datetime.now()
             guild_data["last_activity"] = datetime.now()
 
+            # Prevent timestamp loop from editing the old message during transition
+            guild_data["message_ready_for_timestamps"] = False
+
             guild_data["voice_client"].play(source, after=after_playing, bitrate=384)
 
             await asyncio.sleep(0.2)
