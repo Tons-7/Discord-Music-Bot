@@ -50,10 +50,10 @@ class PreviousButton(_NPButton):
         _, cog, v = await self._get_context()
         await interaction.response.defer(ephemeral=True, thinking=False)
         success = await cog.play_previous(v.guild_id)
-        if success:
-            await interaction.followup.send("\u23ee\ufe0f Playing previous", ephemeral=True, delete_after=3)
-        else:
-            await interaction.followup.send("No previous song available", ephemeral=True, delete_after=3)
+        msg = "\u23ee\ufe0f Playing previous" if success else "No previous song available"
+        followup_msg = await interaction.followup.send(msg, ephemeral=True, wait=True)
+        if followup_msg:
+            await followup_msg.delete(delay=3)
 
 
 class SkipButton(_NPButton):
