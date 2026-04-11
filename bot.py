@@ -883,7 +883,11 @@ class MusicBot(commands.Bot):
                         guild_data["current"] = None
                         await self._playback_service.play_next(guild_id)
                 else:
-                    if guild_data.get("current") or guild_data.get("queue"):
+                    # Check discord.py's registry before nulling — could be mid-reconnect
+                    actual_vc = guild.voice_client if guild else None
+                    if actual_vc:
+                        guild_data["voice_client"] = actual_vc
+                    elif guild_data.get("current") or guild_data.get("queue"):
                         logger.warning(
                             f"Voice client disconnected but has active state in guild: {guild_name} ({guild_id})")
                         guild_data["voice_client"] = None
