@@ -17,7 +17,10 @@ class _PrevButton(ui.Button):
         view: PaginationView = self.view  # type: ignore
         if view.current_page > 0:
             view.current_page -= 1
-            await interaction.response.edit_message(view=view._build_view())
+            try:
+                await interaction.response.edit_message(view=view._build_view())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 
 class _NextButton(ui.Button):
@@ -28,7 +31,10 @@ class _NextButton(ui.Button):
         view: PaginationView = self.view  # type: ignore
         if view.current_page < len(view.pages) - 1:
             view.current_page += 1
-            await interaction.response.edit_message(view=view._build_view())
+            try:
+                await interaction.response.edit_message(view=view._build_view())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 
 class PaginationView(ui.LayoutView):
