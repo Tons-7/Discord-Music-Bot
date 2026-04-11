@@ -86,6 +86,11 @@ class MusicCommands(commands.Cog):
 
         voice_client = interaction.guild.voice_client
 
+        # Sync with discord.py's authoritative voice client
+        if voice_client:
+            guild_data = self.bot.get_guild_data(interaction.guild.id)
+            guild_data["voice_client"] = voice_client
+
         if not voice_client:
             if allow_auto_join:
                 return True
@@ -113,20 +118,42 @@ class MusicCommands(commands.Cog):
     async def ensure_voice_connection(self, interaction: discord.Interaction) -> bool:
         guild_data = self.bot.get_guild_data(interaction.guild.id)
 
-        if (
-                not guild_data["voice_client"]
-                or not guild_data["voice_client"].is_connected()
-        ):
-            if not interaction.user.voice:
-                return False
+        # Check discord.py's registry
+        existing_vc = interaction.guild.voice_client
+        if existing_vc:
+            guild_data["voice_client"] = existing_vc
+            if existing_vc.is_connected():
+                return True
 
+            # Mid-reconnect — wait for auto-reconnect to finish
+            for _ in range(10):
+                await asyncio.sleep(0.5)
+                if existing_vc.is_connected():
+                    return True
+
+            # Reconnect timed out — force disconnect and connect fresh
             try:
-                guild_data["voice_client"] = (
-                    await interaction.user.voice.channel.connect()
-                )
-            except Exception as e:
-                logger.error(f"Failed to connect to voice: {e}")
-                return False
+                await existing_vc.disconnect(force=True)
+            except Exception:
+                pass
+            guild_data["voice_client"] = None
+
+        if not interaction.user.voice:
+            return False
+
+        try:
+            guild_data["voice_client"] = (
+                await interaction.user.voice.channel.connect()
+            )
+        except Exception as e:
+            # Race condition: reconnect completed between our check and connect()
+            if "already connected" in str(e).lower():
+                existing_vc = interaction.guild.voice_client
+                if existing_vc:
+                    guild_data["voice_client"] = existing_vc
+                    return True
+            logger.error(f"Failed to connect to voice: {type(e).__name__}: {e}")
+            return False
 
         return True
 
@@ -371,7 +398,10 @@ class MusicCommands(commands.Cog):
             embed = create_embed(
                 "Error", "Failed to connect to voice channel!", COLOR, self.bot.user
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            try:
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except (discord.NotFound, discord.HTTPException):
+                pass
             return
 
         if guild_data["voice_client"].channel != interaction.user.voice.channel:
@@ -383,7 +413,10 @@ class MusicCommands(commands.Cog):
         searching_embed = create_embed(
             "Searching...", f"Looking for: `{query}`", COLOR, self.bot.user
         )
-        await interaction.edit_original_response(embed=searching_embed)
+        try:
+            await interaction.edit_original_response(embed=searching_embed)
+        except (discord.NotFound, discord.HTTPException):
+            return
 
         try:
             is_playlist = "playlist" in query.lower() and "youtube.com" in query.lower()
@@ -554,7 +587,10 @@ class MusicCommands(commands.Cog):
             embed = create_embed(
                 "Error", f"An error occurred: {str(e)}", COLOR, self.bot.user
             )
-            await interaction.edit_original_response(embed=embed)
+            try:
+                await interaction.edit_original_response(embed=embed)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     @app_commands.command(name="pause", description="Pause the current song")
     @app_commands.checks.cooldown(1, COMMAND_COOLDOWN)
@@ -1215,6 +1251,11 @@ class MusicCommands(commands.Cog):
                     interaction.guild.id, interaction.channel.id
                 )
 
+            # Sync with discord.py's authoritative voice client
+            existing_vc = interaction.guild.voice_client
+            if existing_vc:
+                guild_data["voice_client"] = existing_vc
+
             if (
                     not guild_data["voice_client"]
                     or not guild_data["voice_client"].is_connected()
@@ -1229,10 +1270,13 @@ class MusicCommands(commands.Cog):
                         await interaction.user.voice.channel.connect()
                     )
                 except Exception as e:
-                    logger.error(f"Failed to connect to voice: {e}")
-                    await interaction.edit_original_response(
-                        view=create_v2_embed("Error", "Failed to connect to voice channel!", COLOR))
-                    return
+                    if "already connected" in str(e).lower() and interaction.guild.voice_client:
+                        guild_data["voice_client"] = interaction.guild.voice_client
+                    else:
+                        logger.error(f"Failed to connect to voice: {type(e).__name__}: {e}")
+                        await interaction.edit_original_response(
+                            view=create_v2_embed("Error", "Failed to connect to voice channel!", COLOR))
+                        return
             elif interaction.user.voice and guild_data["voice_client"].channel != interaction.user.voice.channel:
                 try:
                     await guild_data["voice_client"].move_to(
@@ -1421,7 +1465,8 @@ class MusicCommands(commands.Cog):
             await asyncio.sleep(0.2)
 
             # Check local audio cache for instant seek
-            cached_path = self.bot.audio_cache.get_cached_file(current_song.webpage_url) if current_song.webpage_url else None
+            cached_path = self.bot.audio_cache.get_cached_file(
+                current_song.webpage_url) if current_song.webpage_url else None
 
             if cached_path:
                 # Local file seek — single strategy, near-instant
