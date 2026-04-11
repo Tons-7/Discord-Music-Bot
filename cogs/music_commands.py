@@ -1031,7 +1031,7 @@ class MusicCommands(commands.Cog):
             guild_data, current_position, is_paused
         )
 
-        view = create_v2_embed(title, description, COLOR)
+        view = create_v2_embed(title, description, COLOR, thumbnail=current.thumbnail or "")
 
         await interaction.response.send_message(view=view, silent=True)
 

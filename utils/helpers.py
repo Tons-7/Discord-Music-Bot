@@ -100,11 +100,17 @@ def create_embed(title: str, description: str = "", color: int = COLOR, bot_user
     return embed
 
 
-def create_v2_embed(title: str, description: str = "", colour: int = COLOR) -> discord.ui.LayoutView:
+def create_v2_embed(title: str, description: str = "", colour: int = COLOR, thumbnail: str = "") -> discord.ui.LayoutView:
     """Create a simple Components V2 display — Container with accent colour and text."""
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Colour(colour))
     text = f"### {title}\n{description}" if title else description
-    container.add_item(discord.ui.TextDisplay(text))
+    if thumbnail:
+        container.add_item(discord.ui.Section(
+            discord.ui.TextDisplay(text),
+            accessory=discord.ui.Thumbnail(thumbnail),
+        ))
+    else:
+        container.add_item(discord.ui.TextDisplay(text))
     view.add_item(container)
     return view
