@@ -12,3 +12,6 @@ README.md
 bot_data.json
 command_queue.json
 audio_cache/
+activity-frontend/node_modules/
+activity-frontend/.next/
+activity-frontend/out/

@@ -5,12 +5,13 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Optional, Dict
+from typing import Any, Dict, List, Optional, TypedDict
 
 import discord
 import pylast
 import spotipy
 import yt_dlp
+from discord.app_commands import AppCommand
 from discord.ext import commands, tasks
 from spotipy.oauth2 import SpotifyClientCredentials
 
@@ -27,6 +28,38 @@ from utils import create_embed
 logger = logging.getLogger(__name__)
 
 
+class GuildData(TypedDict):
+    guild_id: int
+    queue: List[Song]
+    loop_backup: List[Song]
+    history: List[Song]
+    history_position: int
+    current: Optional[Song]
+    position: float
+    seek_offset: float
+    loop_mode: str
+    shuffle: bool
+    volume: int
+    autoplay: bool
+    autoplay_prefetch: Optional[Song]
+    autoplay_prefetch_task: Optional[asyncio.Task]
+    voice_client: Optional[discord.VoiceClient]
+    intentional_disconnect: bool
+    last_activity: datetime
+    now_playing_message: Optional[discord.Message]
+    music_channel_id: Optional[int]
+    start_time: Optional[float]
+    message_ready_for_timestamps: bool
+    message_last_validated: float
+    seeking: bool
+    pause_position: Optional[float]
+    now_playing_message_sent_time: Optional[datetime]
+    play_lock: asyncio.Lock
+    speed: float
+    audio_effect: str
+    dj_role_id: Optional[int]
+
+
 class MusicBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=get_intents(), help_command=None)
@@ -37,6 +70,7 @@ class MusicBot(commands.Bot):
 
         self.init_database()
         self.guilds_data = {}
+        self.ws_manager = None
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
 
         self.song_cache = {}
@@ -394,7 +428,7 @@ class MusicBot(commands.Bot):
 
     # Guild state
 
-    def get_guild_data(self, guild_id: int) -> Dict:
+    def get_guild_data(self, guild_id: int) -> GuildData:
         if guild_id not in self.guilds_data:
             self.guilds_data[guild_id] = {
                 "guild_id": guild_id,
@@ -584,7 +618,34 @@ class MusicBot(commands.Bot):
     # Lifecycle hooks
 
     async def setup_hook(self):
-        pass
+        # Set event loop reference early so ConnectionState has it
+        # before _delay_ready runs (needed when uvicorn owns the loop)
+        self.loop = asyncio.get_running_loop()
+        self._connection._loop = self.loop
+
+    async def _sync_commands_with_entry_point(self):
+        """Sync slash commands while preserving the Activity Entry Point command.
+
+        Discord's bulk PUT rejects requests that omit the Entry Point (type 4)
+        command created when Activities are enabled (error 50240). This fetches
+        existing commands, finds the Entry Point, and includes it in the payload.
+        """
+        app_id = self.application_id
+        commands = self.tree._get_all_commands(guild=None)
+
+        translator = self.tree.translator
+        if translator:
+            payload = [await cmd.get_translated_payload(self.tree, translator) for cmd in commands]
+        else:
+            payload = [cmd.to_dict(self.tree) for cmd in commands]
+
+        existing = await self.http.get_global_commands(app_id)
+        for cmd in existing:
+            if cmd.get("type") == 4:
+                payload.append(cmd)
+
+        data = await self.http.bulk_upsert_global_commands(app_id, payload=payload)
+        return [AppCommand(data=d, state=self._connection) for d in data]
 
     async def on_ready(self):
         logger.info(f"{self.user} has connected to Discord!")
@@ -603,7 +664,7 @@ class MusicBot(commands.Bot):
             logger.info(f"ThreadPoolExecutor scaled to {desired_workers} workers")
 
         try:
-            synced = await self.tree.sync()
+            synced = await self._sync_commands_with_entry_point()
             logger.info(f"Synced {len(synced)} slash command(s)")
         except Exception as e:
             logger.error(f"Failed to sync commands: {e}")

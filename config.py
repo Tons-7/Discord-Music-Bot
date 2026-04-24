@@ -1,3 +1,5 @@
+import os
+
 import discord
 
 # Appearance
@@ -46,6 +48,11 @@ AUDIO_CACHE_MAX_AGE_HOURS = 672  # 28 days
 
 # Database
 DB_VERSION = 4  # bump when adding migrations
+
+# Activity (Discord Embedded App)
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
+ACTIVITY_PORT = int(os.getenv("ACTIVITY_PORT", "8080"))
 
 
 def get_intents():
