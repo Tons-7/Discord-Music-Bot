@@ -2083,6 +2083,14 @@ class MusicCommands(commands.Cog):
         )
         await interaction.response.send_message(view=view, ephemeral=True)
 
+    # Activity
+
+    @app_commands.command(
+        name="activity", description="Open the music dashboard Activity"
+    )
+    async def activity_slash(self, interaction: discord.Interaction):
+        await interaction.response.launch_activity()
+
     # Help
 
     @app_commands.command(

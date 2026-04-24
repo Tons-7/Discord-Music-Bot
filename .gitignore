@@ -7,9 +7,18 @@
 banned_users.txt
 
 music_bot.db
+music_bot.db-shm
+music_bot.db-wal
 
 __pycache__
 
 .cache
 
 audio_cache
+
+.claude/
+
+# Activity frontend build artifacts
+activity-frontend/node_modules/
+activity-frontend/.next/
+activity-frontend/out/

@@ -7,3 +7,6 @@ PyNaCl>=1.6.2
 python-dotenv>=1.2.2
 pylast>=7.0.2
 davey>=0.1.5
+fastapi>=0.136.1
+uvicorn[standard]>=0.46.0
+httpx>=0.28.0
