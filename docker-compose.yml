@@ -8,3 +8,11 @@ services:
       - ./music_bot.db:/app/music_bot.db
       - ./audio_cache:/app/audio_cache
     restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    env_file: .env
+    depends_on:
+      - bot
+    restart: unless-stopped
