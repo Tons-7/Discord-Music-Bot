@@ -3,6 +3,7 @@ import functools
 import logging
 
 from activity.state_serializer import serialize_guild_state
+from activity.tasks import spawn
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,16 @@ def _wrap_async(original, bot, ws_manager, event_type):
         result = await original(*args, **kwargs)
         guild_id = _get_guild_id_from_args(args)
         if guild_id and ws_manager.has_connections(guild_id):
-            try:
-                data = serialize_guild_state(bot, guild_id)
-                await ws_manager.broadcast(guild_id, event_type, data)
-            except Exception as e:
-                logger.debug(f"Broadcast failed for {event_type}: {e}")
+            # Broadcast off the critical path. _start_playback / _handle_empty_queue
+            # run inside play_next while holding play_lock; awaiting a (possibly
+            # backpressured) WebSocket send here would prolong the lock hold.
+            async def _broadcast():
+                try:
+                    data = serialize_guild_state(bot, guild_id)
+                    await ws_manager.broadcast(guild_id, event_type, data)
+                except Exception as e:
+                    logger.debug(f"Broadcast failed for {event_type}: {e}")
+            spawn(_broadcast())
         return result
     return wrapper
 
