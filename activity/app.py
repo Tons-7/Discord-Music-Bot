@@ -52,10 +52,41 @@ async def lifespan(app: FastAPI):
     await bot._async_setup_hook()
     await bot.login(bot_token)
     bot_task = asyncio.create_task(bot.connect(), name="discord-bot-connect")
-    bot_task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
 
-    # Wait for bot to be fully connected before installing hooks
-    await bot.wait_until_ready()
+    def _log_bot_task_exception(task: asyncio.Task):
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("Discord bot connection task failed", exc_info=exc)
+
+    bot_task.add_done_callback(_log_bot_task_exception)
+
+    # Wait for bot to be fully connected before installing hooks.
+    # Race wait_until_ready against bot_task so a failed connect() can't hang
+    # uvicorn forever, and bound it with a timeout.
+    ready_task = asyncio.create_task(bot.wait_until_ready(), name="bot-wait-until-ready")
+    done, _pending = await asyncio.wait(
+        {ready_task, bot_task},
+        return_when=asyncio.FIRST_COMPLETED,
+        timeout=60,
+    )
+
+    if bot_task in done:
+        # connect() returned/raised before the bot became ready
+        ready_task.cancel()
+        exc = bot_task.exception() if not bot_task.cancelled() else None
+        if exc is not None:
+            logger.error("Bot failed to connect during startup", exc_info=exc)
+            raise RuntimeError(f"Bot failed to connect: {exc}") from exc
+        logger.error("Discord bot connection ended before becoming ready")
+        raise RuntimeError("Bot connection ended before becoming ready")
+
+    if ready_task not in done:
+        # Neither ready nor failed within the timeout
+        ready_task.cancel()
+        logger.error("Timed out waiting for the Discord bot to become ready (60s)")
+        raise RuntimeError("Timed out waiting for the Discord bot to become ready")
 
     # Install broadcast hooks so slash commands notify Activity clients
     from activity.cog_hooks import install_broadcast_hooks
@@ -82,13 +113,10 @@ async def lifespan(app: FastAPI):
         if guild_data.get("current"):
             # Record listening stats before clearing (pass saved user IDs
             # since WS connections are already gone at this point)
-            from activity.helpers import record_activity_listening
+            from activity.helpers import clear_activity_playback, record_activity_listening
             await record_activity_listening(bot, ws_manager, guild_id, user_ids=last_user_ids)
 
-            guild_data["current"] = None
-            guild_data["start_time"] = None
-            guild_data["seek_offset"] = 0
-            guild_data["pause_position"] = None
+            clear_activity_playback(guild_data, cancel_prefetch=True)
             await bot.save_guild_queue(guild_id)
             logger.info(f"Activity closed for guild {guild_id}, cleared playback state")
 
@@ -108,6 +136,28 @@ async def lifespan(app: FastAPI):
         await position_task
     except asyncio.CancelledError:
         pass
+
+    # Close lazily-created aiohttp sessions and cancel tracked background tasks.
+    # These helpers are defined by other modules — call them defensively.
+    try:
+        from activity.routes import stream_routes
+        if hasattr(stream_routes, "close_proxy_session"):
+            await stream_routes.close_proxy_session()
+    except Exception as e:
+        logger.debug(f"Error closing stream proxy session: {e}")
+
+    try:
+        from activity.routes import image_proxy
+        if hasattr(image_proxy, "close_session"):
+            await image_proxy.close_session()
+    except Exception as e:
+        logger.debug(f"Error closing image proxy session: {e}")
+
+    try:
+        from activity.tasks import cancel_all
+        await cancel_all()
+    except Exception as e:
+        logger.debug(f"Error cancelling background tasks: {e}")
 
     await bot.close()
     bot_task.cancel()
@@ -131,7 +181,32 @@ app.add_middleware(
 from activity.routes import api_router
 app.include_router(api_router)
 
+class FrontendStaticFiles(StaticFiles):
+    """Static export with explicit cache policy: versioned chunks are
+    immutable; everything else (index.html) must revalidate, otherwise the
+    Discord webview/CDNs cache old builds and UI updates never land."""
+
+    async def get_response(self, path, scope):
+        # Per-build assetPrefix (/v-<stamp>/_next/...) — chunk filenames are not
+        # content-hashed across builds, so the unique prefix is what busts CDN
+        # caches. Strip it to resolve the real file.
+        versioned = path.startswith("v-") and "/" in path
+        if versioned:
+            path = path.split("/", 1)[1]
+        response = await super().get_response(path, scope)
+        if versioned:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Serve Next.js static export if the build exists
 frontend_dir = Path(__file__).parent.parent / "activity-frontend" / "out"
 if frontend_dir.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+    app.mount("/", FrontendStaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+else:
+    logger.warning(
+        f"frontend build not found at {frontend_dir}; "
+        "run 'cd activity-frontend && npm run build' — API up but SPA unavailable"
+    )
