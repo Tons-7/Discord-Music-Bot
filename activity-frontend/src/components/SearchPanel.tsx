@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useGuildState } from "./GuildStateProvider";
 import { apiFetch } from "@/lib/api";
+import { maybeAutoPlay } from "@/lib/queueActions";
 import { formatDuration, cn } from "@/lib/utils";
 import { useToast } from "./Toast";
 import SongRow from "./SongRow";
 import EmptyState from "./EmptyState";
+import { SongRowSkeleton } from "./ui/Skeleton";
+import { SearchIcon } from "./ui/icons";
 import type { SearchResult } from "@/types";
 
 export default function SearchPanel() {
@@ -14,6 +17,7 @@ export default function SearchPanel() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
   const [addedSet, setAddedSet] = useState<Set<string>>(new Set());
   const [pendingSet, setPendingSet] = useState<Set<string>>(new Set());
   // Set when the last successful search was a URL — enables the "Add all" path
@@ -21,20 +25,34 @@ export default function SearchPanel() {
   const [playlistUrl, setPlaylistUrl] = useState<string | null>(null);
   const [addingAll, setAddingAll] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const abortRef = useRef<AbortController | null>(null);
   const { toast } = useToast();
 
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    abortRef.current?.abort();
+  }, []);
+
   const search = useCallback(async (q: string) => {
-    if (!q.trim()) { setResults([]); setPlaylistUrl(null); return; }
+    abortRef.current?.abort();
+    if (!q.trim()) { setResults([]); setPlaylistUrl(null); setError(false); setLoading(false); return; }
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     setLoading(true);
+    setError(false);
     try {
       const data = await apiFetch<{ results: SearchResult[] }>(
-        `/api/guild/${guildId}/search?q=${encodeURIComponent(q)}&limit=8`
+        `/api/guild/${guildId}/search?q=${encodeURIComponent(q)}&limit=8`,
+        { signal: ctrl.signal },
       );
       setResults(data.results);
       const isUrl = /^https?:\/\//i.test(q.trim());
       setPlaylistUrl(isUrl && data.results.length > 1 ? q.trim() : null);
-    } catch { setResults([]); setPlaylistUrl(null); }
-    finally { setLoading(false); }
+      setLoading(false);
+    } catch (e: any) {
+      if (e?.name === "AbortError") return; // superseded by a newer search
+      setResults([]); setPlaylistUrl(null); setError(true); setLoading(false);
+    }
   }, [guildId]);
 
   const handleInput = (value: string) => {
@@ -57,9 +75,7 @@ export default function SearchPanel() {
         return;
       }
 
-      if (res.auto_play && !state.current) {
-        apiFetch(`/api/guild/${guildId}/play`, { method: "POST" }).catch(() => {});
-      }
+      maybeAutoPlay(guildId, res, !!state.current);
 
       const skipped = res.skipped ?? 0;
       toast(skipped > 0 ? `Added ${res.added} songs (${skipped} duplicates skipped)` : `Added ${res.added} songs`, "success");
@@ -97,9 +113,7 @@ export default function SearchPanel() {
       }
 
       // If nothing was playing, start playback of the just-added song
-      if (res.auto_play && !state.current) {
-        apiFetch(`/api/guild/${guildId}/play`, { method: "POST" }).catch(() => {});
-      }
+      maybeAutoPlay(guildId, res, !!state.current);
 
       setAddedSet(prev => new Set(prev).add(key));
       toast(`Added "${result.title}"`, "success");
@@ -114,38 +128,42 @@ export default function SearchPanel() {
       {/* Search input */}
       <div className="px-4 py-3 flex-shrink-0 border-b border-white/[0.08]">
         <div className="flex items-center gap-2.5 bg-surface-3/60 rounded-xl border border-white/[0.08] focus-within:border-accent/40 transition-[border-color] duration-200 px-3.5 py-2.5">
-          <svg className="w-4 h-4 text-white/40 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
+          <SearchIcon className="w-4 h-4 text-white/40 flex-shrink-0" />
           <input
-            type="text" value={query} onChange={(e) => handleInput(e.target.value)}
+            type="search" value={query} onChange={(e) => handleInput(e.target.value)}
             placeholder="Search or paste URL..."
-            className="flex-1 bg-transparent text-white text-sm outline-none placeholder:text-white/30 min-w-0"
+            enterKeyHint="search" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            // 16px on mobile — iOS zooms the page when focusing smaller inputs
+            className="flex-1 bg-transparent text-white text-base sm:text-sm outline-none placeholder:text-white/30 min-w-0 [&::-webkit-search-cancel-button]:hidden"
           />
         </div>
       </div>
 
       {/* Results */}
       <div className="flex-1 overflow-y-auto px-3 pb-3">
-        {loading && (
-          <div className="flex items-center justify-center py-16">
-            <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+        {loading && <SongRowSkeleton className="mt-1" />}
+
+        {!loading && error && (
+          <div className="flex flex-col items-center justify-center py-16 gap-3">
+            <p className="text-sm text-white/60">Search failed</p>
+            <button
+              onClick={() => search(query)}
+              className="px-4 py-1.5 rounded-full bg-white/[0.06] hover:bg-white/[0.1] text-xs font-medium text-white/80 transition-colors"
+            >
+              Retry
+            </button>
           </div>
         )}
 
-        {!loading && results.length === 0 && !query && (
+        {!loading && !error && results.length === 0 && !query && (
           <EmptyState
-            icon={
-              <svg className="w-7 h-7 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            }
+            icon={<SearchIcon className="w-7 h-7 text-muted" />}
             title="Search for songs"
             subtitle="By name or paste a URL"
           />
         )}
 
-        {!loading && results.length === 0 && query && (
+        {!loading && !error && results.length === 0 && query && (
           <div className="flex items-center justify-center py-16 text-muted text-sm">No results found</div>
         )}
 
