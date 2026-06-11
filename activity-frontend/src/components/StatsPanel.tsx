@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
+import useSWR from "swr";
 import { useGuildState } from "./GuildStateProvider";
-import { apiFetch } from "@/lib/api";
 import { proxyImg, cn } from "@/lib/utils";
 
 type Tab = "me" | "leaderboard";
@@ -33,32 +33,16 @@ function formatListenTime(seconds: number): string {
 export default function StatsPanel() {
   const { guildId } = useGuildState();
   const [tab, setTab] = useState<Tab>("me");
-  const [myStats, setMyStats] = useState<MyStats | null>(null);
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
-  const [yourId, setYourId] = useState<string>("");
-  const [loading, setLoading] = useState(true);
 
-  const fetchMyStats = useCallback(async () => {
-    try {
-      const d = await apiFetch<MyStats>(`/api/guild/${guildId}/stats/me`);
-      setMyStats(d);
-    } catch { setMyStats(null); }
-  }, [guildId]);
-
-  const fetchLeaderboard = useCallback(async () => {
-    try {
-      const d = await apiFetch<{ entries: LeaderboardEntry[]; your_id: string }>(
-        `/api/guild/${guildId}/stats/leaderboard`
-      );
-      setLeaderboard(d.entries);
-      setYourId(d.your_id);
-    } catch { setLeaderboard([]); }
-  }, [guildId]);
-
-  useEffect(() => {
-    setLoading(true);
-    Promise.all([fetchMyStats(), fetchLeaderboard()]).finally(() => setLoading(false));
-  }, [fetchMyStats, fetchLeaderboard]);
+  const { data: myStats, isLoading: statsLoading } = useSWR<MyStats>(
+    `/api/guild/${guildId}/stats/me`
+  );
+  const { data: lbData, isLoading: lbLoading } = useSWR<{ entries: LeaderboardEntry[]; your_id: string }>(
+    `/api/guild/${guildId}/stats/leaderboard`
+  );
+  const leaderboard = lbData?.entries ?? [];
+  const yourId = lbData?.your_id ?? "";
+  const loading = statsLoading || lbLoading;
 
   if (loading) {
     return (
@@ -100,7 +84,7 @@ export default function StatsPanel() {
 
       <div className="flex-1 overflow-y-auto px-3 pb-3">
         {tab === "me" ? (
-          <MyStatsView stats={myStats} />
+          <MyStatsView stats={myStats ?? null} />
         ) : (
           <LeaderboardView entries={leaderboard} yourId={yourId} />
         )}
