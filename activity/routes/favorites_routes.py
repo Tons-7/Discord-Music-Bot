@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from activity.dependencies import get_bot, get_current_user
@@ -44,9 +44,44 @@ async def add_favorite(body: FavoriteBody, user=Depends(get_current_user), bot=D
     return {"ok": True}
 
 
-@router.delete("/{position}")
-async def remove_favorite(position: int, user=Depends(get_current_user), bot=Depends(get_bot)):
+async def _remove_favorite_by_url(bot, uid: int, url: str):
+    """Remove the favorite whose webpage_url matches `url`.
+
+    Returns (success, title) so callers can surface the removed title.
+    remove_favorite expects a 1-based position, matching get_favorites order.
+    """
+    favorites = await bot.get_favorites(uid)
+    for index, fav in enumerate(favorites):
+        if (fav.get("webpage_url") or fav.get("url")) == url:
+            success = await bot.remove_favorite(uid, index + 1)
+            return success, fav.get("title")
+    return False, None
+
+
+@router.delete("")
+async def remove_favorite_by_url(url: str = Query(...), user=Depends(get_current_user), bot=Depends(get_bot)):
     uid = int(user["id"])
+    success, title = await _remove_favorite_by_url(bot, uid, url)
+    if not success:
+        raise HTTPException(status_code=404, detail="Favorite not found")
+    return {"ok": True, "title": title}
+
+
+@router.delete("/{position}")
+async def remove_favorite(
+    position: int,
+    url: str | None = Query(None),
+    user=Depends(get_current_user),
+    bot=Depends(get_bot),
+):
+    uid = int(user["id"])
+
+    if url is not None:
+        success, title = await _remove_favorite_by_url(bot, uid, url)
+        if not success:
+            raise HTTPException(status_code=404, detail="Favorite not found")
+        return {"ok": True, "title": title}
+
     success = await bot.remove_favorite(uid, position)
     if not success:
         raise HTTPException(status_code=404, detail="Invalid position")
