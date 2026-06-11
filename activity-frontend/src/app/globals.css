@@ -8,12 +8,13 @@
   --color-accent-glow: rgba(88, 101, 242, 0.3);
   --color-danger: #ED4245;
   --color-success: #57F287;
-  --color-muted: #52526a;
+  --color-muted: #6e6e8c;
 }
 
 :root { color-scheme: dark; }
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+/* No universal margin/padding reset here — Tailwind preflight already does it,
+   and an unlayered *-reset would override layered utility classes */
 
 body {
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, "Noto Sans", "Helvetica Neue", sans-serif;
@@ -22,6 +23,28 @@ body {
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   user-select: none;
+  /* Remove the 300ms double-tap-to-zoom delay and Android tap flash */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+/* Keyboard focus ring — interactive elements, only on keyboard focus.
+   Text inputs excluded: they count as focus-visible even on mouse click, and
+   they have their own focus-within border treatment. */
+:where(button, [role="button"], a, select, input[type="range"], [tabindex]):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: inherit;
+}
+
+input:where([type="text"], [type="search"]):focus-visible {
+  outline: none;
+}
+
+/* Scroll containers shouldn't chain scroll to the Activity surface */
+.overflow-y-auto, .overflow-x-auto {
+  overscroll-behavior: contain;
 }
 
 /* Hide scrollbars but keep scrolling */
@@ -79,8 +102,15 @@ input[type="range"]::-moz-range-thumb {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+@keyframes toast-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(-8px) scale(0.95); }
+}
+
+/* Holds at 0% and at the seam: -50% puts the second copy exactly where the
+   first started, so the end-hold reads as a pause at the start of the next loop */
 @keyframes marquee {
-  0% { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+  0%, 8% { transform: translateX(0); }
+  88%, 100% { transform: translateX(-50%); }
 }
 
