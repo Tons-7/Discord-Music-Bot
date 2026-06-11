@@ -44,3 +44,13 @@ def require_guild_member(bot, guild_id: int, user_id: int):
 def require_dj(bot, guild_id: int, user_id: int):
     if not check_dj_permission(bot, guild_id, user_id):
         raise HTTPException(status_code=403, detail="DJ role required for this action")
+
+
+async def guild_member(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot)) -> dict:
+    require_guild_member(bot, guild_id, int(user["id"]))
+    return user
+
+
+async def dj_member(guild_id: int, user=Depends(guild_member), bot=Depends(get_bot)) -> dict:
+    require_dj(bot, guild_id, int(user["id"]))
+    return user
