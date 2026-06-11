@@ -42,6 +42,7 @@ export interface SearchResult {
 export interface Playlist {
   name: string;
   song_count: number;
+  thumbnail?: string;
 }
 
 export interface PlaylistSong {
@@ -49,6 +50,7 @@ export interface PlaylistSong {
   uploader: string;
   duration: number;
   webpage_url: string;
+  thumbnail?: string;
 }
 
 export interface Member {
