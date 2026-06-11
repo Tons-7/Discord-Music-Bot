@@ -1,11 +1,11 @@
-import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from activity.dependencies import get_bot, get_current_user, get_ws_manager, require_dj, require_guild_member
+from activity.dependencies import dj_member, get_bot, get_ws_manager, guild_member
 from activity.helpers import broadcast_state
+from activity.tasks import spawn
 from models.song import Song
 from utils.helpers import get_existing_urls
 
@@ -14,7 +14,12 @@ router = APIRouter(prefix="/api/guild/{guild_id}/queue", tags=["queue"])
 
 
 async def _auto_start_if_idle(bot, guild_id: int) -> bool:
-    """Start playback if idle. Returns True if the frontend should call POST /play."""
+    """Start playback if idle.
+
+    Returns True only when the frontend should call POST /play (Activity-only,
+    no voice). In the voice-connected branch the backend drives playback via
+    play_next, so it returns False to avoid a double advance.
+    """
     guild_data = bot.get_guild_data(guild_id)
 
     if guild_data.get("current"):
@@ -22,8 +27,8 @@ async def _auto_start_if_idle(bot, guild_id: int) -> bool:
 
     vc = guild_data.get("voice_client")
     if vc and vc.is_connected():
-        asyncio.create_task(bot._playback_service.play_next(guild_id))
-        return True
+        spawn(bot._playback_service.play_next(guild_id))
+        return False
 
     # Activity-only: let the frontend handle via POST /play
     return True
@@ -34,9 +39,8 @@ class AddBody(BaseModel):
 
 
 @router.post("/add")
-async def add_to_queue(guild_id: int, body: AddBody, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
+async def add_to_queue(guild_id: int, body: AddBody, user=Depends(guild_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
 
     guild_data = bot.get_guild_data(guild_id)
 
@@ -109,11 +113,7 @@ async def add_to_queue(guild_id: int, body: AddBody, user=Depends(get_current_us
 
 
 @router.delete("/{position}")
-async def remove_from_queue(guild_id: int, position: int, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def remove_from_queue(guild_id: int, position: int, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     removed = bot._playback_service.queue_service.remove_song_from_queue(guild_id, position)
     if not removed:
         raise HTTPException(status_code=404, detail="Invalid queue position")
@@ -129,11 +129,7 @@ class MoveBody(BaseModel):
 
 
 @router.post("/move")
-async def move_in_queue(guild_id: int, body: MoveBody, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def move_in_queue(guild_id: int, body: MoveBody, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     success = bot._playback_service.queue_service.move_song_in_queue(guild_id, body.from_pos, body.to_pos)
     if not success:
         raise HTTPException(status_code=400, detail="Invalid positions")
@@ -144,11 +140,7 @@ async def move_in_queue(guild_id: int, body: MoveBody, user=Depends(get_current_
 
 
 @router.post("/clear")
-async def clear_queue(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def clear_queue(guild_id: int, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     bot._playback_service.queue_service.clear_queue(guild_id)
     await bot.save_guild_queue(guild_id)
     await broadcast_state(bot, ws, guild_id)
