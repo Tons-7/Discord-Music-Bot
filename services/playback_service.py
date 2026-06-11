@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime
+from typing import Optional
 
 import aiohttp
 import discord
@@ -10,7 +11,7 @@ from config import COLOR, NOW_PLAYING_RESEND_SECONDS, AUDIO_EFFECTS
 from models.song import Song
 from services.music_service import MusicService
 from services.queue_service import QueueService
-from utils.helpers import format_duration, build_progress_bar, create_embed
+from utils.helpers import format_duration, build_progress_bar, create_embed, extract_youtube_id
 
 logger = logging.getLogger(__name__)
 
@@ -367,10 +368,9 @@ class PlaybackService:
 
     @staticmethod
     async def _resolve_youtube_thumbnail(webpage_url: str) -> str:
-        match = re.search(r'[?&]v=([^&]+)', webpage_url)
-        if not match:
+        video_id = extract_youtube_id(webpage_url)
+        if not video_id:
             return ""
-        video_id = match.group(1)
         maxres = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
@@ -572,16 +572,8 @@ class PlaybackService:
             logger.info(f"Autoplay enabled for guild {guild_id}, checking for pre-fetched song...")
 
             try:
-                music_service = self.music_service
-                history = guild_data.get("history", [])
-                recent_titles = {
-                    self._normalize_title(h.title) for h in history[-10:]
-                } if history else set()
-                if guild_data.get("current"):
-                    recent_titles.add(self._normalize_title(guild_data["current"].title))
-
-                next_song = None
-
+                # Wait for any in-flight pre-fetch to finish so pick_autoplay_song can
+                # consume its result instead of refetching inline.
                 prefetch_task = guild_data.get("autoplay_prefetch_task")
                 if prefetch_task and not prefetch_task.done():
                     logger.info(f"Pre-fetch still running for guild {guild_id}, waiting up to 20s...")
@@ -594,42 +586,7 @@ class PlaybackService:
                     except Exception as wait_err:
                         logger.warning(f"Error waiting for pre-fetch: {wait_err}")
 
-                existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
-                if guild_data.get("current"):
-                    existing_urls.add(guild_data["current"].webpage_url)
-
-                prefetched = guild_data.get("autoplay_prefetch")
-                if prefetched:
-                    guild_data["autoplay_prefetch"] = None
-                    if (prefetched.webpage_url not in existing_urls and
-                            self._normalize_title(prefetched.title) not in recent_titles):
-                        next_song = prefetched
-                        logger.info(f"Using pre-fetched autoplay song: {prefetched.title}")
-                    else:
-                        logger.info(f"Pre-fetched song is now a duplicate, fetching inline")
-
-                if not next_song:
-                    logger.info(f"Fetching autoplay song inline for guild {guild_id}...")
-                    for fetch_attempt in range(2):
-                        related_songs = await music_service.get_related_songs(
-                            guild_data["current"], limit=3
-                        )
-                        if not related_songs:
-                            logger.warning(f"No related songs on inline attempt {fetch_attempt + 1}")
-                            continue
-
-                        for song_data in related_songs:
-                            url = song_data.get("webpage_url")
-                            title = song_data.get("title", "")
-                            if (url not in existing_urls and
-                                    self._normalize_title(title) not in recent_titles):
-                                next_song = Song(song_data)
-                                next_song.requested_by = "Autoplay"
-                                logger.info(f"Inline autoplay found: {title}")
-                                break
-
-                        if next_song:
-                            break
+                next_song = await self.pick_autoplay_song(guild_id, guild_data["current"])
 
                 if next_song:
                     queue_service.add_song_to_queue(guild_id, next_song)
@@ -686,6 +643,49 @@ class PlaybackService:
 
         await self.bot.save_guild_queue(guild_id)
         return False
+
+    async def pick_autoplay_song(self, guild_id: int, current_song: Song) -> Optional[Song]:
+        """Pick the next autoplay song with no side effects.
+
+        Single source of the autoplay dedup logic, shared by the voice and
+        Activity-only paths. Consumes ``guild_data["autoplay_prefetch"]`` (always a
+        ``Song``; tolerated as a dict for safety) when it is not a duplicate,
+        otherwise fetches related songs inline. Does NOT add to the queue, send a
+        Discord embed, or otherwise mutate playback state.
+        """
+        guild_data = self.bot.get_guild_data(guild_id)
+
+        existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
+        if current_song:
+            existing_urls.add(current_song.webpage_url)
+
+        history = guild_data.get("history", [])
+        recent_titles = {
+            self._normalize_title(h.title) for h in history[-10:]
+        } if history else set()
+        if current_song:
+            recent_titles.add(self._normalize_title(current_song.title))
+
+        prefetched = guild_data.get("autoplay_prefetch")
+        if prefetched:
+            guild_data["autoplay_prefetch"] = None
+            # autoplay_prefetch should always be a Song; tolerate a raw dict.
+            p = prefetched if not isinstance(prefetched, dict) else Song(prefetched)
+            if (p.webpage_url not in existing_urls and
+                    self._normalize_title(p.title) not in recent_titles):
+                return p
+
+        related = await self.music_service.get_related_songs(current_song, limit=3)
+        for song_data in related:
+            url = song_data.get("webpage_url")
+            title = song_data.get("title", "")
+            if (url not in existing_urls and
+                    self._normalize_title(title) not in recent_titles):
+                song = Song(song_data)
+                song.requested_by = "Autoplay"
+                return song
+
+        return None
 
     def _normalize_title(self, title: str) -> str:
         normalized = title.lower().strip()
