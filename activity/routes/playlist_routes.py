@@ -5,8 +5,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from activity.dependencies import get_bot, get_current_user, get_ws_manager, require_guild_member
-from activity.helpers import member_avatar_url
+from activity.dependencies import get_bot, get_ws_manager, guild_member
+from activity.helpers import fill_missing_thumbnails, member_avatar_url
 from activity.state_serializer import serialize_guild_state
 from config import MAX_PLAYLIST_SIZE
 
@@ -46,11 +46,10 @@ async def _get_playlist(bot, user_id: int, name: str, guild_id: int, global_mode
 async def list_playlists(
     guild_id: int,
     global_mode: bool = Query(False),
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
     table = _table(global_mode)
 
     if global_mode:
@@ -66,10 +65,12 @@ async def list_playlists(
 
     playlists = []
     for name, songs_json in rows:
-        songs = json.loads(songs_json)
+        songs = fill_missing_thumbnails(json.loads(songs_json))
         playlists.append({
             "name": name,
             "song_count": len(songs),
+            # First song's artwork doubles as the playlist cover
+            "thumbnail": songs[0].get("thumbnail", "") if songs else "",
         })
 
     return {"playlists": playlists}
@@ -82,11 +83,10 @@ async def list_playlists(
 async def search_members(
     guild_id: int,
     q: str = Query("", min_length=0),
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
 
     guild = bot.get_guild(guild_id)
     if not guild:
@@ -119,17 +119,16 @@ async def show_playlist(
     guild_id: int,
     name: str,
     global_mode: bool = Query(False),
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
 
     pid, songs = await _get_playlist(bot, uid, name, guild_id, global_mode)
     if pid is None:
         raise HTTPException(status_code=404, detail=f"{_label(global_mode)} '{name}' not found")
 
-    return {"name": name, "songs": songs}
+    return {"name": name, "songs": fill_missing_thumbnails(songs)}
 
 
 # ── Create playlist ──────────────────────────────────────────────────
@@ -143,11 +142,10 @@ class CreateBody(BaseModel):
 async def create_playlist(
     guild_id: int,
     body: CreateBody,
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
     table = _table(body.global_mode)
     label = _label(body.global_mode)
 
@@ -178,15 +176,14 @@ async def delete_playlist(
     guild_id: int,
     name: str,
     global_mode: bool = Query(False),
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
     table = _table(global_mode)
     label = _label(global_mode)
 
-    pid, _ = await _get_playlist(bot, uid, name, guild_id, global_mode)
+    pid = await bot.get_playlist_id(uid, name, None if global_mode else guild_id)
     if pid is None:
         raise HTTPException(status_code=404, detail=f"{label} '{name}' not found")
 
@@ -210,12 +207,11 @@ async def load_playlist(
     guild_id: int,
     name: str,
     body: LoadBody,
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
     ws=Depends(get_ws_manager),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
     label = _label(body.global_mode)
 
     pid, songs = await _get_playlist(bot, uid, name, guild_id, body.global_mode)
@@ -232,6 +228,7 @@ async def load_playlist(
     existing = get_existing_urls(guild_data)
     added = 0
 
+    fill_missing_thumbnails(songs)
     for s in songs:
         if s.get("webpage_url") not in existing:
             s["requested_by"] = f"<@{uid}>"
@@ -268,11 +265,10 @@ async def add_to_playlist(
     guild_id: int,
     name: str,
     body: AddSongBody,
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
     table = _table(body.global_mode)
     label = _label(body.global_mode)
 
@@ -327,11 +323,10 @@ async def remove_from_playlist(
     name: str,
     position: int,
     global_mode: bool = Query(False),
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
     table = _table(global_mode)
     label = _label(global_mode)
 
@@ -364,11 +359,10 @@ async def move_in_playlist(
     guild_id: int,
     name: str,
     body: MoveBody,
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
     table = _table(body.global_mode)
     label = _label(body.global_mode)
 
@@ -400,11 +394,10 @@ async def add_all_queue_to_playlist(
     guild_id: int,
     name: str,
     body: AddAllQueueBody,
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
     table = _table(body.global_mode)
     label = _label(body.global_mode)
 
@@ -451,13 +444,12 @@ async def list_collaborators(
     guild_id: int,
     name: str,
     global_mode: bool = Query(False),
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
 
-    pid, _ = await _get_playlist(bot, uid, name, guild_id, global_mode)
+    pid = await bot.get_playlist_id(uid, name, None if global_mode else guild_id)
     if pid is None:
         raise HTTPException(status_code=404, detail="Playlist not found")
 
@@ -486,11 +478,10 @@ async def add_collaborator(
     guild_id: int,
     name: str,
     body: CollabBody,
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
 
     target_id = int(body.user_id)
 
@@ -523,11 +514,10 @@ async def remove_collaborator(
     name: str,
     target_id: int,
     global_mode: bool = Query(False),
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
 
     pid = await bot.get_playlist_id(uid, name, None if global_mode else guild_id)
     if pid is None:
