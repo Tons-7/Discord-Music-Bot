@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useCallback, useMemo } from "react";
-import { useWebSocket } from "@/hooks/useWebSocket";
+import { useWebSocket, type ServerPosition } from "@/hooks/useWebSocket";
 import { apiFetch } from "@/lib/api";
 import type { GuildState } from "@/types";
 
@@ -15,6 +15,9 @@ interface GuildStateContextValue {
 
 const GuildStateContext = createContext<GuildStateContextValue | null>(null);
 
+// Stable ref + subscription (see useWebSocket) — never causes re-renders
+const PositionContext = createContext<ServerPosition | null>(null);
+
 export function GuildStateProvider({
   guildId,
   accessToken,
@@ -24,7 +27,7 @@ export function GuildStateProvider({
   accessToken: string;
   children: React.ReactNode;
 }) {
-  const { state, connected, eventVersion } = useWebSocket(guildId, accessToken);
+  const { state, connected, eventVersion, serverPosition } = useWebSocket(guildId, accessToken);
 
   const sendCommand = useCallback(
     async (action: string, data?: Record<string, unknown>) => {
@@ -48,7 +51,9 @@ export function GuildStateProvider({
 
   return (
     <GuildStateContext.Provider value={value}>
-      {children}
+      <PositionContext.Provider value={serverPosition}>
+        {children}
+      </PositionContext.Provider>
     </GuildStateContext.Provider>
   );
 }
@@ -56,5 +61,11 @@ export function GuildStateProvider({
 export function useGuildState() {
   const ctx = useContext(GuildStateContext);
   if (!ctx) throw new Error("useGuildState must be used within GuildStateProvider");
+  return ctx;
+}
+
+export function useServerPosition(): ServerPosition {
+  const ctx = useContext(PositionContext);
+  if (!ctx) throw new Error("useServerPosition must be used within GuildStateProvider");
   return ctx;
 }
