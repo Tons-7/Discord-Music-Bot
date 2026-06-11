@@ -2,7 +2,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from activity.dependencies import get_bot, get_current_user, require_guild_member
+from activity.dependencies import get_bot, guild_member
 from activity.state_serializer import _ensure_thumbnail
 
 logger = logging.getLogger(__name__)
@@ -14,11 +14,9 @@ async def search_songs(
     guild_id: int,
     q: str = Query(..., min_length=1),
     limit: int = Query(5, ge=1, le=25),
-    user=Depends(get_current_user),
+    user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
-    require_guild_member(bot, guild_id, int(user["id"]))
-
     music_service = bot._music_service
 
     try:
