@@ -12,6 +12,11 @@ class QueueService:
     def __init__(self, bot):
         self.bot = bot
 
+    @staticmethod
+    def _bump_queue_version(guild_data: dict):
+        """Invalidate cached queue derivations (e.g. queue duration) after a mutation."""
+        guild_data["queue_version"] = guild_data.get("queue_version", 0) + 1
+
     def sync_loop_backup(self, guild_id: int, force_rebuild: bool = False):
         guild_data = self.bot.get_guild_data(guild_id)
 
@@ -64,6 +69,35 @@ class QueueService:
             guild_data["loop_backup"].append(Song.from_dict(song.to_dict()))
             logger.info(f"Added finished song to loop backup: {song.title}")
 
+    def add_songs_to_history(self, guild_id: int, songs: List[Song]):
+        """Bulk add_to_history: dedupe once (O(n+m)) instead of per-song (O(n*m))."""
+        if not songs:
+            return
+
+        guild_data = self.bot.get_guild_data(guild_id)
+        history = guild_data["history"]
+        history_urls = {s.webpage_url for s in history}
+        backup_urls = {s.webpage_url for s in guild_data["loop_backup"]}
+        added_backup = 0
+
+        for song in songs:
+            if song.webpage_url not in history_urls:
+                history.append(Song.from_dict(song.to_dict()))
+                history_urls.add(song.webpage_url)
+            if song.webpage_url not in backup_urls:
+                guild_data["loop_backup"].append(Song.from_dict(song.to_dict()))
+                backup_urls.add(song.webpage_url)
+                added_backup += 1
+
+        guild_data["history_position"] = len(history)
+
+        if len(history) > MAX_HISTORY_SIZE:
+            guild_data["history"] = history[-MAX_HISTORY_SIZE:]
+            guild_data["history_position"] = len(guild_data["history"])
+
+        if added_backup:
+            logger.info(f"Added {added_backup} skipped song(s) to loop backup")
+
     async def get_next_song(self, guild_id: int) -> Optional[Song]:
         guild_data = self.bot.get_guild_data(guild_id)
 
@@ -71,7 +105,9 @@ class QueueService:
             return Song.from_dict(guild_data["current"].to_dict())
 
         if guild_data["queue"]:
-            return guild_data["queue"].pop(0)
+            song = guild_data["queue"].pop(0)
+            self._bump_queue_version(guild_data)
+            return song
 
         if guild_data["loop_mode"] == "queue" and guild_data["loop_backup"]:
             logger.info(
@@ -86,6 +122,8 @@ class QueueService:
             if guild_data["shuffle"]:
                 random.shuffle(guild_data["queue"])
 
+            self._bump_queue_version(guild_data)
+
             if guild_data["queue"]:
                 return guild_data["queue"].pop(0)
 
@@ -95,6 +133,7 @@ class QueueService:
         guild_data = self.bot.get_guild_data(guild_id)
         guild_data["queue"].clear()
         guild_data["loop_backup"].clear()
+        self._bump_queue_version(guild_data)
 
     def remove_song_from_queue(self, guild_id: int, position: int) -> Optional[Song]:
         guild_data = self.bot.get_guild_data(guild_id)
@@ -102,7 +141,9 @@ class QueueService:
         if position < 0 or position >= len(guild_data["queue"]):
             return None
 
-        return guild_data["queue"].pop(position)
+        song = guild_data["queue"].pop(position)
+        self._bump_queue_version(guild_data)
+        return song
 
     def move_song_in_queue(self, guild_id: int, from_pos: int, to_pos: int) -> bool:
         guild_data = self.bot.get_guild_data(guild_id)
@@ -115,12 +156,14 @@ class QueueService:
         # Clamp to_pos to valid range after pop (list is now 1 shorter)
         to_pos = min(to_pos, len(queue))
         queue.insert(to_pos, song)
+        self._bump_queue_version(guild_data)
         return True
 
     def shuffle_queue(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
         if guild_data["queue"]:
             random.shuffle(guild_data["queue"])
+            self._bump_queue_version(guild_data)
 
     def toggle_shuffle(self, guild_id: int) -> bool:
         guild_data = self.bot.get_guild_data(guild_id)
@@ -139,13 +182,26 @@ class QueueService:
         guild_data = self.bot.get_guild_data(guild_id)
         guild_data["queue"].append(song)
         guild_data["loop_backup"].append(Song.from_dict(song.to_dict()))
+        self._bump_queue_version(guild_data)
 
     # Queue duration & search
 
     def get_queue_duration(self, guild_id: int) -> int:
-        """Total duration of all songs in queue (seconds). 0-duration songs are excluded."""
+        """Total duration of all songs in queue (seconds). 0-duration songs are excluded.
+
+        Cached against ``queue_version`` so the O(n) sum is only recomputed when the
+        queue actually changes (read on every queue view and every state broadcast).
+        """
         guild_data = self.bot.get_guild_data(guild_id)
-        return sum(s.duration for s in guild_data["queue"] if s.duration and s.duration > 0)
+        version = guild_data.get("queue_version", 0)
+
+        cache = guild_data.get("_queue_duration_cache")
+        if cache is not None and cache[0] == version:
+            return cache[1]
+
+        total = sum(s.duration for s in guild_data["queue"] if s.duration and s.duration > 0)
+        guild_data["_queue_duration_cache"] = (version, total)
+        return total
 
     def get_estimated_wait_time(self, guild_id: int, position: int) -> int:
         """Estimated wall-clock seconds until a given 1-based queue position starts playing.
