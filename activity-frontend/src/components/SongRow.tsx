@@ -1,7 +1,6 @@
-"use client";
-
 import { cn, proxyImg } from "@/lib/utils";
 import MarqueeText from "./MarqueeText";
+import { NoteIcon } from "./ui/icons";
 
 type RowState = "default" | "added" | "pending";
 
@@ -11,6 +10,8 @@ const STATE_CLASSES: Record<RowState, string> = {
   pending: "bg-white/[0.02] border-white/[0.04] opacity-70",
 };
 
+// div[role=button] instead of <button>: trailing can contain real buttons
+// (FavHeart, remove) and nested buttons are invalid HTML.
 export default function SongRow({
   title, subtitle, thumbnail, marquee,
   state = "default", onClick, disabled, trailing, className, group,
@@ -31,14 +32,27 @@ export default function SongRow({
     state === "added" ? "text-success" : "text-white"
   );
 
+  const activate = () => {
+    if (!disabled) onClick?.();
+  };
+
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
+    <div
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-disabled={disabled || undefined}
+      onClick={activate}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          activate();
+        }
+      }}
       className={cn(
-        "w-full flex items-center gap-3 p-2.5 rounded-2xl text-left border",
+        "w-full flex items-center gap-3 p-2.5 rounded-2xl text-left border cursor-pointer",
         "transition-[background-color,border-color,opacity] duration-200",
         STATE_CLASSES[state],
+        disabled && "cursor-default",
         group && "group",
         className,
       )}
@@ -48,9 +62,7 @@ export default function SongRow({
           <img src={proxyImg(thumbnail)} alt="" className="w-full h-full object-cover" loading="lazy" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
-            <svg className="w-5 h-5 text-muted" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
-            </svg>
+            <NoteIcon className="w-5 h-5 text-muted" />
           </div>
         )}
       </div>
@@ -59,12 +71,12 @@ export default function SongRow({
         {marquee
           ? <MarqueeText className={titleCls}>{title}</MarqueeText>
           : <p className={titleCls}>{title}</p>}
-        {subtitle && <p className="text-xs text-white/30 truncate mt-0.5">{subtitle}</p>}
+        {subtitle && <p className="text-xs text-white/40 truncate mt-0.5">{subtitle}</p>}
       </div>
 
       {trailing && (
         <div className="flex items-center gap-1.5 flex-shrink-0">{trailing}</div>
       )}
-    </button>
+    </div>
   );
 }
