@@ -1,19 +1,25 @@
 "use client";
 
-import { useMemo } from "react";
-import { useGuildState } from "./GuildStateProvider";
+import { useMemo, useCallback } from "react";
+import { useGuildState, useServerPosition } from "./GuildStateProvider";
 import { formatDuration, proxyImg } from "@/lib/utils";
+import { ProgressStrip, LiveTime } from "./ui/SeekBar";
+import { PlayIcon, NoteIcon } from "./ui/icons";
 import type { AudioPlayerHandle } from "@/hooks/useAudioPlayer";
 
-type PiPAudio = Pick<AudioPlayerHandle, "playing" | "ready" | "position" | "duration" | "playPause">;
+type PiPAudio = Pick<AudioPlayerHandle, "playing" | "ready" | "duration" | "playPause" | "positionRef">;
 
 export default function PiPView({ audio }: { audio: PiPAudio }) {
   const { state } = useGuildState();
+  const serverPos = useServerPosition();
   const { current } = state;
 
-  const displayPos = audio.ready ? audio.position : 0;
+  const getPosition = useCallback(
+    () => (audio.ready ? audio.positionRef.current : serverPos.ref.current.position),
+    [audio.ready, audio.positionRef, serverPos],
+  );
+
   const totalDur = audio.ready && audio.duration > 0 ? audio.duration : (current?.duration ?? 0);
-  const progress = totalDur > 0 ? Math.min((displayPos / totalDur) * 100, 100) : 0;
   const isPaused = audio.ready ? !audio.playing : (current?.is_paused ?? true);
   const thumb = useMemo(() => current?.thumbnail ? proxyImg(current.thumbnail) : null, [current?.thumbnail]);
 
@@ -27,13 +33,12 @@ export default function PiPView({ audio }: { audio: PiPAudio }) {
         />
       ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-accent/20 via-accent/5 to-transparent flex items-center justify-center">
-          <svg className="w-16 h-16 text-accent/30" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
-          </svg>
+          <NoteIcon className="w-16 h-16 text-accent/30" />
         </div>
       )}
 
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent pt-10 pb-3 px-4 z-10">
+      {/* Text block only when the PiP tile is tall enough; tiny tiles stay clean */}
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent pt-10 pb-4 px-4 z-10 hidden [@media(min-height:150px)]:block">
         {current ? (
           <>
             <p className="text-sm font-semibold text-white truncate leading-tight drop-shadow-lg">
@@ -44,21 +49,11 @@ export default function PiPView({ audio }: { audio: PiPAudio }) {
             </p>
 
             {!current.is_live && totalDur > 0 && (
-              <div className="mt-2">
-                <div className="w-full h-[3px] rounded-full bg-white/20">
-                  <div
-                    className="h-full rounded-full bg-white/90 transition-[width] duration-200 ease-linear"
-                    style={{ width: `${progress}%` }}
-                  />
-                </div>
-                <div className="flex justify-between mt-1">
-                  <span className="text-[10px] font-mono tabular-nums text-white/70 drop-shadow">
-                    {formatDuration(displayPos)}
-                  </span>
-                  <span className="text-[10px] font-mono tabular-nums text-white/70 drop-shadow">
-                    {formatDuration(totalDur)}
-                  </span>
-                </div>
+              <div className="flex justify-between mt-1.5">
+                <LiveTime get={getPosition} className="text-[10px] font-mono tabular-nums text-white/70 drop-shadow" />
+                <span className="text-[10px] font-mono tabular-nums text-white/70 drop-shadow">
+                  {formatDuration(totalDur)}
+                </span>
               </div>
             )}
 
@@ -74,6 +69,16 @@ export default function PiPView({ audio }: { audio: PiPAudio }) {
         )}
       </div>
 
+      {/* Always-visible slim progress strip on the bottom edge */}
+      {current && !current.is_live && totalDur > 0 && (
+        <ProgressStrip
+          duration={totalDur}
+          getPosition={getPosition}
+          className="absolute bottom-0 inset-x-0 h-[3px] z-10 bg-white/15"
+          fillClassName="bg-accent"
+        />
+      )}
+
       <button
         onClick={audio.playPause}
         className="absolute inset-0 z-20"
@@ -83,9 +88,7 @@ export default function PiPView({ audio }: { audio: PiPAudio }) {
       {current && (
         <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none">
           <div className={`w-16 h-16 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-opacity duration-300 ${isPaused ? "opacity-80" : "opacity-0"}`}>
-            <svg className="w-7 h-7 ml-0.5 text-white" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
+            <PlayIcon className="w-7 h-7 ml-0.5 text-white" />
           </div>
         </div>
       )}
