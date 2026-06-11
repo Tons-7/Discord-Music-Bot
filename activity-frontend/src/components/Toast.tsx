@@ -7,6 +7,7 @@ interface ToastItem {
   id: number;
   message: string;
   type: "info" | "success" | "error";
+  leaving?: boolean;
 }
 
 interface ToastContextValue {
@@ -29,6 +30,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     const id = ++idRef.current;
     setToasts(prev => [...prev.slice(-4), { id, message, type }]); // max 5 visible
     setTimeout(() => {
+      setToasts(prev => prev.map(t => t.id === id ? { ...t, leaving: true } : t));
+    }, 2300);
+    setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 2500);
   }, []);
@@ -42,7 +46,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           <div
             key={t.id}
             className={cn(
-              "px-3 py-2 rounded-xl text-xs font-medium shadow-[0_4px_20px_rgba(0,0,0,0.4)] backdrop-blur-md animate-[toast-in_0.2s_ease-out] pointer-events-auto border",
+              "px-3 py-2 rounded-xl text-xs font-medium shadow-[0_4px_20px_rgba(0,0,0,0.4)] backdrop-blur-md pointer-events-auto border",
+              t.leaving ? "animate-[toast-out_0.2s_ease-in_forwards]" : "animate-[toast-in_0.2s_ease-out]",
               t.type === "success" && "bg-success/15 text-success border-success/20",
               t.type === "error" && "bg-danger/15 text-danger border-danger/20",
               t.type === "info" && "bg-accent/15 text-accent border-accent/20",
