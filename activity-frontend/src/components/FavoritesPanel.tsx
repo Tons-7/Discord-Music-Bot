@@ -1,33 +1,26 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
+import useSWR, { useSWRConfig } from "swr";
 import { useGuildState } from "./GuildStateProvider";
 import { useToast } from "./Toast";
 import { apiFetch } from "@/lib/api";
+import { maybeAutoPlay } from "@/lib/queueActions";
 import { formatDuration } from "@/lib/utils";
 import SongRow from "./SongRow";
 import EmptyState from "./EmptyState";
-import { invalidateFavCache } from "./FavHeart";
-
-interface FavSong { title: string; uploader: string; duration: number; webpage_url: string; thumbnail: string }
+import IconButton from "./ui/IconButton";
+import { SongRowSkeleton } from "./ui/Skeleton";
+import { CloseIcon } from "./ui/icons";
+import { FAVORITES_KEY, type FavSong } from "./FavHeart";
 
 export default function FavoritesPanel() {
   const { guildId, state } = useGuildState();
   const { toast } = useToast();
-  const [favorites, setFavorites] = useState<FavSong[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { mutate } = useSWRConfig();
+  const { data, isLoading } = useSWR<{ favorites: FavSong[] }>(FAVORITES_KEY);
+  const favorites = data?.favorites ?? [];
   const [addingSet, setAddingSet] = useState<Set<string>>(new Set());
-
-  const fetchFavorites = useCallback(async () => {
-    setLoading(true);
-    try {
-      const d = await apiFetch<{ favorites: FavSong[] }>("/api/favorites");
-      setFavorites(d.favorites);
-    } catch { setFavorites([]); }
-    finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => { fetchFavorites(); }, [fetchFavorites]);
 
   const handleAdd = async (fav: FavSong) => {
     if (addingSet.has(fav.webpage_url)) return;
@@ -36,10 +29,7 @@ export default function FavoritesPanel() {
       const res = await apiFetch<{ ok: boolean; auto_play?: boolean }>(`/api/guild/${guildId}/queue/add`, {
         method: "POST", body: JSON.stringify({ query: fav.webpage_url }),
       });
-      // If nothing was playing, start playback
-      if (res.auto_play && !state.current) {
-        apiFetch(`/api/guild/${guildId}/play`, { method: "POST" }).catch(() => {});
-      }
+      maybeAutoPlay(guildId, res, !!state.current);
       toast(`Added "${fav.title}"`, "success");
     } catch (e: any) { toast(e.message, "error"); }
     finally {
@@ -47,17 +37,25 @@ export default function FavoritesPanel() {
     }
   };
 
-  const handleRemove = async (pos: number) => {
+  const handleRemove = async (fav: FavSong, pos: number) => {
+    mutate(
+      FAVORITES_KEY,
+      (d?: { favorites: FavSong[] }) =>
+        d ? { favorites: d.favorites.filter(f => f.webpage_url !== fav.webpage_url) } : d,
+      { revalidate: false },
+    );
     try {
       await apiFetch(`/api/favorites/${pos + 1}`, { method: "DELETE" }); // bot uses 1-based
-      invalidateFavCache();
       toast("Removed from favorites", "success");
-      fetchFavorites();
-    } catch (e: any) { toast(e.message, "error"); }
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      mutate(FAVORITES_KEY);
+    }
   };
 
-  if (loading) {
-    return <div className="flex justify-center py-12"><div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" /></div>;
+  if (isLoading) {
+    return <SongRowSkeleton className="px-3 mt-2" />;
   }
 
   if (favorites.length === 0) {
@@ -97,12 +95,15 @@ export default function FavoritesPanel() {
                 disabled={isAdding}
                 trailing={
                   <>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleRemove(i); }}
-                      className="w-6 h-6 rounded-md flex items-center justify-center text-muted hover:text-danger opacity-0 group-hover:opacity-100 transition-[color,opacity] duration-150"
+                    <IconButton
+                      label="Remove from favorites"
+                      size="xs"
+                      tone="danger"
+                      className="opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100"
+                      onClick={(e) => { e.stopPropagation(); handleRemove(fav, i); }}
                     >
-                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" /></svg>
-                    </button>
+                      <CloseIcon className="w-3 h-3" />
+                    </IconButton>
                     <span className="text-[11px] tabular-nums text-muted w-8 text-right">
                       {fav.duration > 0 ? formatDuration(fav.duration) : ""}
                     </span>
