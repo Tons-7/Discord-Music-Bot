@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useReducer, useCallback, useState } from "react";
+import { useEffect, useRef, useReducer, useCallback, useMemo, useState } from "react";
 import type { GuildState } from "@/types";
 
 const INITIAL_STATE: GuildState = {
@@ -17,11 +17,11 @@ const INITIAL_STATE: GuildState = {
   queue_duration: 0,
 };
 
+// POSITION_UPDATE is handled outside the reducer (position ref + subscribers).
 type Action =
   | { type: "STATE_UPDATE"; data: GuildState }
   | { type: "QUEUE_UPDATE"; data: GuildState }
   | { type: "PLAYBACK_STATE"; data: GuildState }
-  | { type: "POSITION_UPDATE"; data: { position: number; is_paused: boolean } }
   | { type: "RESET" };
 
 function reducer(state: InternalState, action: Action): InternalState {
@@ -31,19 +31,6 @@ function reducer(state: InternalState, action: Action): InternalState {
       return { guild: { ...action.data }, eventVersion: state.eventVersion + 1 };
     case "QUEUE_UPDATE":
       return { guild: { ...action.data }, eventVersion: state.eventVersion };
-    case "POSITION_UPDATE":
-      if (!state.guild.current) return state;
-      return {
-        ...state,
-        guild: {
-          ...state.guild,
-          current: {
-            ...state.guild.current,
-            position: action.data.position,
-            is_paused: action.data.is_paused,
-          },
-        },
-      };
     case "RESET":
       return { guild: INITIAL_STATE, eventVersion: 0 };
     default:
@@ -56,10 +43,23 @@ interface InternalState {
   eventVersion: number; // increments on STATE_UPDATE/PLAYBACK_STATE, not on POSITION_UPDATE
 }
 
+export interface PositionSlice {
+  position: number;
+  is_paused: boolean;
+}
+
+// Position tick as ref + subscription instead of React state — POSITION_UPDATE
+// must never cause re-renders. Display reads the ref via rAF; logic subscribes.
+export interface ServerPosition {
+  ref: React.RefObject<PositionSlice>;
+  subscribe: (fn: (p: PositionSlice) => void) => () => void;
+}
+
 interface UseWebSocketReturn {
   state: GuildState;
   connected: boolean;
   eventVersion: number;
+  serverPosition: ServerPosition;
 }
 
 export function useWebSocket(
@@ -72,12 +72,40 @@ export function useWebSocket(
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const retriesRef = useRef(0);
 
+  const serverPosRef = useRef<PositionSlice>({ position: 0, is_paused: false });
+  const posListenersRef = useRef<Set<(p: PositionSlice) => void>>(new Set());
+
+  const publishPosition = useCallback((p: PositionSlice) => {
+    serverPosRef.current = p;
+    posListenersRef.current.forEach((fn) => fn(p));
+  }, []);
+
+  const serverPosition = useMemo<ServerPosition>(
+    () => ({
+      ref: serverPosRef,
+      subscribe: (fn) => {
+        posListenersRef.current.add(fn);
+        return () => {
+          posListenersRef.current.delete(fn);
+        };
+      },
+    }),
+    []
+  );
+
   const connect = useCallback(() => {
     if (!guildId || !token) return;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    const url = `${protocol}//${host}/ws/guild/${guildId}?token=${token}`;
+    // Prefer the signed session token (no Discord round-trip on the backend);
+    // fall back to the raw Discord token passed in / stored locally.
+    const wsToken =
+      localStorage.getItem("activity_session_token") ||
+      token ||
+      localStorage.getItem("activity_token") ||
+      "";
+    const url = `${protocol}//${host}/ws/guild/${guildId}?token=${encodeURIComponent(wsToken)}`;
 
     const ws = new WebSocket(url);
     wsRef.current = ws;
@@ -90,8 +118,23 @@ export function useWebSocket(
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type && msg.data !== undefined) {
+        if (!msg.type) return;
+
+        if (msg.type === "POSITION_UPDATE") {
+          const d = msg.data;
+          if (d && typeof d.position === "number") {
+            publishPosition({ position: d.position, is_paused: !!d.is_paused });
+          }
+          return;
+        }
+
+        if (msg.data !== undefined) {
           dispatch(msg as Action);
+          // Seed position from STATE_UPDATE so remote seeks correct drift at once.
+          const cur = (msg.data as GuildState)?.current;
+          if (cur && typeof cur.position === "number") {
+            publishPosition({ position: cur.position, is_paused: !!cur.is_paused });
+          }
         }
       } catch {
         // ignore malformed messages
@@ -111,7 +154,7 @@ export function useWebSocket(
     ws.onerror = () => {
       ws.close();
     };
-  }, [guildId, token]);
+  }, [guildId, token, publishPosition]);
 
   useEffect(() => {
     connect();
@@ -124,5 +167,24 @@ export function useWebSocket(
     };
   }, [connect]);
 
-  return { state: internalState.guild, connected, eventVersion: internalState.eventVersion };
+  // Backgrounded phones suspend the socket without firing onclose — reconnect
+  // immediately on return instead of waiting out the backoff timer.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      retriesRef.current = 0;
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      connect();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [connect]);
+
+  return { state: internalState.guild, connected, eventVersion: internalState.eventVersion, serverPosition };
 }
