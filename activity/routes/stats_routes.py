@@ -2,7 +2,7 @@ import logging
 
 from fastapi import APIRouter, Depends
 
-from activity.dependencies import get_bot, get_current_user, require_guild_member
+from activity.dependencies import get_bot, guild_member
 from activity.helpers import member_avatar_url
 
 logger = logging.getLogger(__name__)
@@ -10,10 +10,9 @@ router = APIRouter(prefix="/api/guild/{guild_id}/stats", tags=["stats"])
 
 
 @router.get("/me")
-async def my_stats(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot)):
+async def my_stats(guild_id: int, user=Depends(guild_member), bot=Depends(get_bot)):
     """Get the current user's listening stats for this guild."""
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
 
     # Total plays & listening time
     totals = await bot.fetch_db_query(
@@ -49,10 +48,9 @@ async def my_stats(guild_id: int, user=Depends(get_current_user), bot=Depends(ge
 
 
 @router.get("/leaderboard")
-async def leaderboard(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot)):
+async def leaderboard(guild_id: int, user=Depends(guild_member), bot=Depends(get_bot)):
     """Get the server's top 10 listeners."""
     uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
 
     rows = await bot.fetch_db_query(
         "SELECT user_id, COUNT(*) as play_count, COALESCE(SUM(duration_seconds), 0) as total_seconds "
