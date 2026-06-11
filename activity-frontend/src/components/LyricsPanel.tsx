@@ -1,17 +1,27 @@
-"use client";
-
-import { useState, useEffect, useRef, useMemo, type MutableRefObject } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
+import useSWR from "swr";
 import { useGuildState } from "./GuildStateProvider";
 import { apiFetch } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-interface LyricsData {
+export interface LyricsData {
   lyrics: string;
   synced: string;
   title: string;
   artist: string;
   webpage_url: string;
 }
+
+// Lyrics are immutable per song — cache by song so reopening the panel (or a
+// preload on song start) never refetches.
+export const lyricsKey = (guildId: string, webpageUrl: string) => `lyrics:${guildId}:${webpageUrl}`;
+export const lyricsFetcher = (guildId: string) => () => apiFetch<LyricsData>(`/api/guild/${guildId}/lyrics`);
+const LYRICS_SWR_OPTS = {
+  revalidateIfStale: false,
+  revalidateOnFocus: false,
+  revalidateOnReconnect: false,
+  shouldRetryOnError: false,
+} as const;
 
 interface SyncedLine {
   time: number;
@@ -21,9 +31,10 @@ interface SyncedLine {
 function parseLRC(synced: string): SyncedLine[] {
   const lines: SyncedLine[] = [];
   for (const line of synced.split("\n")) {
-    const match = line.match(/^\[(\d+):(\d+)\.(\d+)\]\s*(.*)$/);
+    const match = line.match(/^\[(\d+):(\d+)\.(\d+)]\s*(.*)$/);
     if (match) {
-      const time = parseInt(match[1]) * 60 + parseInt(match[2]) + parseInt(match[3]) / 100;
+      const frac = match[3];
+      const time = parseInt(match[1]) * 60 + parseInt(match[2]) + parseInt(frac) / Math.pow(10, frac.length);
       const text = match[4].trim();
       if (text) lines.push({ time, text });
     }
@@ -31,46 +42,23 @@ function parseLRC(synced: string): SyncedLine[] {
   return lines;
 }
 
-export default function LyricsPanel({ positionRef }: { positionRef: MutableRefObject<number> }) {
+export default function LyricsPanel({ getPosition, onSeek }: {
+  // Unified position: browser audio when it plays locally, server clock when voice-connected
+  getPosition: () => number;
+  onSeek?: (seconds: number) => void;
+}) {
   const { guildId, state } = useGuildState();
-  const [lyrics, setLyrics] = useState<LyricsData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [loadedFor, setLoadedFor] = useState("");
   const [activeLine, setActiveLine] = useState(-1);
   const activeLineRef = useRef<HTMLDivElement>(null);
 
   const currentUrl = state.current?.webpage_url || "";
 
-  useEffect(() => {
-    if (!currentUrl) {
-      setLyrics(null); setLoadedFor(""); setError(""); setLoading(false);
-      return;
-    }
-    if (loadedFor === currentUrl) return;
-
-    let cancelled = false;
-    setLoading(true);
-    setError("");
-
-    apiFetch<LyricsData>(`/api/guild/${guildId}/lyrics`)
-      .then((data) => {
-        if (cancelled) return;
-        setLyrics(data);
-        setLoadedFor(data.webpage_url);
-      })
-      .catch((e: any) => {
-        if (cancelled) return;
-        setLyrics(null);
-        setError(e.message || "Lyrics not found");
-        setLoadedFor(currentUrl);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => { cancelled = true; };
-  }, [currentUrl, guildId, loadedFor]);
+  const { data: lyrics, error, isLoading } = useSWR<LyricsData>(
+    currentUrl ? lyricsKey(guildId, currentUrl) : null,
+    lyricsFetcher(guildId),
+    LYRICS_SWR_OPTS,
+  );
+  const loading = isLoading;
 
   const syncedLines = useMemo(
     () => (lyrics?.synced ? parseLRC(lyrics.synced) : []),
@@ -80,11 +68,11 @@ export default function LyricsPanel({ positionRef }: { positionRef: MutableRefOb
 
   useEffect(() => { setActiveLine(-1); }, [currentUrl]);
 
-  // Poll position from ref (no re-renders in parent) to update active line
+  // Poll the position getter (no re-renders in parent) to update the active line
   useEffect(() => {
     if (!hasSynced) return;
     const interval = setInterval(() => {
-      const pos = positionRef.current;
+      const pos = getPosition();
       let line = -1;
       for (let i = syncedLines.length - 1; i >= 0; i--) {
         if (pos >= syncedLines[i].time) { line = i; break; }
@@ -92,7 +80,7 @@ export default function LyricsPanel({ positionRef }: { positionRef: MutableRefOb
       setActiveLine(prev => prev === line ? prev : line);
     }, 200);
     return () => clearInterval(interval);
-  }, [hasSynced, syncedLines, positionRef]);
+  }, [hasSynced, syncedLines, getPosition]);
 
   useEffect(() => {
     if (activeLineRef.current) {
@@ -134,15 +122,20 @@ export default function LyricsPanel({ positionRef }: { positionRef: MutableRefOb
           <p className="text-[10px] text-muted truncate">{lyrics.title} — {lyrics.artist}</p>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-1 select-text">
             {syncedLines.map((line, i) => (
               <div
                 key={i}
                 ref={i === activeLine ? activeLineRef : undefined}
+                role={onSeek ? "button" : undefined}
+                tabIndex={onSeek ? 0 : undefined}
+                onClick={onSeek ? () => onSeek(line.time) : undefined}
+                onKeyDown={onSeek ? (e) => { if (e.key === "Enter") onSeek(line.time); } : undefined}
                 className={cn(
                   "text-sm font-medium py-0.5 transition-[color,transform] duration-300",
+                  onSeek && "cursor-pointer rounded-md -mx-1.5 px-1.5 hover:bg-white/[0.04]",
                   i === activeLine ? "text-white scale-[1.02] origin-left"
-                    : i < activeLine ? "text-white/20" : "text-white/35"
+                    : i < activeLine ? "text-white/30" : "text-white/45"
                 )}
               >
                 {line.text}
@@ -160,7 +153,7 @@ export default function LyricsPanel({ positionRef }: { positionRef: MutableRefOb
         <p className="text-[10px] text-muted truncate">{lyrics.title} — {lyrics.artist}</p>
       </div>
       <div className="flex-1 overflow-y-auto px-5 py-4">
-        <pre className="text-xs text-white/60 whitespace-pre-wrap font-sans leading-relaxed">{lyrics.lyrics}</pre>
+        <pre className="text-xs text-white/60 whitespace-pre-wrap font-sans leading-relaxed select-text">{lyrics.lyrics}</pre>
       </div>
     </div>
   );
