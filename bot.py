@@ -11,7 +11,7 @@ import discord
 import pylast
 import spotipy
 import yt_dlp
-from discord.app_commands import AppCommand
+from discord.app_commands import AppCommand, CommandSyncFailure
 from discord.ext import commands, tasks
 from spotipy.oauth2 import SpotifyClientCredentials
 
@@ -119,12 +119,7 @@ class MusicBot(commands.Bot):
             "geo_bypass": True,
             "prefer_free_formats": False,
             "playliststart": 1,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "web", "mweb"],
-                    "player_skip": ["webpage"],
-                }
-            },
+            # No player_client override — pinned client lists go stale and break
         }
 
         self.ffmpeg_options = {
@@ -621,7 +616,7 @@ class MusicBot(commands.Bot):
         # Set event loop reference early so ConnectionState has it
         # before _delay_ready runs (needed when uvicorn owns the loop)
         self.loop = asyncio.get_running_loop()
-        self._connection._loop = self.loop
+        self._connection.loop = self.loop
 
     async def _sync_commands_with_entry_point(self):
         """Sync slash commands while preserving the Activity Entry Point command.
@@ -644,7 +639,12 @@ class MusicBot(commands.Bot):
             if cmd.get("type") == 4:
                 payload.append(cmd)
 
-        data = await self.http.bulk_upsert_global_commands(app_id, payload=payload)
+        try:
+            data = await self.http.bulk_upsert_global_commands(app_id, payload=payload)
+        except discord.HTTPException as e:
+            if e.status == 400 and e.code == 50035:
+                raise CommandSyncFailure(e, commands) from None
+            raise
         return [AppCommand(data=d, state=self._connection) for d in data]
 
     async def on_ready(self):
