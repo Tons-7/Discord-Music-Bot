@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -10,7 +11,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from starlette.responses import StreamingResponse
 
-from activity.dependencies import get_bot, get_current_user, require_guild_member
+import config
+from activity.auth import authenticate_query_or_header
+from activity.dependencies import get_bot, get_ws_manager, guild_member
+from activity.helpers import activity_advance, broadcast_state
+from activity.state_serializer import serialize_song
+from activity.tasks import spawn
 from config import AUDIO_CACHE_DIR
 
 logger = logging.getLogger(__name__)
@@ -20,7 +26,8 @@ _BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/2010010
 
 # yt-dlp options for Activity audio extraction
 _activity_ytdl_opts = {
-    "format": "bestaudio",
+    # /best only fires when no audio-only stream exists
+    "format": "bestaudio/best",
     "extract_flat": False,
     "noplaylist": True,
     "nocheckcertificate": True,
@@ -31,6 +38,7 @@ _activity_ytdl_opts = {
     "socket_timeout": 30,
     "geo_bypass": True,
     "http_headers": {"User-Agent": _BROWSER_UA},
+    # No player_client override — pinned client lists go stale and break
 }
 
 _activity_ytdl = yt_dlp.YoutubeDL(_activity_ytdl_opts)
@@ -64,6 +72,52 @@ def _get_cache_path(webpage_url: str) -> Path:
     return _ACTIVITY_CACHE_DIR / f"{url_hash}.m4a"
 
 
+def _evict_activity_cache() -> None:
+    """Evict stale/oversized entries from the Activity M4A cache.
+
+    Deletes files older than AUDIO_CACHE_MAX_AGE_HOURS, then trims the
+    oldest-accessed files until total size is under AUDIO_CACHE_MAX_SIZE_MB.
+    Runs synchronously (fast os.scandir); call it from the executor.
+    """
+    now = time.time()
+    max_age = config.AUDIO_CACHE_MAX_AGE_HOURS * 3600
+    max_size = config.AUDIO_CACHE_MAX_SIZE_MB * 1024 * 1024
+    try:
+        entries = []
+        for entry in os.scandir(_ACTIVITY_CACHE_DIR):
+            if not entry.name.endswith(".m4a") or not entry.is_file():
+                continue
+            try:
+                st = entry.stat()
+            except OSError:
+                continue
+            # Drop expired files outright.
+            if now - st.st_mtime > max_age:
+                try:
+                    os.remove(entry.path)
+                except OSError:
+                    pass
+                continue
+            entries.append((entry.path, st.st_atime, st.st_size))
+
+        total = sum(size for _, _, size in entries)
+        if total <= max_size:
+            return
+
+        # Evict oldest-by-atime until under the cap.
+        entries.sort(key=lambda e: e[1])
+        for path, _, size in entries:
+            if total <= max_size:
+                break
+            try:
+                os.remove(path)
+                total -= size
+            except OSError:
+                pass
+    except Exception as e:
+        logger.debug(f"Activity cache eviction skipped: {e}")
+
+
 def _get_cached_file(webpage_url: str) -> str | None:
     """Return cached M4A path if complete and under 28 days old."""
     if webpage_url in _downloading:
@@ -82,13 +136,23 @@ async def _download_to_cache(bot, webpage_url: str, title: str = ""):
     """Download best audio and convert to M4A for the Activity cache."""
     cache_path = _get_cache_path(webpage_url)
     try:
-        if cache_path.stat().st_size > 0:
+        st = cache_path.stat()
+        # Reuse only a complete, non-stale file; otherwise re-download.
+        if st.st_size > 0 and time.time() - st.st_mtime < config.AUDIO_CACHE_MAX_AGE_HOURS * 3600:
             return
+        if st.st_size > 0:
+            cache_path.unlink(missing_ok=True)
     except OSError:
         pass
     if webpage_url in _downloading:
         return
     _downloading.add(webpage_url)
+
+    # Keep the Activity cache bounded before pulling another file.
+    try:
+        await asyncio.get_running_loop().run_in_executor(bot.executor, _evict_activity_cache)
+    except Exception:
+        pass
 
     opts = {
         **_activity_ytdl_opts,
@@ -117,12 +181,17 @@ async def _download_to_cache(bot, webpage_url: str, title: str = ""):
         _downloading.discard(webpage_url)
 
 
-async def _get_stream_url(bot, webpage_url: str) -> str:
-    """Extract a direct stream URL, cached for 30 minutes."""
+async def _get_stream_url(bot, webpage_url: str, force: bool = False) -> str:
+    """Extract a direct stream URL, cached for 30 minutes.
+
+    Pass ``force=True`` to bypass and refresh the cache (e.g. after the proxy
+    sees the cached googlevideo URL expire with a 403/410).
+    """
     now = time.time()
-    cached = _stream_cache.get(webpage_url)
-    if cached and now - cached[1] < _STREAM_CACHE_TTL:
-        return cached[0]
+    if not force:
+        cached = _stream_cache.get(webpage_url)
+        if cached and now - cached[1] < _STREAM_CACHE_TTL:
+            return cached[0]
 
     info = await asyncio.get_running_loop().run_in_executor(
         bot.executor,
@@ -163,23 +232,9 @@ async def _preextract_and_cache(bot, webpage_url: str, title: str = "", guild_id
 @router.get("/stream")
 async def stream_current(guild_id: int, request: Request, bot=Depends(get_bot)):
     """Serve the current song's audio. Cached M4A first, YouTube proxy fallback."""
-    from activity.auth import get_discord_user
-    from activity.permissions import check_banned
-
-    auth_header = request.headers.get("Authorization", "")
-    token = auth_header[7:] if auth_header.startswith("Bearer ") else request.query_params.get("token", "")
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing token")
-
-    user = await get_discord_user(token)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    uid = int(user["id"])
-    if check_banned(uid):
-        raise HTTPException(status_code=403, detail="Banned")
-
-    require_guild_member(bot, guild_id, uid)
+    token_header = request.headers.get("Authorization")
+    token_query = request.query_params.get("token")
+    await authenticate_query_or_header(token_header, token_query, guild_id, bot)
 
     current = bot.get_guild_data(guild_id).get("current")
     if not current:
@@ -199,16 +254,21 @@ async def stream_current(guild_id: int, request: Request, bot=Depends(get_bot)):
         raise HTTPException(status_code=500, detail="Failed to extract audio stream")
 
     range_header = request.headers.get("range")
-    asyncio.create_task(_download_to_cache(bot, current.webpage_url, current.title))
-    return await _proxy_youtube_stream(stream_url, range_header)
+    spawn(_download_to_cache(bot, current.webpage_url, current.title))
+    return await _proxy_youtube_stream(stream_url, range_header, bot, current.webpage_url)
 
 
-async def _proxy_youtube_stream(stream_url: str, range_header: str | None) -> StreamingResponse:
+async def _proxy_youtube_stream(
+    stream_url: str, range_header: str | None, bot=None, webpage_url: str | None = None
+) -> StreamingResponse:
     """Stream chunks from YouTube to the client, forwarding Range if present.
 
     Both the Range and full-request paths must stream chunks rather than buffer
     the whole body — Chromium issues `Range: bytes=0-` for `<audio>` elements,
     and buffering would block playback until the full song downloads.
+
+    If the cached googlevideo URL has expired (403/410) we evict it, re-extract
+    once with ``force=True`` and proxy the fresh URL.
     """
     req_headers = {"User-Agent": _BROWSER_UA}
     if range_header:
@@ -219,6 +279,19 @@ async def _proxy_youtube_stream(stream_url: str, range_header: str | None) -> St
         upstream = await session.get(stream_url, headers=req_headers)
     except Exception:
         raise HTTPException(status_code=502, detail="Upstream connection failed")
+
+    # Expired stream URL: refresh once and retry with a fresh googlevideo URL.
+    if upstream.status in (403, 410) and bot is not None and webpage_url is not None:
+        upstream.release()
+        _stream_cache.pop(webpage_url, None)
+        try:
+            stream_url = await _get_stream_url(bot, webpage_url, force=True)
+        except Exception:
+            raise HTTPException(status_code=502, detail="Failed to refresh expired stream")
+        try:
+            upstream = await session.get(stream_url, headers=req_headers)
+        except Exception:
+            raise HTTPException(status_code=502, detail="Upstream connection failed")
 
     resp_headers: dict[str, str] = {"Accept-Ranges": "bytes"}
     if not range_header:
@@ -244,11 +317,8 @@ async def _proxy_youtube_stream(stream_url: str, range_header: str | None) -> St
 
 
 @router.get("/stream/url")
-async def get_stream_url_endpoint(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot)):
+async def get_stream_url_endpoint(guild_id: int, user=Depends(guild_member), bot=Depends(get_bot)):
     """Return the direct stream URL for the current song."""
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-
     current = bot.get_guild_data(guild_id).get("current")
     if not current:
         raise HTTPException(status_code=404, detail="Nothing is playing")
@@ -260,87 +330,27 @@ async def get_stream_url_endpoint(guild_id: int, user=Depends(get_current_user),
 
 
 @router.post("/play")
-async def play_song(guild_id: int, request: Request, user=Depends(get_current_user), bot=Depends(get_bot)):
-    """Advance to the next song in queue (Activity-driven playback)."""
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
+async def play_song(
+    guild_id: int,
+    ended_url: str | None = None,
+    force: bool = False,
+    user=Depends(guild_member),
+    bot=Depends(get_bot),
+    ws=Depends(get_ws_manager),
+):
+    """Advance to the next song (Activity-only playback) via the unified helper.
 
-    guild_data = bot.get_guild_data(guild_id)
-    queue_service = bot._playback_service.queue_service
-
-    if guild_data.get("current"):
-        from activity.helpers import record_activity_listening
-        await record_activity_listening(bot, request.app.state.ws_manager, guild_id)
-        queue_service.add_to_history(guild_id, guild_data["current"])
-
-    next_song = await queue_service.get_next_song(guild_id)
-
-    # Try autoplay if queue is empty
-    if not next_song and guild_data.get("autoplay") and guild_data.get("current"):
-        try:
-            from models.song import Song
-            prefetched = guild_data.get("autoplay_prefetch")
-            if prefetched:
-                next_song = Song(prefetched) if isinstance(prefetched, dict) else prefetched
-                next_song.requested_by = "Autoplay"
-                guild_data["autoplay_prefetch"] = None
-            else:
-                related = await bot._music_service.get_related_songs(guild_data["current"], limit=1)
-                if related:
-                    next_song = Song(related[0])
-                    next_song.requested_by = "Autoplay"
-        except Exception as e:
-            logger.debug(f"Activity autoplay failed: {e}")
-
-    if not next_song:
-        guild_data["current"] = None
-        guild_data["start_time"] = None
-        await bot.save_guild_queue(guild_id)
-        await _broadcast(request.app.state.ws_manager, bot, guild_id)
-        return {"ok": True, "current": None}
-
-    from datetime import datetime
-    from activity.state_serializer import serialize_song
-
-    guild_data["current"] = next_song
-    guild_data["seek_offset"] = 0
-    guild_data["start_time"] = datetime.now()
-    guild_data["pause_position"] = None
-
-    # Extract stream URL now so /stream gets an instant cache hit (no executor contention)
-    try:
-        await _get_stream_url(bot, next_song.webpage_url)
-    except Exception:
-        pass
-
-    async def _bg_cache():
-        await _download_to_cache(bot, next_song.webpage_url, next_song.title)
-        # Pre-cache next song in queue
-        queue = guild_data.get("queue", [])
-        if queue and not _get_cached_file(queue[0].webpage_url):
-            await _download_to_cache(bot, queue[0].webpage_url, queue[0].title)
-    asyncio.create_task(_bg_cache())
-
-    # Prefetch next autoplay recommendation
-    if guild_data.get("autoplay") and not guild_data.get("queue"):
-        async def _prefetch():
-            try:
-                related = await bot._music_service.get_related_songs(next_song, limit=1)
-                if related:
-                    guild_data["autoplay_prefetch"] = related[0]
-                    await _download_to_cache(bot, related[0].get("webpage_url", ""), related[0].get("title", ""))
-            except Exception:
-                pass
-        asyncio.create_task(_prefetch())
-
-    await bot.save_guild_queue(guild_id)
-    await _broadcast(request.app.state.ws_manager, bot, guild_id)
-    return {"ok": True, "current": serialize_song(next_song)}
+    force=true is a user-initiated skip; without it the advance is idempotent
+    (no-op while something is already playing).
+    """
+    new_current = await activity_advance(bot, ws, guild_id, ended_url=ended_url, force=force)
+    await broadcast_state(bot, ws, guild_id)
+    return {"ok": True, "current": serialize_song(new_current) if new_current else None}
 
 
-async def _broadcast(ws_manager, bot, guild_id: int):
-    """Broadcast state update to connected Activity clients."""
-    if ws_manager and ws_manager.has_connections(guild_id):
-        await asyncio.sleep(0.1)
-        from activity.state_serializer import serialize_guild_state
-        await ws_manager.broadcast(guild_id, "STATE_UPDATE", serialize_guild_state(bot, guild_id))
+async def close_proxy_session() -> None:
+    """Close the shared proxy aiohttp session (called on app shutdown)."""
+    global _proxy_session
+    if _proxy_session is not None and not _proxy_session.closed:
+        await _proxy_session.close()
+    _proxy_session = None
