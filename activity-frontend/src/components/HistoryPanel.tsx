@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useGuildState } from "./GuildStateProvider";
 import { apiFetch } from "@/lib/api";
-import { formatDuration } from "@/lib/utils";
+import { maybeAutoPlay } from "@/lib/queueActions";
+import { formatDuration, cn } from "@/lib/utils";
 import { useToast } from "./Toast";
 import FavHeart from "./FavHeart";
 import SongRow from "./SongRow";
@@ -14,7 +15,14 @@ export default function HistoryPanel() {
   const { history } = state;
   const [addedSet, setAddedSet] = useState<Set<string>>(new Set());
   const [pendingSet, setPendingSet] = useState<Set<string>>(new Set());
+  const [confirmClear, setConfirmClear] = useState(false);
   const { toast } = useToast();
+
+  useEffect(() => {
+    if (!confirmClear) return;
+    const t = setTimeout(() => setConfirmClear(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirmClear]);
 
   const handleRequeue = async (webpageUrl: string, title: string) => {
     if (addedSet.has(webpageUrl) || pendingSet.has(webpageUrl)) return;
@@ -38,9 +46,7 @@ export default function HistoryPanel() {
       }
 
       // If nothing was playing, start playback of the just-added song
-      if (res.auto_play && !state.current) {
-        apiFetch(`/api/guild/${guildId}/play`, { method: "POST" }).catch(() => {});
-      }
+      maybeAutoPlay(guildId, res, !!state.current);
 
       setAddedSet(prev => new Set(prev).add(webpageUrl));
       toast(`Added "${title}"`, "success");
@@ -50,7 +56,7 @@ export default function HistoryPanel() {
     }
   };
 
-  const reversed = [...history].reverse();
+  const reversed = useMemo(() => [...history].reverse(), [history]);
 
   if (reversed.length === 0) {
     return (
@@ -75,12 +81,17 @@ export default function HistoryPanel() {
         {history.length > 0 && (
           <button
             onClick={async () => {
+              if (!confirmClear) { setConfirmClear(true); return; }
+              setConfirmClear(false);
               await apiFetch(`/api/guild/${guildId}/history/clear`, { method: "POST" });
               toast("History cleared", "success");
             }}
-            className="text-[10px] text-danger/60 hover:text-danger transition-colors"
+            className={cn(
+              "text-[11px] font-medium px-2 py-1 -my-1 rounded-md transition-colors",
+              confirmClear ? "text-white bg-danger" : "text-danger/60 hover:text-danger"
+            )}
           >
-            Clear
+            {confirmClear ? "Tap to confirm" : "Clear"}
           </button>
         )}
       </div>
