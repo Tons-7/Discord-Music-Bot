@@ -4,6 +4,8 @@ from typing import Any, Callable, Coroutine
 
 from fastapi import WebSocket
 
+from activity.tasks import spawn
+
 logger = logging.getLogger(__name__)
 
 
@@ -11,9 +13,9 @@ class ConnectionManager:
     def __init__(self):
         self._connections: dict[int, set[WebSocket]] = {}
         self._ws_user_ids: dict[int, dict[WebSocket, int]] = {}  # guild_id -> {ws: user_id}
-        self._on_last_disconnect: Callable[[int], Coroutine] | None = None
+        self._on_last_disconnect: Callable[[int, set[int]], Coroutine] | None = None
 
-    def set_on_last_disconnect(self, callback: Callable[[int], Coroutine]):
+    def set_on_last_disconnect(self, callback: Callable[[int, set[int]], Coroutine]):
         self._on_last_disconnect = callback
 
     async def connect(self, websocket: WebSocket, guild_id: int, user_id: int = 0):
@@ -37,7 +39,7 @@ class ConnectionManager:
                 del self._connections[guild_id]
                 self._ws_user_ids.pop(guild_id, None)
                 if self._on_last_disconnect:
-                    asyncio.create_task(self._on_last_disconnect(guild_id, all_user_ids))
+                    spawn(self._on_last_disconnect(guild_id, all_user_ids))
         logger.info(f"Activity WS disconnected for guild {guild_id}")
 
     def get_connected_user_ids(self, guild_id: int) -> set[int]:
