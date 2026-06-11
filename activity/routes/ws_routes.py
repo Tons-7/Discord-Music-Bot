@@ -4,6 +4,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from activity.auth import get_discord_user
 from activity.permissions import check_banned
+from activity.session import verify_session_token
 from activity.state_serializer import serialize_guild_state
 
 logger = logging.getLogger(__name__)
@@ -16,18 +17,23 @@ async def guild_websocket(websocket: WebSocket, guild_id: int):
     bot = app.state.bot
     ws_manager = app.state.ws_manager
 
-    # Authenticate via query param
+    # Authenticate via query param: signed session token (preferred, no Discord
+    # round-trip) or a raw Discord access token as a fallback.
     token = websocket.query_params.get("token")
     if not token:
         await websocket.close(code=4001, reason="Missing token")
         return
 
-    user = await get_discord_user(token)
-    if not user:
-        await websocket.close(code=4001, reason="Invalid token")
-        return
+    session = verify_session_token(token)
+    if session and session.get("guild_id") == guild_id:
+        user_id = session["user_id"]
+    else:
+        user = await get_discord_user(token)
+        if not user:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+        user_id = int(user["id"])
 
-    user_id = int(user["id"])
     if check_banned(user_id):
         await websocket.close(code=4003, reason="Banned")
         return
