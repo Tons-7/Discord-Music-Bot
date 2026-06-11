@@ -5,9 +5,16 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from activity.dependencies import get_bot, get_current_user, get_ws_manager, require_dj, require_guild_member
-from activity.helpers import broadcast_state, record_activity_listening, set_current_for_activity
+from activity.dependencies import dj_member, get_bot, get_ws_manager, guild_member
+from activity.helpers import (
+    activity_advance,
+    broadcast_state,
+    clear_activity_playback,
+    record_activity_listening,
+    set_current_for_activity,
+)
 from activity.state_serializer import _get_activity_position
+from activity.tasks import spawn
 from config import AUDIO_EFFECTS
 from models.song import Song
 from utils.helpers import parse_time_to_seconds
@@ -19,11 +26,7 @@ router = APIRouter(prefix="/api/guild/{guild_id}", tags=["playback"])
 # ── Pause / Resume ────────────────────────────────────────────────────
 
 @router.post("/pause")
-async def pause(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def pause(guild_id: int, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     guild_data = bot.get_guild_data(guild_id)
     vc = guild_data.get("voice_client")
 
@@ -43,11 +46,7 @@ async def pause(guild_id: int, user=Depends(get_current_user), bot=Depends(get_b
 
 
 @router.post("/resume")
-async def resume(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def resume(guild_id: int, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     guild_data = bot.get_guild_data(guild_id)
     vc = guild_data.get("voice_client")
 
@@ -70,11 +69,7 @@ async def resume(guild_id: int, user=Depends(get_current_user), bot=Depends(get_
 # ── Skip / Previous / Stop ────────────────────────────────────────────
 
 @router.post("/skip")
-async def skip(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def skip(guild_id: int, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     guild_data = bot.get_guild_data(guild_id)
     if not guild_data.get("current"):
         raise HTTPException(status_code=400, detail="Nothing is playing")
@@ -84,34 +79,17 @@ async def skip(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bo
         if vc.is_playing() or vc.is_paused():
             vc.stop()  # Triggers after_playing -> play_next
     else:
-        # Activity-only: advance via /play logic
-        from activity.routes.stream_routes import _preextract_and_cache
-        queue_service = bot._playback_service.queue_service
-        await record_activity_listening(bot, ws, guild_id)
-        queue_service.add_to_history(guild_id, guild_data["current"])
-        next_song = await queue_service.get_next_song(guild_id)
-        if next_song:
-            from datetime import datetime
-            guild_data["current"] = next_song
-            guild_data["seek_offset"] = 0
-            guild_data["start_time"] = datetime.now()
-            guild_data["pause_position"] = None
-            asyncio.create_task(_preextract_and_cache(bot, next_song.webpage_url, next_song.title, guild_id))
-        else:
-            guild_data["current"] = None
-            guild_data["start_time"] = None
-        await bot.save_guild_queue(guild_id)
+        # Activity-only: advance via the unified advance (queue then autoplay).
+        # force=True: a user-initiated skip always advances (the idle/ended-url
+        # idempotency guards only apply to the auto-advance /play path).
+        await activity_advance(bot, ws, guild_id, force=True)
         await broadcast_state(bot, ws, guild_id)
 
     return {"ok": True}
 
 
 @router.post("/previous")
-async def previous(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def previous(guild_id: int, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     guild_data = bot.get_guild_data(guild_id)
     vc = guild_data.get("voice_client")
 
@@ -143,10 +121,18 @@ async def previous(guild_id: int, user=Depends(get_current_user), bot=Depends(ge
             await record_activity_listening(bot, ws, guild_id)
             guild_data["queue"].insert(0, guild_data["current"])
 
+        # Cancel any pending autoplay prefetch before overriding current
+        # (mirrors play_previous; do NOT clear current — we're setting it).
+        guild_data["autoplay_prefetch"] = None
+        prefetch_task = guild_data.get("autoplay_prefetch_task")
+        if prefetch_task and not prefetch_task.done():
+            prefetch_task.cancel()
+        guild_data["autoplay_prefetch_task"] = None
+
         set_current_for_activity(guild_data, Song.from_dict(prev_song.to_dict()))
 
         from activity.routes.stream_routes import _preextract_and_cache
-        asyncio.create_task(_preextract_and_cache(bot, prev_song.webpage_url, prev_song.title, guild_id))
+        spawn(_preextract_and_cache(bot, prev_song.webpage_url, prev_song.title, guild_id))
 
         await bot.save_guild_queue(guild_id)
 
@@ -155,11 +141,7 @@ async def previous(guild_id: int, user=Depends(get_current_user), bot=Depends(ge
 
 
 @router.post("/stop")
-async def stop(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def stop(guild_id: int, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     guild_data = bot.get_guild_data(guild_id)
     queue_service = bot._playback_service.queue_service
 
@@ -170,19 +152,11 @@ async def stop(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bo
 
     queue_service.clear_queue(guild_id)
 
-    guild_data["autoplay_prefetch"] = None
-    prefetch_task = guild_data.get("autoplay_prefetch_task")
-    if prefetch_task and not prefetch_task.done():
-        prefetch_task.cancel()
-    guild_data["autoplay_prefetch_task"] = None
-
     vc = guild_data.get("voice_client")
     if vc and (vc.is_playing() or vc.is_paused()):
         vc.stop()
 
-    guild_data["current"] = None
-    guild_data["start_time"] = None
-    guild_data["seek_offset"] = 0
+    clear_activity_playback(guild_data, cancel_prefetch=True)
 
     await bot.save_guild_queue(guild_id)
     await broadcast_state(bot, ws, guild_id)
@@ -196,11 +170,7 @@ class VolumeBody(BaseModel):
 
 
 @router.post("/volume")
-async def set_volume(guild_id: int, body: VolumeBody, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def set_volume(guild_id: int, body: VolumeBody, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     level = max(0, min(100, body.level))
     guild_data = bot.get_guild_data(guild_id)
     guild_data["volume"] = level
@@ -219,11 +189,7 @@ class LoopBody(BaseModel):
 
 
 @router.post("/loop")
-async def set_loop(guild_id: int, body: LoopBody, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def set_loop(guild_id: int, body: LoopBody, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     if body.mode not in ("off", "song", "queue"):
         raise HTTPException(status_code=400, detail="Invalid loop mode")
 
@@ -234,11 +200,7 @@ async def set_loop(guild_id: int, body: LoopBody, user=Depends(get_current_user)
 
 
 @router.post("/shuffle")
-async def toggle_shuffle(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def toggle_shuffle(guild_id: int, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     new_state = bot._playback_service.queue_service.toggle_shuffle(guild_id)
     await bot.save_guild_queue(guild_id)
     await broadcast_state(bot, ws, guild_id)
@@ -249,14 +211,23 @@ class SpeedBody(BaseModel):
     rate: float
 
 
-@router.post("/speed")
-async def set_speed(guild_id: int, body: SpeedBody, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
+def _rebase_activity_clock(bot, guild_id: int, guild_data: dict) -> None:
+    """Anchor the position at its current value before the effective speed
+    changes — position is computed as elapsed * speed, so changing speed
+    without rebasing rescales time already played (2:00 at 1x -> 1:00 at 0.5x)."""
+    if guild_data.get("voice_client") or not guild_data.get("current"):
+        return
+    if guild_data.get("pause_position") is not None or not guild_data.get("start_time"):
+        return
+    guild_data["seek_offset"] = _get_activity_position(bot, guild_id, guild_data)
+    guild_data["start_time"] = datetime.now()
 
+
+@router.post("/speed")
+async def set_speed(guild_id: int, body: SpeedBody, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     rate = max(0.5, min(2.0, body.rate))
     guild_data = bot.get_guild_data(guild_id)
+    _rebase_activity_clock(bot, guild_id, guild_data)
     guild_data["speed"] = rate
 
     await bot.save_guild_queue(guild_id)
@@ -269,15 +240,12 @@ class EffectBody(BaseModel):
 
 
 @router.post("/effects")
-async def set_effect(guild_id: int, body: EffectBody, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def set_effect(guild_id: int, body: EffectBody, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     if body.effect not in AUDIO_EFFECTS:
         raise HTTPException(status_code=400, detail="Invalid effect")
 
     guild_data = bot.get_guild_data(guild_id)
+    _rebase_activity_clock(bot, guild_id, guild_data)  # effects carry speed multipliers
     guild_data["audio_effect"] = body.effect
 
     await bot.save_guild_queue(guild_id)
@@ -286,10 +254,7 @@ async def set_effect(guild_id: int, body: EffectBody, user=Depends(get_current_u
 
 
 @router.post("/autoplay")
-async def toggle_autoplay(guild_id: int, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-
+async def toggle_autoplay(guild_id: int, user=Depends(guild_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     guild_data = bot.get_guild_data(guild_id)
     guild_data["autoplay"] = not guild_data.get("autoplay", False)
 
@@ -305,11 +270,7 @@ class SeekBody(BaseModel):
 
 
 @router.post("/seek")
-async def seek(guild_id: int, body: SeekBody, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def seek(guild_id: int, body: SeekBody, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     guild_data = bot.get_guild_data(guild_id)
 
     vc = guild_data.get("voice_client")
@@ -475,11 +436,7 @@ class SkipToBody(BaseModel):
 
 
 @router.post("/skipto")
-async def skipto(guild_id: int, body: SkipToBody, user=Depends(get_current_user), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
-    uid = int(user["id"])
-    require_guild_member(bot, guild_id, uid)
-    require_dj(bot, guild_id, uid)
-
+async def skipto(guild_id: int, body: SkipToBody, user=Depends(dj_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     guild_data = bot.get_guild_data(guild_id)
     queue = guild_data.get("queue", [])
     queue_service = bot._playback_service.queue_service
@@ -492,42 +449,32 @@ async def skipto(guild_id: int, body: SkipToBody, user=Depends(get_current_user)
         await record_activity_listening(bot, ws, guild_id)
         queue_service.add_to_history(guild_id, guild_data["current"])
 
-    # Slice out the target and remove skipped songs in one operation (O(n))
     target = queue[body.position]
-    # Bulk-add skipped songs to history (skip duplicate check per-song,
-    # just extend and let history trimming handle the rest)
-    skipped = queue[:body.position]
-    history = guild_data.get("history", [])
-    existing_urls = {s.webpage_url for s in history}
-    for s in skipped:
-        if s.webpage_url not in existing_urls:
-            history.append(Song.from_dict(s.to_dict()))
-            existing_urls.add(s.webpage_url)
-    # Trim history
-    from config import MAX_HISTORY_SIZE
-    if len(history) > MAX_HISTORY_SIZE:
-        guild_data["history"] = history[-MAX_HISTORY_SIZE:]
-    guild_data["history_position"] = len(guild_data["history"])
-
-    # Remove target + everything before it from queue in one slice (O(n))
-    guild_data["queue"] = queue[body.position + 1:]
+    # Bulk-add skipped songs to history (also maintains loop_backup for loop mode).
+    queue_service.add_songs_to_history(guild_id, queue[:body.position])
 
     vc = guild_data.get("voice_client")
     if vc and vc.is_connected():
-        guild_data["current"] = target
-        guild_data["seek_offset"] = 0
-        guild_data["start_time"] = datetime.now()
-        guild_data["pause_position"] = None
+        # Leave the target at queue[0] so play_next pops it (mirrors /skipto slash).
+        guild_data["queue"] = queue[body.position:]
         if vc.is_playing() or vc.is_paused():
-            vc.stop()  # triggers after_playing -> play_next, but current is already set
+            vc.stop()  # triggers after_playing -> play_next, which pops the target
         else:
-            asyncio.create_task(bot._playback_service.play_next(guild_id))
+            spawn(bot._playback_service.play_next(guild_id))
     else:
+        # Activity-only: set current directly and drop the target from the queue.
+        guild_data["queue"] = queue[body.position + 1:]
+        # Cancel stale autoplay prefetch before overriding current (mirrors /previous).
+        guild_data["autoplay_prefetch"] = None
+        prefetch_task = guild_data.get("autoplay_prefetch_task")
+        if prefetch_task and not prefetch_task.done():
+            prefetch_task.cancel()
+        guild_data["autoplay_prefetch_task"] = None
         set_current_for_activity(guild_data, target)
 
     # Pre-cache
     from activity.routes.stream_routes import _preextract_and_cache
-    asyncio.create_task(_preextract_and_cache(bot, target.webpage_url, target.title, guild_id))
+    spawn(_preextract_and_cache(bot, target.webpage_url, target.title, guild_id))
 
     await bot.save_guild_queue(guild_id)
     await broadcast_state(bot, ws, guild_id)
