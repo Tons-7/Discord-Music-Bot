@@ -1,4 +1,5 @@
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
 import discord
 
@@ -98,6 +99,47 @@ def create_embed(title: str, description: str = "", color: int = COLOR, bot_user
     )
     embed.timestamp = datetime.now()
     return embed
+
+
+def extract_youtube_id(webpage_url: str) -> str:
+    """Extract the 11-char YouTube video id from a URL.
+
+    Handles watch?v=, &v=, youtu.be/, and /shorts/ forms. Returns "" if none.
+    """
+    if not webpage_url:
+        return ""
+
+    try:
+        parsed = urlparse(webpage_url)
+    except Exception:
+        return ""
+
+    host = parsed.netloc.lower()
+
+    # youtu.be/<id>
+    if host.endswith("youtu.be"):
+        candidate = parsed.path.lstrip("/").split("/")[0]
+        return candidate if candidate else ""
+
+    # youtube.com/watch?v=<id> or &v=<id>
+    query = parse_qs(parsed.query)
+    if "v" in query and query["v"]:
+        return query["v"][0]
+
+    # youtube.com/shorts/<id>, /embed/<id>, /v/<id>
+    path_parts = [p for p in parsed.path.split("/") if p]
+    if path_parts and path_parts[0] in ("shorts", "embed", "v"):
+        return path_parts[1] if len(path_parts) > 1 else ""
+
+    return ""
+
+
+def youtube_thumbnail(webpage_url: str, quality: str = "hqdefault") -> str:
+    """Return the YouTube thumbnail URL for a video, or "" if no id can be parsed."""
+    video_id = extract_youtube_id(webpage_url)
+    if not video_id:
+        return ""
+    return f"https://i.ytimg.com/vi/{video_id}/{quality}.jpg"
 
 
 def create_v2_embed(title: str, description: str = "", colour: int = COLOR, thumbnail: str = "") -> discord.ui.LayoutView:
