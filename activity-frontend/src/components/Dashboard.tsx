@@ -1,7 +1,10 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { useGuildState } from "./GuildStateProvider";
+import { useState, useMemo, useEffect, useCallback, memo } from "react";
+import { preload } from "swr";
+import { useGuildState, useServerPosition } from "./GuildStateProvider";
+import { lyricsKey, lyricsFetcher } from "./LyricsPanel";
+import { apiFetch } from "@/lib/api";
 import { useAudioPlayer, type AudioPlayerHandle } from "@/hooks/useAudioPlayer";
 import { useRichPresence } from "@/hooks/useRichPresence";
 import { getSDK } from "@/lib/discord-sdk";
@@ -15,7 +18,9 @@ import FavoritesPanel from "./FavoritesPanel";
 import StatsPanel from "./StatsPanel";
 import PiPView from "./PiPView";
 import { useLayoutMode, LayoutMode } from "@/hooks/useLayoutMode";
-import { cn, formatDuration, proxyImg } from "@/lib/utils";
+import { ProgressStrip, LiveTime } from "./ui/SeekBar";
+import { PlayIcon, PauseIcon, NoteIcon } from "./ui/icons";
+import { cn, proxyImg } from "@/lib/utils";
 
 type Panel = "search" | "queue" | "history" | "playlists" | "lyrics" | "favorites" | "stats" | null;
 
@@ -50,9 +55,15 @@ const PANELS: { id: Exclude<Panel, null>; icon: React.ReactNode; label: string }
   },
 ];
 
+// Mobile bottom nav: 4 primary tabs + a "More" sheet (7 tabs don't fit a phone)
+const MOBILE_PRIMARY: Exclude<Panel, null>[] = ["search", "queue", "playlists", "lyrics"];
+const MOBILE_MORE: Exclude<Panel, null>[] = ["favorites", "stats", "history"];
+
 export default function Dashboard() {
   const [activePanel, setActivePanel] = useState<Panel>(null);
-  const { state, guildId, eventVersion } = useGuildState();
+  const [moreOpen, setMoreOpen] = useState(false);
+  const { state, guildId, eventVersion, sendCommand } = useGuildState();
+  const serverPos = useServerPosition();
   const { current } = state;
 
   const layoutMode = useLayoutMode();
@@ -61,19 +72,74 @@ export default function Dashboard() {
     guildId,
     current?.webpage_url ?? null,
     current?.duration ?? 0,
-    current?.position ?? 0,
-    current?.is_paused ?? false,
+    serverPos,
     eventVersion,
     state.speed,
     state.audio_effect,
     state.volume,
+    state.is_connected,
+  );
+
+  // Fetch + refresh a signed session token for query-string contexts
+  // (<audio> stream URLs, WebSocket). Keeps the raw OAuth token out of URLs.
+  // guildId is set once Discord auth completes, so it doubles as the auth-ready signal.
+  useEffect(() => {
+    if (!guildId) return;
+    let cancelled = false;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const fetchToken = async () => {
+      try {
+        const resp = await apiFetch<{ token: string; expires_in: number }>(
+          `/api/guild/${guildId}/session-token`,
+        );
+        if (cancelled || !resp?.token) return;
+        localStorage.setItem("activity_session_token", resp.token);
+        const expiresIn = typeof resp.expires_in === "number" ? resp.expires_in : 21600;
+        const refreshMs = Math.max(60_000, expiresIn * 0.8 * 1000);
+        refreshTimer = setTimeout(fetchToken, refreshMs);
+      } catch {
+        // Retry shortly if the token fetch fails.
+        if (!cancelled) refreshTimer = setTimeout(fetchToken, 60_000);
+      }
+    };
+
+    fetchToken();
+    return () => {
+      cancelled = true;
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
+  }, [guildId]);
+
+  // Warm the lyrics cache shortly after a song starts (after the stream kicks
+  // off), so opening the Lyrics panel is instant.
+  useEffect(() => {
+    const url = current?.webpage_url;
+    if (!guildId || !url) return;
+    const t = setTimeout(() => {
+      preload(lyricsKey(guildId, url), lyricsFetcher(guildId)).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [guildId, current?.webpage_url]);
+
+  const getDisplayPosition = useCallback(
+    () => (audio.ready ? audio.positionRef.current : serverPos.ref.current.position),
+    [audio.ready, audio.positionRef, serverPos],
   );
 
   useRichPresence(
     getSDK(),
     current ?? null,
-    audio.ready ? audio.position : (current?.position ?? 0),
+    getDisplayPosition,
     audio.ready ? !audio.playing : (current?.is_paused ?? true),
+  );
+
+  const handleLyricsSeek = useCallback(
+    (seconds: number) => {
+      audio.seek(seconds);
+      sendCommand("seek", { position: String(Math.floor(seconds)) }).catch(() => {});
+    },
+    [audio.seek, sendCommand],
   );
 
   if (layoutMode === LayoutMode.PiP) {
@@ -100,22 +166,17 @@ export default function Dashboard() {
       <div className={cn(
         "flex-shrink-0 overflow-hidden transition-[width,opacity] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]",
         panelOpen
-          ? "sm:w-[50%] sm:border-l max-sm:flex-1 opacity-100 border-white/[0.06]"
+          ? "sm:w-[min(50%,420px)] sm:border-l max-sm:flex-1 opacity-100 border-white/[0.06]"
           : "sm:w-0 max-sm:hidden opacity-0 border-transparent"
       )}>
         {panelOpen && (
           <div className="h-full w-full bg-surface-2 flex flex-col animate-[slide-in_0.25s_ease-out]">
-            <div className="hidden max-sm:flex items-center px-4 py-3 border-b border-white/[0.08] flex-shrink-0">
+            {/* Centered: Discord's mobile chrome overlays bot name (left) and Leave (right) */}
+            <div className="hidden max-sm:flex items-center justify-center px-4 py-3 border-b border-white/[0.08] flex-shrink-0">
               <span className="text-sm font-semibold text-white capitalize">{activePanel}</span>
             </div>
             <div className="flex-1 overflow-hidden">
-              {activePanel === "queue" && <QueuePanel />}
-              {activePanel === "search" && <SearchPanel />}
-              {activePanel === "history" && <HistoryPanel />}
-              {activePanel === "playlists" && <PlaylistPanel />}
-              {activePanel === "lyrics" && <LyricsPanel positionRef={audio.positionRef} />}
-              {activePanel === "favorites" && <FavoritesPanel />}
-              {activePanel === "stats" && <StatsPanel />}
+              <ActivePanel panel={activePanel} getPosition={getDisplayPosition} onSeek={handleLyricsSeek} />
             </div>
           </div>
         )}
@@ -133,25 +194,35 @@ export default function Dashboard() {
         className="hidden max-sm:flex flex-col flex-shrink-0 bg-surface-1 border-t border-white/[0.06]"
         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
       >
-        {panelOpen && current && <MobileMiniPlayer audio={audio} />}
+        {panelOpen && current && (
+          <MobileMiniPlayer audio={audio} onExpand={() => setActivePanel(null)} />
+        )}
         <div className="flex items-center justify-around px-1 pt-1.5 pb-1">
-          {PANELS.map(({ id, icon, label }) => (
-            <button
-              key={id}
-              onClick={() => togglePanel(id)}
-              className={cn(
-                "flex flex-col items-center justify-center gap-0.5 flex-1 min-w-0 h-11 rounded-xl transition-colors",
-                activePanel === id ? "text-accent bg-accent/10" : "text-muted active:bg-white/[0.06]"
-              )}
-              aria-pressed={activePanel === id}
-              aria-label={label}
-            >
-              {icon}
-              <span className="text-[9px] font-medium leading-none">{label}</span>
-            </button>
-          ))}
+          {MOBILE_PRIMARY.map(id => {
+            const { icon, label } = PANELS.find(p => p.id === id)!;
+            return (
+              <MobileNavBtn key={id} active={activePanel === id} label={label} onClick={() => togglePanel(id)}>
+                {icon}
+              </MobileNavBtn>
+            );
+          })}
+          <MobileNavBtn
+            active={MOBILE_MORE.includes(activePanel as Exclude<Panel, null>)}
+            label="More"
+            onClick={() => setMoreOpen(true)}
+          >
+            <svg className="w-[18px] h-[18px]" fill="currentColor" viewBox="0 0 24 24"><path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" /></svg>
+          </MobileNavBtn>
         </div>
       </div>
+
+      {moreOpen && (
+        <MoreSheet
+          active={activePanel}
+          onSelect={panel => { setMoreOpen(false); togglePanel(panel); }}
+          onClose={() => setMoreOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -169,6 +240,7 @@ function SidebarBtn({ children, active, label, onClick }: {
           : "text-muted hover:text-white hover:bg-white/[0.06]"
       )}
       title={label}
+      aria-pressed={active}
     >
       {children}
       <span className="absolute right-full mr-2 px-2 py-1 rounded-lg bg-surface-3 text-[11px] text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-lg">
@@ -178,28 +250,108 @@ function SidebarBtn({ children, active, label, onClick }: {
   );
 }
 
-type MiniAudio = Pick<AudioPlayerHandle, "playing" | "ready" | "position" | "duration" | "playPause">;
+function MobileNavBtn({ children, active, label, onClick }: {
+  children: React.ReactNode; active: boolean; label: string; onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex flex-col items-center justify-center gap-0.5 flex-1 min-w-0 h-11 rounded-xl transition-colors",
+        active ? "text-accent bg-accent/10" : "text-muted active:bg-white/[0.06]"
+      )}
+      aria-pressed={active}
+      aria-label={label}
+    >
+      {children}
+      <span className="text-[10px] font-medium leading-none">{label}</span>
+    </button>
+  );
+}
 
-function MobileMiniPlayer({ audio }: { audio: MiniAudio }) {
+function MoreSheet({ active, onSelect, onClose }: {
+  active: Panel;
+  onSelect: (panel: Exclude<Panel, null>) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-40 sm:hidden" role="dialog" aria-label="More panels">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div
+        className="absolute inset-x-0 bottom-0 bg-surface-2 border-t border-white/[0.08] rounded-t-2xl p-3 animate-[slide-up_0.2s_ease-out]"
+        style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 12px)" }}
+      >
+        <div className="w-9 h-1 rounded-full bg-white/15 mx-auto mb-3" />
+        {MOBILE_MORE.map(id => {
+          const { icon, label } = PANELS.find(p => p.id === id)!;
+          return (
+            <button
+              key={id}
+              onClick={() => onSelect(id)}
+              className={cn(
+                "w-full flex items-center gap-3 px-3 h-12 rounded-xl transition-colors",
+                active === id ? "text-accent bg-accent/10" : "text-white/80 active:bg-white/[0.06]"
+              )}
+            >
+              {icon}
+              <span className="text-sm font-medium">{label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Memoized so the parent's re-renders don't re-render the open panel
+// (props are stable; panels read guild state via context).
+const ActivePanel = memo(function ActivePanel({ panel, getPosition, onSeek }: {
+  panel: Panel; getPosition: () => number; onSeek: (seconds: number) => void;
+}) {
+  switch (panel) {
+    case "queue": return <QueuePanel />;
+    case "search": return <SearchPanel />;
+    case "history": return <HistoryPanel />;
+    case "playlists": return <PlaylistPanel />;
+    case "lyrics": return <LyricsPanel getPosition={getPosition} onSeek={onSeek} />;
+    case "favorites": return <FavoritesPanel />;
+    case "stats": return <StatsPanel />;
+    default: return null;
+  }
+});
+
+function MobileMiniPlayer({ audio, onExpand }: { audio: AudioPlayerHandle; onExpand: () => void }) {
   const { state } = useGuildState();
+  const serverPos = useServerPosition();
   const { current } = state;
   const thumb = useMemo(() => current?.thumbnail ? proxyImg(current.thumbnail) : null, [current?.thumbnail]);
+
+  const getPosition = useCallback(
+    () => (audio.ready ? audio.positionRef.current : serverPos.ref.current.position),
+    [audio.ready, audio.positionRef, serverPos],
+  );
+
   if (!current) return null;
 
-  const displayPos = audio.ready ? audio.position : (current.position ?? 0);
   const totalDur = audio.ready && audio.duration > 0 ? audio.duration : (current.duration ?? 0);
-  const progress = totalDur > 0 ? Math.min((displayPos / totalDur) * 100, 100) : 0;
   const isPaused = audio.ready ? !audio.playing : (current.is_paused ?? true);
 
   return (
-    <div className="relative border-b border-white/[0.06]">
+    <div
+      className="relative border-b border-white/[0.06] cursor-pointer active:bg-white/[0.03]"
+      role="button"
+      tabIndex={0}
+      aria-label="Back to player"
+      onClick={onExpand}
+      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onExpand(); } }}
+    >
       {!current.is_live && totalDur > 0 && (
-        <div className="absolute top-0 inset-x-0 h-[2px] bg-white/10">
-          <div
-            className="h-full bg-accent transition-[width] duration-200 ease-linear"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
+        <ProgressStrip
+          duration={totalDur}
+          getPosition={getPosition}
+          className="absolute top-0 inset-x-0 h-[2px]"
+          fillClassName="bg-accent"
+        />
       )}
 
       <div className="flex items-center gap-2.5 px-3 py-2">
@@ -208,7 +360,7 @@ function MobileMiniPlayer({ audio }: { audio: MiniAudio }) {
             <img src={thumb} alt="" className="w-full h-full object-cover" />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
-              <svg className="w-4 h-4 text-muted" fill="currentColor" viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" /></svg>
+              <NoteIcon className="w-4 h-4 text-muted" />
             </div>
           )}
         </div>
@@ -219,19 +371,17 @@ function MobileMiniPlayer({ audio }: { audio: MiniAudio }) {
             {current.is_live
               ? "LIVE"
               : totalDur > 0
-                ? `${formatDuration(displayPos)} / ${formatDuration(totalDur)}`
+                ? <LiveTime get={getPosition} className="font-mono tabular-nums" />
                 : current.uploader}
           </p>
         </div>
 
         <button
-          onClick={audio.playPause}
+          onClick={e => { e.stopPropagation(); audio.playPause(); }}
           className="w-10 h-10 rounded-full bg-white text-surface-1 flex items-center justify-center flex-shrink-0 active:scale-95 transition-transform"
           aria-label={isPaused ? "Play" : "Pause"}
         >
-          {isPaused
-            ? <svg className="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-            : <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>}
+          {isPaused ? <PlayIcon className="w-5 h-5 ml-0.5" /> : <PauseIcon className="w-5 h-5" />}
         </button>
       </div>
     </div>
