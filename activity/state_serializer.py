@@ -1,19 +1,16 @@
 from datetime import datetime
 from typing import Any
 
+from utils.helpers import youtube_thumbnail
+
 
 def _ensure_thumbnail(d: dict) -> dict:
     """Fill in missing thumbnail from webpage_url (YouTube video ID)."""
     if d.get("thumbnail"):
         return d
-    wp = d.get("webpage_url", "")
-    vid = ""
-    if "watch?v=" in wp:
-        vid = wp.split("watch?v=")[1].split("&")[0]
-    elif "youtu.be/" in wp:
-        vid = wp.split("youtu.be/")[1].split("?")[0]
-    if vid:
-        d["thumbnail"] = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+    thumbnail = youtube_thumbnail(d.get("webpage_url", ""))
+    if thumbnail:
+        d["thumbnail"] = thumbnail
     return d
 
 
@@ -67,6 +64,10 @@ def _get_activity_position(bot, guild_id: int, guild_data: dict) -> int:
 
 
 def serialize_guild_state(bot, guild_id: int) -> dict[str, Any]:
+    # Lazy import to avoid a cycle: activity.helpers imports serialize_guild_state
+    # from this module at top level.
+    from activity.helpers import is_activity_paused
+
     guild_data = bot.get_guild_data(guild_id)
     playback = bot._playback_service
     queue_service = playback.queue_service
@@ -76,11 +77,7 @@ def serialize_guild_state(bot, guild_id: int) -> dict[str, Any]:
     if current:
         current_dict = serialize_song(current, bot)
         current_dict["position"] = _get_activity_position(bot, guild_id, guild_data)
-        vc = guild_data.get("voice_client")
-        if vc:
-            current_dict["is_paused"] = vc.is_paused()
-        else:
-            current_dict["is_paused"] = guild_data.get("pause_position") is not None
+        current_dict["is_paused"] = is_activity_paused(guild_data)
 
     vc = guild_data.get("voice_client")
     is_connected = vc is not None and vc.is_connected()
