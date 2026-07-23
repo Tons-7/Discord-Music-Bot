@@ -45,10 +45,8 @@ LRCLIB_USER_AGENT = os.getenv(
     "DiscordMusicBot/1.0 (https://github.com/Tons-7/Discord-Music-Bot)",
 )
 
-# Audio file cache
+# Audio file cache (persists indefinitely; no size/age eviction)
 AUDIO_CACHE_DIR = "audio_cache"
-AUDIO_CACHE_MAX_SIZE_MB = 2048  # ~400 songs
-AUDIO_CACHE_MAX_AGE_HOURS = 672  # 28 days
 
 # Database
 DB_VERSION = 4  # bump when adding migrations
