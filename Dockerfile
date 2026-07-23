@@ -1,5 +1,5 @@
 ### Stage 1: Build Next.js frontend
-FROM node:20-slim AS frontend
+FROM node:24-slim AS frontend
 WORKDIR /frontend
 COPY activity-frontend/package.json activity-frontend/package-lock.json* ./
 RUN npm ci
