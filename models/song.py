@@ -6,6 +6,7 @@ class Song:
         self.url = data.get("url", "")
         self.title = data.get("title", "Unknown Title")
         self.duration = data.get("duration", 0)
+        self.album = data.get("album", "")
         self.thumbnail = data.get("thumbnail", "")
         self.uploader = data.get("uploader", "Unknown")
         self.webpage_url = data.get("webpage_url", "")
@@ -27,6 +28,7 @@ class Song:
             "url": self.url,
             "title": self.title,
             "duration": self.duration,
+            "album": self.album,
             "thumbnail": self.thumbnail,
             "uploader": self.uploader,
             "webpage_url": self.webpage_url,
