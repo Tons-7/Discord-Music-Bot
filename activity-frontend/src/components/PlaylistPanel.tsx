@@ -11,6 +11,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragPendingEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -47,6 +48,8 @@ export default function PlaylistPanel() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [queueingUrl, setQueueingUrl] = useState<string | null>(null);
   const [addedUrls, setAddedUrls] = useState<Set<string>>(new Set());
+  // Row whose long-press drag is arming (touch delay constraint) — visual cue
+  const [armingUrl, setArmingUrl] = useState<string | null>(null);
   // dnd-kit fires a click on the drag's mouseup — suppress row-click adds after a drag
   const dragOccurred = useRef(false);
 
@@ -166,7 +169,14 @@ export default function PlaylistPanel() {
     finally { setQueueingUrl(null); }
   };
 
-  const handleSongDragStart = () => { dragOccurred.current = true; };
+  // Only cue delay-based (long-press) arming — the MouseSensor's distance
+  // constraint would flash the cue on every click.
+  const handleSongDragPending = (event: DragPendingEvent) => {
+    if ("delay" in event.constraint) setArmingUrl(String(event.id));
+  };
+  const handleSongDragAbort = () => setArmingUrl(null);
+
+  const handleSongDragStart = () => { setArmingUrl(null); dragOccurred.current = true; };
 
   const handleSongDragEnd = async (event: DragEndEvent) => {
     setTimeout(() => { dragOccurred.current = false; }, 100);
@@ -356,7 +366,7 @@ export default function PlaylistPanel() {
           ) : songs.length === 0 ? (
             <div className="flex items-center justify-center py-12 text-muted text-xs">Empty playlist</div>
           ) : (
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleSongDragStart} onDragEnd={handleSongDragEnd}>
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragPending={handleSongDragPending} onDragAbort={handleSongDragAbort} onDragStart={handleSongDragStart} onDragEnd={handleSongDragEnd}>
               <SortableContext items={songs.map(s => s.webpage_url)} strategy={verticalListSortingStrategy}>
                 <div className="flex flex-col gap-1 mt-2">
                   {songs.map((song, i) => (
@@ -364,6 +374,7 @@ export default function PlaylistPanel() {
                       key={song.webpage_url}
                       song={song}
                       index={i}
+                      arming={armingUrl === song.webpage_url}
                       queueing={queueingUrl === song.webpage_url}
                       added={addedUrls.has(song.webpage_url)}
                       onQueue={() => handleQueueSong(song)}
@@ -476,8 +487,8 @@ function HeaderBtn({ children, onClick, title, className }: {
 }
 
 // Click adds to queue (same as Search/History/Favorites rows); drag reorders.
-function SortableSongRow({ song, index, queueing, added, onQueue, onRemove }: {
-  song: PlaylistSong; index: number; queueing: boolean; added: boolean;
+function SortableSongRow({ song, index, arming, queueing, added, onQueue, onRemove }: {
+  song: PlaylistSong; index: number; arming: boolean; queueing: boolean; added: boolean;
   onQueue: () => void; onRemove: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -494,8 +505,9 @@ function SortableSongRow({ song, index, queueing, added, onQueue, onRemove }: {
       title="Add to queue"
       className={cn(
         "flex items-center gap-2 p-2 rounded-xl border group cursor-pointer",
-        "transition-[background-color,border-color,opacity] duration-150",
+        "transition-[background-color,border-color,opacity,transform] duration-150",
         isDragging ? "opacity-40 border-accent/40 z-10 relative bg-white/[0.02]"
+          : arming ? "scale-[0.97] border-accent/40 bg-white/[0.05]"
           : added ? "bg-success/[0.06] border-success/20"
           : "bg-white/[0.02] border-white/[0.04] hover:bg-white/[0.06]"
       )}
