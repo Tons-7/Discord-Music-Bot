@@ -52,6 +52,7 @@ async def search_songs(
         result = {
             "title": entry.get("title", "Unknown"),
             "duration": entry.get("duration", 0) or 0,
+            "album": entry.get("album", ""),
             "thumbnail": entry.get("thumbnail", ""),
             "uploader": entry.get("uploader", entry.get("channel", "Unknown")),
             "webpage_url": entry.get("webpage_url", entry.get("url", "")),
