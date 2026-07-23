@@ -17,6 +17,8 @@ The per-second WS position tick lives in a ref + subscription (`ServerPosition` 
 # Conventions
 
 - React Compiler is enabled — don't hand-memoize new code unless profiling says so.
+- Prefer `useEffectEvent` over ref-mirroring for "read latest value inside a stable Effect/listener" (see `useAudioPlayer`/`useWebSocket`/`useRichPresence`).
+- Side panels stay mounted inside `<Activity>` (`Panels` in `Dashboard.tsx`) — hidden panels keep local state/scroll with effects unmounted. Don't add unmount-based cleanup assumptions to panel components.
 - Panel data goes through SWR (global fetcher = `apiFetch`); mutations use optimistic `mutate` + revalidate. Lyrics are cached per song (immutable) and preloaded ~1.5s after song start.
 - Touch first: hover-revealed actions need `pointer-coarse:opacity-100`; icon buttons use `ui/IconButton` (enlarged coarse hit area + aria-label); reordering uses dnd-kit (MouseSensor distance 6 + TouchSensor delay 250) — suppress the post-drag click via a `dragOccurred` ref.
 - Popovers use `ui/Popover` (portal + fixed positioning) — absolutely-positioned menus get clipped by the mobile scroll containers.
