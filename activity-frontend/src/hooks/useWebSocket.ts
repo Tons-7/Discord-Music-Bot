@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useReducer, useCallback, useMemo, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useReducer, useCallback, useMemo, useState } from "react";
 import type { GuildState } from "@/types";
 
 const INITIAL_STATE: GuildState = {
@@ -93,6 +93,44 @@ export function useWebSocket(
     []
   );
 
+  // Socket handlers as Effect Events: they only read latest values, so their
+  // logic doesn't force `connect` (and the connect Effect below) to re-run.
+  const handleMessage = useEffectEvent((event: MessageEvent) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (!msg.type) return;
+
+      if (msg.type === "POSITION_UPDATE") {
+        const d = msg.data;
+        if (d && typeof d.position === "number") {
+          publishPosition({ position: d.position, is_paused: !!d.is_paused });
+        }
+        return;
+      }
+
+      if (msg.data !== undefined) {
+        dispatch(msg as Action);
+        // Seed position from STATE_UPDATE so remote seeks correct drift at once.
+        const cur = (msg.data as GuildState)?.current;
+        if (cur && typeof cur.position === "number") {
+          publishPosition({ position: cur.position, is_paused: !!cur.is_paused });
+        }
+      }
+    } catch {
+      // ignore malformed messages
+    }
+  });
+
+  const handleClose = useEffectEvent(() => {
+    setConnected(false);
+    wsRef.current = null;
+
+    // Reconnect with exponential backoff
+    const delay = Math.min(1000 * 2 ** retriesRef.current, 30000);
+    retriesRef.current++;
+    reconnectTimeoutRef.current = setTimeout(() => connect(), delay);
+  });
+
   const connect = useCallback(() => {
     if (!guildId || !token) return;
 
@@ -115,46 +153,14 @@ export function useWebSocket(
       retriesRef.current = 0;
     };
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (!msg.type) return;
+    ws.onmessage = (event) => handleMessage(event);
 
-        if (msg.type === "POSITION_UPDATE") {
-          const d = msg.data;
-          if (d && typeof d.position === "number") {
-            publishPosition({ position: d.position, is_paused: !!d.is_paused });
-          }
-          return;
-        }
-
-        if (msg.data !== undefined) {
-          dispatch(msg as Action);
-          // Seed position from STATE_UPDATE so remote seeks correct drift at once.
-          const cur = (msg.data as GuildState)?.current;
-          if (cur && typeof cur.position === "number") {
-            publishPosition({ position: cur.position, is_paused: !!cur.is_paused });
-          }
-        }
-      } catch {
-        // ignore malformed messages
-      }
-    };
-
-    ws.onclose = () => {
-      setConnected(false);
-      wsRef.current = null;
-
-      // Reconnect with exponential backoff
-      const delay = Math.min(1000 * 2 ** retriesRef.current, 30000);
-      retriesRef.current++;
-      reconnectTimeoutRef.current = setTimeout(connect, delay);
-    };
+    ws.onclose = () => handleClose();
 
     ws.onerror = () => {
       ws.close();
     };
-  }, [guildId, token, publishPosition]);
+  }, [guildId, token]);
 
   useEffect(() => {
     connect();
