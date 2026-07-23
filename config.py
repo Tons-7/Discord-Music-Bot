@@ -40,6 +40,10 @@ AUDIO_EFFECTS = {
 
 # Lyrics
 LYRICS_API_BASE = "https://lrclib.net/api"
+LRCLIB_USER_AGENT = os.getenv(
+    "LRCLIB_USER_AGENT",
+    "DiscordMusicBot/1.0 (https://github.com/Tons-7/Discord-Music-Bot)",
+)
 
 # Audio file cache
 AUDIO_CACHE_DIR = "audio_cache"
