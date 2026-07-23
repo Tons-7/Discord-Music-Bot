@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback, memo } from "react";
+import { Activity, useState, useMemo, useEffect, useCallback, memo } from "react";
 import { preload } from "swr";
 import { useGuildState, useServerPosition } from "./GuildStateProvider";
 import { lyricsKey, lyricsFetcher } from "./LyricsPanel";
@@ -169,17 +169,22 @@ export default function Dashboard() {
           ? "sm:w-[min(50%,420px)] sm:border-l max-sm:flex-1 opacity-100 border-white/[0.06]"
           : "sm:w-0 max-sm:hidden opacity-0 border-transparent"
       )}>
-        {panelOpen && (
-          <div className="h-full w-full bg-surface-2 flex flex-col animate-[slide-in_0.25s_ease-out]">
-            {/* Centered: Discord's mobile chrome overlays bot name (left) and Leave (right) */}
+        {/* Always mounted: panels hide via <Activity> so their local state
+            (search results, scroll position) survives tab switches and close. */}
+        <div className={cn(
+          "h-full w-full bg-surface-2 flex flex-col",
+          panelOpen && "animate-[slide-in_0.25s_ease-out]",
+        )}>
+          {/* Centered: Discord's mobile chrome overlays bot name (left) and Leave (right) */}
+          {panelOpen && (
             <div className="hidden max-sm:flex items-center justify-center px-4 py-3 border-b border-white/[0.08] flex-shrink-0">
               <span className="text-sm font-semibold text-white capitalize">{activePanel}</span>
             </div>
-            <div className="flex-1 overflow-hidden">
-              <ActivePanel panel={activePanel} getPosition={getDisplayPosition} onSeek={handleLyricsSeek} />
-            </div>
+          )}
+          <div className="flex-1 overflow-hidden">
+            <Panels panel={activePanel} getPosition={getDisplayPosition} onSeek={handleLyricsSeek} />
           </div>
-        )}
+        </div>
       </div>
 
       <div className="max-sm:hidden flex flex-col items-center gap-1 py-3 px-1.5 bg-surface-1 flex-shrink-0">
@@ -305,19 +310,23 @@ function MoreSheet({ active, onSelect, onClose }: {
 
 // Memoized so the parent's re-renders don't re-render the open panel
 // (props are stable; panels read guild state via context).
-const ActivePanel = memo(function ActivePanel({ panel, getPosition, onSeek }: {
+// Every panel stays mounted inside <Activity>: hidden ones are display:none
+// with state preserved and effects unmounted (so hidden panels don't fetch).
+const Panels = memo(function Panels({ panel, getPosition, onSeek }: {
   panel: Panel; getPosition: () => number; onSeek: (seconds: number) => void;
 }) {
-  switch (panel) {
-    case "queue": return <QueuePanel />;
-    case "search": return <SearchPanel />;
-    case "history": return <HistoryPanel />;
-    case "playlists": return <PlaylistPanel />;
-    case "lyrics": return <LyricsPanel getPosition={getPosition} onSeek={onSeek} />;
-    case "favorites": return <FavoritesPanel />;
-    case "stats": return <StatsPanel />;
-    default: return null;
-  }
+  const mode = (id: Exclude<Panel, null>) => (panel === id ? "visible" : "hidden");
+  return (
+    <>
+      <Activity mode={mode("queue")}><QueuePanel /></Activity>
+      <Activity mode={mode("search")}><SearchPanel /></Activity>
+      <Activity mode={mode("history")}><HistoryPanel /></Activity>
+      <Activity mode={mode("playlists")}><PlaylistPanel /></Activity>
+      <Activity mode={mode("lyrics")}><LyricsPanel getPosition={getPosition} onSeek={onSeek} /></Activity>
+      <Activity mode={mode("favorites")}><FavoritesPanel /></Activity>
+      <Activity mode={mode("stats")}><StatsPanel /></Activity>
+    </>
+  );
 });
 
 function MobileMiniPlayer({ audio, onExpand }: { audio: AudioPlayerHandle; onExpand: () => void }) {
