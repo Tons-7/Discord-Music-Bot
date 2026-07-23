@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import logging
-import os
 import time
 from pathlib import Path
 
@@ -11,7 +10,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from starlette.responses import StreamingResponse
 
-import config
 from activity.auth import authenticate_query_or_header
 from activity.dependencies import get_bot, get_ws_manager, guild_member
 from activity.helpers import activity_advance, broadcast_state
@@ -72,54 +70,8 @@ def _get_cache_path(webpage_url: str) -> Path:
     return _ACTIVITY_CACHE_DIR / f"{url_hash}.m4a"
 
 
-def _evict_activity_cache() -> None:
-    """Evict stale/oversized entries from the Activity M4A cache.
-
-    Deletes files older than AUDIO_CACHE_MAX_AGE_HOURS, then trims the
-    oldest-accessed files until total size is under AUDIO_CACHE_MAX_SIZE_MB.
-    Runs synchronously (fast os.scandir); call it from the executor.
-    """
-    now = time.time()
-    max_age = config.AUDIO_CACHE_MAX_AGE_HOURS * 3600
-    max_size = config.AUDIO_CACHE_MAX_SIZE_MB * 1024 * 1024
-    try:
-        entries = []
-        for entry in os.scandir(_ACTIVITY_CACHE_DIR):
-            if not entry.name.endswith(".m4a") or not entry.is_file():
-                continue
-            try:
-                st = entry.stat()
-            except OSError:
-                continue
-            # Drop expired files outright.
-            if now - st.st_mtime > max_age:
-                try:
-                    os.remove(entry.path)
-                except OSError:
-                    pass
-                continue
-            entries.append((entry.path, st.st_atime, st.st_size))
-
-        total = sum(size for _, _, size in entries)
-        if total <= max_size:
-            return
-
-        # Evict oldest-by-atime until under the cap.
-        entries.sort(key=lambda e: e[1])
-        for path, _, size in entries:
-            if total <= max_size:
-                break
-            try:
-                os.remove(path)
-                total -= size
-            except OSError:
-                pass
-    except Exception as e:
-        logger.debug(f"Activity cache eviction skipped: {e}")
-
-
 def _get_cached_file(webpage_url: str) -> str | None:
-    """Return cached M4A path if complete and under 28 days old."""
+    """Return cached M4A path if a complete file exists."""
     if webpage_url in _downloading:
         return None  # still being written
     path = _get_cache_path(webpage_url)
@@ -127,7 +79,7 @@ def _get_cached_file(webpage_url: str) -> str | None:
         stat = path.stat()
     except OSError:
         return None
-    if stat.st_size > 0 and time.time() - stat.st_mtime < 28 * 24 * 3600:
+    if stat.st_size > 0:
         return str(path)
     return None
 
@@ -136,23 +88,14 @@ async def _download_to_cache(bot, webpage_url: str, title: str = ""):
     """Download best audio and convert to M4A for the Activity cache."""
     cache_path = _get_cache_path(webpage_url)
     try:
-        st = cache_path.stat()
-        # Reuse only a complete, non-stale file; otherwise re-download.
-        if st.st_size > 0 and time.time() - st.st_mtime < config.AUDIO_CACHE_MAX_AGE_HOURS * 3600:
+        # Reuse any complete file; the cache persists indefinitely.
+        if cache_path.stat().st_size > 0:
             return
-        if st.st_size > 0:
-            cache_path.unlink(missing_ok=True)
     except OSError:
         pass
     if webpage_url in _downloading:
         return
     _downloading.add(webpage_url)
-
-    # Keep the Activity cache bounded before pulling another file.
-    try:
-        await asyncio.get_running_loop().run_in_executor(bot.executor, _evict_activity_cache)
-    except Exception:
-        pass
 
     opts = {
         **_activity_ytdl_opts,
