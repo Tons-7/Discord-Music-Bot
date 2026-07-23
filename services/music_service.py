@@ -207,6 +207,7 @@ class MusicService:
                         "url": None,
                         "title": entry.get("title", f"Song {i + 1}"),
                         "duration": entry.get("duration", 0),
+                        "album": entry.get("album", ""),
                         "thumbnail": entry.get("thumbnail") or f"https://i.ytimg.com/vi/{entry['id']}/maxresdefault.jpg",
                         "uploader": entry.get("uploader", "Unknown"),
                         "webpage_url": f"https://www.youtube.com/watch?v={entry['id']}",
