@@ -1,7 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 import type { DiscordSDK } from "@discord/embedded-app-sdk";
+
+type ActivityPayload = NonNullable<
+  Parameters<DiscordSDK["commands"]["setActivity"]>[0]["activity"]
+>;
 
 interface PresenceSong {
   webpage_url: string;
@@ -27,51 +31,57 @@ export function useRichPresence(
     url: null, paused: false, posAt: 0, sentAt: 0,
   });
 
-  useEffect(() => {
+  const update = useEffectEvent((force: boolean) => {
     if (!sdk) return;
 
     if (!song) {
       if (lastRef.current.url !== null) {
-        sdk.commands.setActivity({ activity: null as never }).catch(() => {});
+        sdk.commands.setActivity({ activity: null }).catch(() => {});
         lastRef.current = { url: null, paused: false, posAt: 0, sentAt: 0 };
       }
       return;
     }
 
-    const update = (force: boolean) => {
-      const last = lastRef.current;
-      const now = Date.now();
-      const position = getPosition();
-      const extrapolated = last.paused ? last.posAt : last.posAt + (now - last.sentAt) / 1000;
-      const posJumped = Math.abs(extrapolated - position) > POSITION_JUMP_THRESHOLD;
-
-      if (!force && !posJumped) return;
-
-      const activity: Record<string, unknown> = {
-        type: 2, // Listening
-        details: song.title,
-        instance: true,
-      };
-      if (song.uploader) activity.state = song.uploader;
-
-      if (!song.is_live && !isPaused && song.duration > 0) {
-        const startSec = Math.floor(now / 1000) - Math.floor(position);
-        activity.timestamps = { start: startSec, end: startSec + Math.floor(song.duration) };
-      }
-
-      if (song.thumbnail) {
-        activity.assets = { large_image: song.thumbnail };
-      }
-
-      sdk.commands.setActivity({ activity: activity as never }).catch(() => {});
-      lastRef.current = { url: song.webpage_url, paused: isPaused, posAt: position, sentAt: now };
-    };
-
     const last = lastRef.current;
-    update(last.url !== song.webpage_url || last.paused !== isPaused);
+    const now = Date.now();
+    const position = getPosition();
+    const extrapolated = last.paused ? last.posAt : last.posAt + (now - last.sentAt) / 1000;
+    const posJumped = Math.abs(extrapolated - position) > POSITION_JUMP_THRESHOLD;
 
-    // Position is no longer React state, so seeks are detected by polling
+    if (!force && !posJumped) return;
+
+    const activity: ActivityPayload = {
+      type: 2, // Listening
+      details: song.title,
+      instance: true,
+    };
+    if (song.uploader) activity.state = song.uploader;
+
+    if (!song.is_live && !isPaused && song.duration > 0) {
+      const startSec = Math.floor(now / 1000) - Math.floor(position);
+      activity.timestamps = { start: startSec, end: startSec + Math.floor(song.duration) };
+    }
+
+    if (song.thumbnail) {
+      activity.assets = { large_image: song.thumbnail };
+    }
+
+    sdk.commands.setActivity({ activity }).catch(() => {});
+    lastRef.current = { url: song.webpage_url, paused: isPaused, posAt: position, sentAt: now };
+  });
+
+  // Refire on meaningful changes (song swap, pause/resume, clear on stop)
+  useEffect(() => {
+    if (!sdk) return;
+    const last = lastRef.current;
+    update(!song || last.url !== song.webpage_url || last.paused !== isPaused);
+  }, [sdk, song, isPaused]);
+
+  // Position is not React state, so seeks are detected by polling. The
+  // interval survives song/pause changes; update() reads the latest values.
+  useEffect(() => {
+    if (!sdk) return;
     const interval = setInterval(() => update(false), JUMP_CHECK_MS);
     return () => clearInterval(interval);
-  }, [sdk, song, isPaused, getPosition]);
+  }, [sdk]);
 }
