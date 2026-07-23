@@ -673,7 +673,6 @@ class MusicBot(commands.Bot):
             self.cleanup_inactive, self.cleanup_cache,
             self.cleanup_inactive_guilds, self.update_now_playing_timestamps,
             self.cleanup_validation_cache, self.check_voice_health,
-            self.cleanup_audio_cache,
         ]:
             if not task.is_running():
                 task.start()
@@ -956,10 +955,6 @@ class MusicBot(commands.Bot):
         except Exception as e:
             logger.error(f"Voice health check error: {e}")
 
-    @tasks.loop(hours=2)
-    async def cleanup_audio_cache(self):
-        await self.audio_cache.cleanup_cache()
-
     # Queue persistence
 
     async def load_persistent_queues(self):
@@ -1134,7 +1129,6 @@ class MusicBot(commands.Bot):
             self.update_now_playing_timestamps,
             self.cleanup_validation_cache,
             self.check_voice_health,
-            self.cleanup_audio_cache,
         ]:
             try:
                 task_method.cancel()
