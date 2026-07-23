@@ -10,6 +10,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragPendingEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -39,6 +40,8 @@ export default function QueuePanel() {
   const [localQueue, setLocalQueue] = useState<Song[] | null>(null);
   const [removedUrls, setRemovedUrls] = useState<Set<string>>(new Set());
   const [confirmClear, setConfirmClear] = useState(false);
+  // Row whose long-press drag is arming (touch delay constraint) — visual cue
+  const [armingUrl, setArmingUrl] = useState<string | null>(null);
   // dnd-kit fires a click on the drag's mouseup — suppress button actions after a drag
   const dragOccurred = useRef(false);
 
@@ -99,7 +102,14 @@ export default function QueuePanel() {
     } catch (e: any) { toast(e.message || "Failed", "error"); }
   };
 
-  const handleDragStart = () => { dragOccurred.current = true; };
+  // Only cue delay-based (long-press) arming — the MouseSensor's distance
+  // constraint would flash the cue on every click.
+  const handleDragPending = (event: DragPendingEvent) => {
+    if ("delay" in event.constraint) setArmingUrl(String(event.id));
+  };
+  const handleDragAbort = () => setArmingUrl(null);
+
+  const handleDragStart = () => { setArmingUrl(null); dragOccurred.current = true; };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     setTimeout(() => { dragOccurred.current = false; }, 100);
@@ -154,7 +164,7 @@ export default function QueuePanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 pb-3">
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragPending={handleDragPending} onDragAbort={handleDragAbort} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
           <SortableContext items={displayed.map(s => s.webpage_url)} strategy={verticalListSortingStrategy}>
             <div className="flex flex-col gap-1 mt-1">
               {displayed.map((song, i) => (
@@ -162,6 +172,7 @@ export default function QueuePanel() {
                   key={song.webpage_url}
                   song={song}
                   index={i}
+                  arming={armingUrl === song.webpage_url}
                   onSkipTo={() => handleSkipTo(song)}
                   onRemove={() => handleRemove(song)}
                 />
@@ -174,8 +185,8 @@ export default function QueuePanel() {
   );
 }
 
-function QueueRow({ song, index, onSkipTo, onRemove }: {
-  song: Song; index: number; onSkipTo: () => void; onRemove: () => void;
+function QueueRow({ song, index, arming, onSkipTo, onRemove }: {
+  song: Song; index: number; arming: boolean; onSkipTo: () => void; onRemove: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: song.webpage_url,
@@ -189,9 +200,11 @@ function QueueRow({ song, index, onSkipTo, onRemove }: {
       {...listeners}
       className={cn(
         "flex items-center gap-2.5 p-2 rounded-2xl bg-white/[0.02] border group cursor-grab active:cursor-grabbing",
-        "transition-[background-color,border-color,opacity] duration-150",
+        "transition-[background-color,border-color,opacity,transform] duration-150",
         isDragging
           ? "opacity-40 border-accent/40 z-10 relative"
+          : arming
+          ? "scale-[0.97] border-accent/40 bg-white/[0.05]"
           : "border-white/[0.04] hover:bg-white/[0.05] hover:border-white/[0.08]"
       )}
     >
