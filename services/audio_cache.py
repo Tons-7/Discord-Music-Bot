@@ -2,13 +2,12 @@ import asyncio
 import hashlib
 import logging
 import os
-import time
 from pathlib import Path
 from typing import Optional
 
 import yt_dlp
 
-from config import AUDIO_CACHE_DIR, AUDIO_CACHE_MAX_SIZE_MB, AUDIO_CACHE_MAX_AGE_HOURS
+from config import AUDIO_CACHE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +17,6 @@ class AudioCacheService:
         self.bot = bot
         self.cache_dir = Path(AUDIO_CACHE_DIR).resolve()
         self.cache_dir.mkdir(exist_ok=True)
-        self.max_size_bytes = AUDIO_CACHE_MAX_SIZE_MB * 1024 * 1024
-        self.max_age_seconds = AUDIO_CACHE_MAX_AGE_HOURS * 3600
         self._download_tasks: dict[str, asyncio.Task] = {}
         self._lock: Optional[asyncio.Lock] = None
 
@@ -35,9 +32,6 @@ class AudioCacheService:
     def get_cached_file(self, webpage_url: str) -> Optional[str]:
         path = self.get_cache_path(webpage_url)
         if os.path.exists(path) and os.path.getsize(path) > 0:
-            # Don't serve files past max age
-            if time.time() - os.path.getmtime(path) > self.max_age_seconds:
-                return None
             return path
         return None
 
@@ -115,52 +109,6 @@ class AudioCacheService:
                 logger.debug(f"Removed cached file: {path}")
         except OSError as e:
             logger.warning(f"Failed to remove cached file {path}: {e}")
-
-    async def cleanup_cache(self):
-        try:
-            now = time.time()
-            files = []
-            expired_removed = 0
-
-            for f in self.cache_dir.iterdir():
-                if f.is_file() and f.suffix == ".opus":
-                    stat = f.stat()
-                    # Delete files older than max age
-                    if now - stat.st_mtime > self.max_age_seconds:
-                        try:
-                            f.unlink()
-                            expired_removed += 1
-                        except OSError:
-                            pass
-                    else:
-                        files.append((f, stat.st_atime, stat.st_size))
-
-            if expired_removed:
-                logger.info(f"Audio cache cleanup: removed {expired_removed} expired files (>{AUDIO_CACHE_MAX_AGE_HOURS}h)")
-
-            # Size-based LRU eviction for remaining files
-            total_size = sum(size for _, _, size in files)
-            if total_size <= self.max_size_bytes:
-                return
-
-            files.sort(key=lambda x: x[1])
-
-            size_removed = 0
-            for file_path, _, size in files:
-                if total_size <= self.max_size_bytes:
-                    break
-                try:
-                    file_path.unlink()
-                    total_size -= size
-                    size_removed += 1
-                except OSError:
-                    pass
-
-            if size_removed:
-                logger.info(f"Audio cache size eviction: removed {size_removed} files, {total_size // (1024 * 1024)}MB remaining")
-
-        except Exception as e:
-            logger.error(f"Audio cache cleanup error: {e}")
 
     async def startup_cleanup(self):
         junk_extensions = {".part", ".temp", ".ytdl", ".webm", ".m4a", ".mp3", ".mp4", ".ogg"}
