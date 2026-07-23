@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from activity.dependencies import get_bot, guild_member
-from utils.lyrics import fetch_lyrics
+from utils.lyrics import LyricsServiceUnavailable, fetch_lyrics
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/guild/{guild_id}", tags=["lyrics"])
@@ -16,7 +16,12 @@ async def get_lyrics(guild_id: int, user=Depends(guild_member), bot=Depends(get_
     if not current:
         raise HTTPException(status_code=404, detail="Nothing is playing")
 
-    result = await fetch_lyrics(current.title, current.uploader)
+    try:
+        result = await fetch_lyrics(
+            current.title, current.uploader, current.duration, current.album
+        )
+    except LyricsServiceUnavailable:
+        raise HTTPException(status_code=503, detail="Lyrics service is temporarily unavailable")
     if not result:
         raise HTTPException(status_code=404, detail="Lyrics not found")
 
