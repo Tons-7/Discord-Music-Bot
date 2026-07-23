@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { useRef, useEffect, useEffectEvent, useState, useCallback, useMemo } from "react";
 import { apiFetch } from "@/lib/api";
-import type { ServerPosition } from "@/hooks/useWebSocket";
+import type { PositionSlice, ServerPosition } from "@/hooks/useWebSocket";
 
 interface AudioPlayerState {
   playing: boolean;
@@ -54,8 +54,6 @@ export function useAudioPlayer(
     playing: false, paused: false, ready: false, duration: 0, blocked: false,
   });
   const positionRef = useRef(0);
-  const readyRef = useRef(false);
-  readyRef.current = state.ready;
   const hasSyncedRef = useRef(false);
   const stoppingRef = useRef(false);
   const recoveringRef = useRef(false);
@@ -160,48 +158,54 @@ export function useAudioPlayer(
     hasSyncedRef.current = true;
   }, [state.ready, serverPos]);
 
-  // Server tick (subscription, no re-renders): follow remote pause/resume and
-  // snap only on gaps large enough to imply a remote seek, not playback drift.
+  // Server tick handler (Effect Event: reads the latest ready/url/tryPlay
+  // without making the subscription below re-subscribe on every song change):
+  // follow remote pause/resume and snap only on gaps large enough to imply a
+  // remote seek, not playback drift.
+  const onServerTick = useEffectEvent(({ position, is_paused }: PositionSlice) => {
+    const audio = audioRef.current;
+    if (!audio || !state.ready || stoppingRef.current) return;
+
+    // Pause/resume follow — must skip when the element has ended (onEnded
+    // hasn't flipped ready yet) or we'd restart the finished song.
+    if (!audio.ended) {
+      if (is_paused && !audio.paused) {
+        audio.pause();
+      } else if (!is_paused && audio.paused) {
+        tryPlay(audio);
+      }
+    }
+
+    // Drift correction
+    if (!currentWebpageUrl || recoveringRef.current || bufferingRef.current) return;
+    if (Date.now() - lastLocalSeekAtRef.current < 3000) return;
+    if (Math.abs(audio.currentTime - position) > 2.5) {
+      audio.currentTime = position;
+    }
+  });
+
   useEffect(() => {
     if (isConnected) return;
-    return serverPos.subscribe(({ position, is_paused }) => {
-      const audio = audioRef.current;
-      if (!audio || !readyRef.current || stoppingRef.current) return;
-
-      // Pause/resume follow — must skip when the element has ended (onEnded
-      // hasn't flipped ready yet) or we'd restart the finished song.
-      if (!audio.ended) {
-        if (is_paused && !audio.paused) {
-          audio.pause();
-        } else if (!is_paused && audio.paused) {
-          tryPlay(audio);
-        }
-      }
-
-      // Drift correction
-      if (!currentWebpageUrl || recoveringRef.current || bufferingRef.current) return;
-      if (Date.now() - lastLocalSeekAtRef.current < 3000) return;
-      if (Math.abs(audio.currentTime - position) > 2.5) {
-        audio.currentTime = position;
-      }
-    });
-  }, [serverPos, isConnected, currentWebpageUrl, tryPlay]);
+    return serverPos.subscribe((p) => onServerTick(p));
+  }, [serverPos, isConnected]);
 
   // Returning from background: timers/socket were suspended, re-sync now
+  const onVisible = useEffectEvent(() => {
+    if (document.visibilityState !== "visible" || isConnected) return;
+    const audio = audioRef.current;
+    if (!audio || !state.ready || stoppingRef.current || recoveringRef.current) return;
+    const { position, is_paused } = serverPos.ref.current;
+    if (!audio.ended && !is_paused && audio.paused) tryPlay(audio);
+    if (Math.abs(audio.currentTime - position) > 2.5) {
+      audio.currentTime = position;
+    }
+  });
+
   useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState !== "visible" || isConnected) return;
-      const audio = audioRef.current;
-      if (!audio || !readyRef.current || stoppingRef.current || recoveringRef.current) return;
-      const { position, is_paused } = serverPos.ref.current;
-      if (!audio.ended && !is_paused && audio.paused) tryPlay(audio);
-      if (Math.abs(audio.currentTime - position) > 2.5) {
-        audio.currentTime = position;
-      }
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [serverPos, isConnected, tryPlay]);
+    const handler = () => onVisible();
+    document.addEventListener("visibilitychange", handler);
+    return () => document.removeEventListener("visibilitychange", handler);
+  }, []);
 
   // Created lazily on first use of a Web Audio effect — once a
   // MediaElementSource exists the element's output is permanently routed
