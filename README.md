@@ -70,6 +70,7 @@ All configuration is done through environment variables in `.env`:
 | `SPOTIFY_CLIENT_SECRET` | No                       | Spotify API client secret                      |
 | `LASTFM_API_KEY`        | No                       | Last.fm API key (for autoplay)                 |
 | `LASTFM_API_SECRET`     | No                       | Last.fm API secret                             |
+| `LRCLIB_USER_AGENT`     | No                       | Identifiable client string for LRCLIB requests |
 | `DISCORD_CLIENT_ID`     | Activity only            | Discord application client ID                  |
 | `DISCORD_CLIENT_SECRET` | Activity only            | Discord application client secret              |
 | `ACTIVITY_PORT`         | No (default `8080`)      | Port the FastAPI/Activity server listens on    |
