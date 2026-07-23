@@ -1749,10 +1749,25 @@ class MusicCommands(commands.Cog):
 
         current = guild_data["current"]
 
-        from utils.lyrics import fetch_lyrics
-        result = await fetch_lyrics(current.title, current.uploader)
+        from utils.lyrics import LyricsServiceUnavailable, fetch_lyrics, strip_lrc_timestamps
+        try:
+            result = await fetch_lyrics(
+                current.title, current.uploader, current.duration, current.album
+            )
+        except LyricsServiceUnavailable:
+            embed = create_embed(
+                "Lyrics Service Unavailable",
+                "LRCLIB is temporarily unavailable. Please try again shortly.",
+                COLOR,
+                self.bot.user,
+            )
+            await interaction.followup.send(embed=embed)
+            return
 
-        if not result or not result.get("lyrics"):
+        lyrics_text = ""
+        if result:
+            lyrics_text = result.get("lyrics") or strip_lrc_timestamps(result.get("synced", ""))
+        if not lyrics_text:
             embed = create_embed(
                 "Lyrics Not Found",
                 f"Could not find lyrics for **{current.title}**",
@@ -1761,8 +1776,6 @@ class MusicCommands(commands.Cog):
             )
             await interaction.followup.send(embed=embed)
             return
-
-        lyrics_text = result["lyrics"]
         title = result.get("title", current.title)
         artist = result.get("artist", current.uploader)
 
