@@ -7,9 +7,17 @@ from typing import Optional, Dict
 
 import aiohttp
 
-from config import LYRICS_API_BASE
+from config import LRCLIB_USER_AGENT, LYRICS_API_BASE
 
 logger = logging.getLogger(__name__)
+
+
+class LyricsServiceUnavailable(RuntimeError):
+    """Raised when LRCLIB cannot serve a request."""
+
+
+class _TransientStatusError(LyricsServiceUnavailable):
+    """A 429/5xx on one request — other lookup steps may still succeed."""
 
 # --- Title / artist cleaning patterns ---
 
@@ -133,21 +141,53 @@ def _first_match(results: list, search_title: str) -> Optional[dict]:
 
 # --- Main fetch logic ---
 
-async def _search(session: aiohttp.ClientSession, query: str, title_hint: str) -> Optional[dict]:
-    """Run a keyword search against lrclib and return the first relevant hit."""
-    async with session.get(f"{LYRICS_API_BASE}/search", params={"q": query}) as resp:
-        if resp.status == 200:
-            return _first_match(await resp.json(), title_hint)
-    return None
+async def _get_json(
+    session: aiohttp.ClientSession, endpoint: str, params: dict
+) -> Optional[dict | list]:
+    """Request LRCLIB JSON while preserving unavailable-service failures."""
+    try:
+        async with session.get(f"{LYRICS_API_BASE}{endpoint}", params=params) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            if resp.status in {429, 500, 502, 503, 504}:
+                raise _TransientStatusError(f"LRCLIB returned HTTP {resp.status}")
+            logger.debug("LRCLIB %s returned HTTP %s", endpoint, resp.status)
+            return None
+    except asyncio.TimeoutError as exc:
+        raise LyricsServiceUnavailable("LRCLIB request timed out") from exc
+    except aiohttp.ClientError as exc:
+        raise LyricsServiceUnavailable("LRCLIB connection failed") from exc
 
 
-async def fetch_lyrics(title: str, uploader: str = "") -> Optional[Dict]:
+async def _search(
+    session: aiohttp.ClientSession,
+    title: str,
+    artist: str = "",
+    album: str = "",
+) -> Optional[dict]:
+    """Search LRCLIB with its structured title, artist, and album fields."""
+    params = {"track_name": title}
+    if artist:
+        params["artist_name"] = artist
+    if album:
+        params["album_name"] = album
+
+    data = await _get_json(session, "/search", params)
+    return _first_match(data, title) if isinstance(data, list) else None
+
+
+async def fetch_lyrics(
+    title: str,
+    uploader: str = "",
+    duration: float = 0,
+    album: str = "",
+) -> Optional[Dict]:
     """Fetch lyrics from lrclib.net.
 
-    Tries progressively looser searches:
-      1. Exact /get by track and artist
-      2. Keyword search: cleaned title and artist
-      3. Keyword search: cleaned title only
+    Uses LRCLIB's required client identifier and tries progressively looser searches:
+      1. Exact /get only when title, artist, album, and duration are known
+      2. Structured search: cleaned title and artist
+      3. Structured title-only search
       4. Swapped search: uploader as artist and left-of-dash as title
          (handles "SongTitle - description" where uploader is the real artist)
       5. Aggressive fallback: strip parenthesized content and retry
@@ -157,32 +197,51 @@ async def fetch_lyrics(title: str, uploader: str = "") -> Optional[Dict]:
     parsed_artist, parsed_title = _split_artist_title(title, uploader)
     clean_t = _clean_title(parsed_title)
     clean_a = parsed_artist or _clean_artist(uploader)
+    clean_album = (album or "").strip()
+    try:
+        numeric_duration = float(duration)
+    except (TypeError, ValueError):
+        numeric_duration = 0
+    valid_duration = numeric_duration if 1 <= numeric_duration <= 3600 else 0
 
     logger.debug(f"Lyrics search: title='{clean_t}', artist='{clean_a}' "
                  f"(raw='{title}', uploader='{uploader}')")
 
     timeout = aiohttp.ClientTimeout(total=10)
+    headers = {"Accept": "application/json", "User-Agent": LRCLIB_USER_AGENT}
+
+    transient_errors: list[LyricsServiceUnavailable] = []
+
+    async def attempt(coro):
+        """Run one lookup step; a transient LRCLIB status skips to the next step."""
+        try:
+            return await coro
+        except _TransientStatusError as exc:
+            transient_errors.append(exc)
+            return None
 
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            # 1) Exact match by track + artist
-            if clean_a:
-                params = {"track_name": clean_t, "artist_name": clean_a}
-                async with session.get(f"{LYRICS_API_BASE}/get", params=params) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if _has_lyrics(data):
-                            return _format(data, clean_t, clean_a)
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            # LRCLIB requires all four fields for an exact metadata lookup.
+            if clean_a and clean_album and valid_duration:
+                params = {
+                    "track_name": clean_t,
+                    "artist_name": clean_a,
+                    "album_name": clean_album,
+                    "duration": int(valid_duration),
+                }
+                data = await attempt(_get_json(session, "/get", params))
+                if isinstance(data, dict) and _has_lyrics(data):
+                    return _format(data, clean_t, clean_a)
 
-            # 2) Keyword search: title + artist
-            query = f"{clean_t} {clean_a}".strip()
-            hit = await _search(session, query, clean_t)
+            # 2) Structured search: title + artist
+            hit = await attempt(_search(session, clean_t, clean_a, clean_album))
             if hit:
                 return _format(hit, clean_t, clean_a)
 
             # 3) Title-only search (covers channels, game OSTs, etc.)
-            if clean_a and clean_t != query:
-                hit = await _search(session, clean_t, clean_t)
+            if clean_a:
+                hit = await attempt(_search(session, clean_t))
                 if hit:
                     return _format(hit, clean_t, clean_a)
 
@@ -192,23 +251,37 @@ async def fetch_lyrics(title: str, uploader: str = "") -> Optional[Dict]:
             uploader_artist = _clean_artist(uploader) if uploader else ""
             if uploader_artist and parsed_artist and not _name_match(uploader_artist, clean_a):
                 alt_t = _clean_title(parsed_artist)
-                hit = await _search(session, f"{alt_t} {uploader_artist}", alt_t)
+                hit = await attempt(_search(session, alt_t, uploader_artist, clean_album))
                 if hit:
                     return _format(hit, alt_t, uploader_artist)
 
             # 5) Aggressively strip ALL parenthesized/bracketed content and retry
             bare_t = _ALL_PARENS.sub('', clean_t).strip()
             if bare_t and bare_t != clean_t:
-                hit = await _search(session, f"{bare_t} {clean_a}".strip(), bare_t)
+                hit = await attempt(_search(session, bare_t, clean_a, clean_album))
                 if hit:
                     return _format(hit, clean_t, clean_a)
 
-    except asyncio.TimeoutError:
-        logger.debug("Lyrics request timed out")
-    except Exception as e:
-        logger.warning(f"Lyrics fetch failed: {e}")
+    except LyricsServiceUnavailable:
+        raise
+    except Exception as exc:
+        logger.warning("Lyrics fetch failed: %s", exc)
+
+    # Nothing found and at least one step failed on a transient LRCLIB status:
+    # surface the outage instead of a misleading "not found".
+    if transient_errors:
+        raise transient_errors[0]
 
     return None
+
+
+_LRC_TIMESTAMP = re.compile(r'\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\]\s*')
+
+
+def strip_lrc_timestamps(synced: str) -> str:
+    """Convert synced LRC text to plain lyrics by removing timestamp tags."""
+    lines = [_LRC_TIMESTAMP.sub('', line).rstrip() for line in synced.splitlines()]
+    return "\n".join(lines).strip()
 
 
 def _format(data: dict, fallback_title: str, fallback_artist: str) -> Dict:
