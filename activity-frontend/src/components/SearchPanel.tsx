@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useOptimistic, startTransition } from "react";
 import { useGuildState } from "./GuildStateProvider";
 import { apiFetch } from "@/lib/api";
 import { maybeAutoPlay } from "@/lib/queueActions";
@@ -12,6 +12,8 @@ import { SongRowSkeleton } from "./ui/Skeleton";
 import { SearchIcon } from "./ui/icons";
 import type { SearchResult } from "@/types";
 
+const EMPTY_PENDING: ReadonlySet<string> = new Set();
+
 export default function SearchPanel() {
   const { guildId, state } = useGuildState();
   const [query, setQuery] = useState("");
@@ -19,7 +21,12 @@ export default function SearchPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [addedSet, setAddedSet] = useState<Set<string>>(new Set());
-  const [pendingSet, setPendingSet] = useState<Set<string>>(new Set());
+  // Keys with an in-flight add. useOptimistic reverts each key automatically
+  // when its transition settles (success or failure) — no manual rollback.
+  const [pendingSet, addPending] = useOptimistic(
+    EMPTY_PENDING,
+    (current, key: string) => new Set(current).add(key),
+  );
   // Set when the last successful search was a URL — enables the "Add all" path
   // that ships the URL straight to /queue/add (backend expands the playlist).
   const [playlistUrl, setPlaylistUrl] = useState<string | null>(null);
@@ -90,37 +97,38 @@ export default function SearchPanel() {
     }
   };
 
-  const handleAdd = async (result: SearchResult) => {
+  const handleAdd = (result: SearchResult) => {
     const key = result.webpage_url || result.url;
     if (addedSet.has(key) || pendingSet.has(key)) return;
 
-    setPendingSet(prev => new Set(prev).add(key));
-    try {
-      const res = await apiFetch<{ ok: boolean; added: number; duplicate?: boolean; title?: string; position?: number; playing?: boolean; auto_play?: boolean }>(
-        `/api/guild/${guildId}/queue/add`,
-        { method: "POST", body: JSON.stringify({ query: result.webpage_url || result.url }) },
-      );
-      setPendingSet(prev => { const n = new Set(prev); n.delete(key); return n; });
+    startTransition(async () => {
+      addPending(key);
+      try {
+        const res = await apiFetch<{ ok: boolean; added: number; duplicate?: boolean; title?: string; position?: number; playing?: boolean; auto_play?: boolean }>(
+          `/api/guild/${guildId}/queue/add`,
+          { method: "POST", body: JSON.stringify({ query: result.webpage_url || result.url }) },
+        );
 
-      if (res.duplicate) {
-        const msg = res.playing
-          ? `"${result.title}" is currently playing`
-          : res.position
-          ? `"${result.title}" is already in queue (#${res.position})`
-          : `"${result.title}" is already in queue`;
-        toast(msg, "error");
-        return;
+        if (res.duplicate) {
+          const msg = res.playing
+            ? `"${result.title}" is currently playing`
+            : res.position
+            ? `"${result.title}" is already in queue (#${res.position})`
+            : `"${result.title}" is already in queue`;
+          toast(msg, "error");
+          return;
+        }
+
+        // If nothing was playing, start playback of the just-added song
+        maybeAutoPlay(guildId, res, !!state.current);
+
+        setAddedSet(prev => new Set(prev).add(key));
+        toast(`Added "${result.title}"`, "success");
+        setTimeout(() => setAddedSet(prev => { const n = new Set(prev); n.delete(key); return n; }), 2500);
+      } catch {
+        // pending state reverts automatically when the transition settles
       }
-
-      // If nothing was playing, start playback of the just-added song
-      maybeAutoPlay(guildId, res, !!state.current);
-
-      setAddedSet(prev => new Set(prev).add(key));
-      toast(`Added "${result.title}"`, "success");
-      setTimeout(() => setAddedSet(prev => { const n = new Set(prev); n.delete(key); return n; }), 2500);
-    } catch {
-      setPendingSet(prev => { const n = new Set(prev); n.delete(key); return n; });
-    }
+    });
   };
 
   return (
