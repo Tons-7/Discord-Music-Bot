@@ -15,7 +15,11 @@ export PYTHONUNBUFFERED=1
 
 mkdir -p "$BIN_DIR" "$CACHE_DIR"
 
-PY=$(command -v python3 || command -v python)
+PY=$(command -v python3 || command -v python || true)
+if [ -z "$PY" ]; then
+    echo "[bootstrap] no python on PATH — is this a Python egg?" >&2
+    exit 1
+fi
 
 # fetch <url> <dest> <member> [<dest> <member> ...] — pull one or more binaries
 # out of a remote archive in a single download. Uses only the stdlib: curl, unzip
@@ -51,7 +55,7 @@ PYEOF
 FF_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
 
 if [ ! -x "$BIN_DIR/ffmpeg" ] || [ ! -x "$BIN_DIR/ffprobe" ]; then
-    fetch "$FF_URL" "$BIN_DIR/ffmpeg" "/bin/ffmpeg" "$BIN_DIR/ffprobe" "/bin/ffprobe"
+    fetch "$FF_URL" "$BIN_DIR/ffmpeg" "bin/ffmpeg" "$BIN_DIR/ffprobe" "bin/ffprobe"
 fi
 
 if [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ] && [ ! -x "$BIN_DIR/cloudflared" ]; then
@@ -87,7 +91,7 @@ fi
 # Bind FastAPI to the port the panel allocated.
 export ACTIVITY_PORT="${SERVER_PORT:-${ACTIVITY_PORT:-8080}}"
 
-ffmpeg -version | head -n 1
+ffmpeg -version 2>&1 | head -n 1 || true
 
 if [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
     echo "[bootstrap] starting cloudflared -> localhost:$ACTIVITY_PORT"
