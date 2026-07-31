@@ -15,22 +15,24 @@ wheels only through cp313, so on 3.14 pip would try to compile it from source an
 
 ## 2. Upload the code
 
-Via SFTP into `/home/container`, or from the console:
+From the server console:
 
 ```bash
 git clone https://github.com/Tons-7/Discord-Music-Bot.git .
 ```
 
-The Next.js build (`activity-frontend/out/`) is gitignored, so it won't come along.
-**Build it locally and upload `out/` by SFTP** to `activity-frontend/out` — it's ~1.2 MB:
+`activity-frontend/out/` is committed to the repo specifically so this works — a Python
+egg has no Node, and the Next build peaks well over 1 GB anyway, so it can't be built
+on the host. **After any UI change you must rebuild and commit it**, or the host keeps
+serving the old bundle:
 
 ```bash
 cd activity-frontend && npm run build
+git add activity-frontend/out && git commit -m "rebuild frontend"
 ```
 
-Don't try to `npm run build` on the host: the Next build peaks well over 1 GB and
-there's no Node in a Python egg anyway. If `out/` is missing the bot still runs fine,
-it just logs a warning and serves no Activity UI.
+If `out/` is ever missing the bot still runs fine — it logs a warning and serves no
+Activity UI.
 
 ## 3. Startup command
 
@@ -50,22 +52,27 @@ it's a thin wrapper that just calls `bootstrap.py`, so there's one implementatio
 
 ## 4. Environment
 
-Create `/home/container/.env` (SFTP or the file manager) with the usual keys from
-`.env.example` — `BOT_TOKEN`, optionally Spotify/Last.fm, and for the Activity:
+`.env` is gitignored, so create `/home/container/.env` yourself — easiest in the
+panel's **Files** page, which avoids putting secrets through SFTP or git. Use the keys
+from `.env.example`: `BOT_TOKEN`, optionally Spotify/Last.fm, plus `DISCORD_CLIENT_ID`
+/ `DISCORD_CLIENT_SECRET` and `CLOUDFLARE_TUNNEL_TOKEN` for the Activity and tunnel.
 
-```
-DISCORD_CLIENT_ID=
-DISCORD_CLIENT_SECRET=
-ACTIVITY_SECRET=<random hex; without it sessions die on every restart>
-CLOUDFLARE_TUNNEL_TOKEN=
-```
+`ACTIVITY_SECRET` is generated for you on first boot and appended to `.env`, so you
+don't need to set it. It signs Activity session tokens; without a stable value, every
+restart invalidates outstanding sessions. (`session.py` would otherwise fall back to
+`DISCORD_CLIENT_SECRET`, which works but reuses an OAuth secret as a signing key.)
 
-Do **not** set `ACTIVITY_PORT` — `start.sh` binds it to `$SERVER_PORT`, the port the
+The bootstrap parses `.env` itself before `main.py` gets a chance to — otherwise
+`CLOUDFLARE_TUNNEL_TOKEN` would be invisible at the point where it decides whether to
+start the tunnel, and the tunnel would silently never come up. Real environment
+variables set in the panel take precedence over `.env`, matching `load_dotenv()`.
+
+Do **not** set `ACTIVITY_PORT` — the bootstrap binds it to `$SERVER_PORT`, the port the
 panel allocated. Your cloudflared tunnel's public hostname should point at
 `http://localhost:$SERVER_PORT`, so check the allocation in the panel and update the
 tunnel's ingress rule in the Cloudflare Zero Trust dashboard to match.
 
-Optional knobs read by `start.sh`:
+Optional knobs (read from the environment or `.env`):
 
 | Var | Default | Effect |
 |---|---|---|
@@ -111,7 +118,7 @@ periodically from the console (`rm -rf audio_cache/activity/*`) or add a size ca
 
 ## Why cloudflared runs in-process
 
-The panel runs one command, so `start.sh` backgrounds cloudflared and then `exec`s
-Python. `exec` matters: it makes the bot PID 1's direct child so the panel's Stop
-button delivers SIGTERM to the bot, not to a wrapper shell. cloudflared dies with the
-container.
+The panel runs one command, so `bootstrap.py` backgrounds cloudflared and then `exec`s
+Python. `exec` matters: the bot takes over the bootstrap's own PID, so the panel's Stop
+button delivers SIGTERM to the bot rather than to a supervising wrapper that would have
+to forward it. cloudflared dies with the container.
