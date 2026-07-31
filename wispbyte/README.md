@@ -2,8 +2,8 @@
 
 Wispbyte gives you one unprivileged container with a writable `/home/container`, a
 single startup command, SFTP, and a console. You can't run `docker compose`, and you
-can't `apt install ffmpeg` — so `start.sh` fetches static builds of ffmpeg, cloudflared
-and deno into `./bin` on first boot and puts that directory on `PATH`.
+can't `apt install ffmpeg` — so `bootstrap.py` fetches static builds of ffmpeg,
+cloudflared and deno into `./bin` on first boot and puts that directory on `PATH`.
 
 Everything else — voice, the FastAPI Activity server, the tunnel — runs unchanged.
 
