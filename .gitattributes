@@ -1,3 +1,7 @@
 # core.autocrlf=true would hand the Linux host a CRLF start.sh, which bash
 # rejects with "\r: command not found". Keep shell scripts LF everywhere.
 *.sh text eol=lf
+
+# The committed Next.js export must ship byte-identical to what was built —
+# autocrlf would otherwise rewrite line endings in the JS/CSS chunks.
+activity-frontend/out/** -text

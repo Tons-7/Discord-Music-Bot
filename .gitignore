@@ -21,4 +21,7 @@ audio_cache
 # Activity frontend build artifacts
 activity-frontend/node_modules/
 activity-frontend/.next/
-activity-frontend/out/
+
+# out/ is deliberately committed: the Wispbyte host is a Python egg with no Node,
+# and the Next build needs more RAM than the box has. Rebuild and commit it after
+# any UI change or the host keeps serving the old bundle. See wispbyte/README.md.
