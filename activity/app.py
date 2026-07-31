@@ -98,8 +98,7 @@ async def lifespan(app: FastAPI):
 
     # Stop Activity-driven playback when last user closes the Activity
     async def on_last_disconnect(guild_id: int, last_user_ids: set[int] | None = None):
-        # Small delay to handle quick reconnects (user refreshing the Activity)
-        await asyncio.sleep(2)
+        await asyncio.sleep(20)
 
         # If someone reconnected during the delay, abort cleanup
         if ws_manager.has_connections(guild_id):
