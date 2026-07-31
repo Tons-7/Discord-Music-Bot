@@ -1,0 +1,3 @@
+# core.autocrlf=true would hand the Linux host a CRLF start.sh, which bash
+# rejects with "\r: command not found". Keep shell scripts LF everywhere.
+*.sh text eol=lf
