@@ -34,14 +34,19 @@ it just logs a warning and serves no Activity UI.
 
 ## 3. Startup command
 
-In the panel, set the startup command to:
+Python eggs almost always hardcode their startup to `python <file>` and only let you
+choose the file. So point that variable — usually labelled "Python File", "App
+File", `PY_FILE` or similar — at:
 
 ```
-bash wispbyte/start.sh
+wispbyte/bootstrap.py
 ```
 
-If the egg locks the startup command, set it to run `main.py` and instead put the
-bootstrap in a `.py` shim, or just run `bash wispbyte/start.sh` once from the console.
+Do **not** point it at `main.py`: the bootstrap has to run first to install ffmpeg and
+the dependencies, and it `exec`s `main.py` itself when it's done.
+
+If your egg does let you set a full shell command, `bash wispbyte/start.sh` works too —
+it's a thin wrapper that just calls `bootstrap.py`, so there's one implementation.
 
 ## 4. Environment
 
@@ -69,10 +74,16 @@ Optional knobs read by `start.sh`:
 
 ## 5. First boot
 
-Expect several minutes. First boot downloads ~200 MB (the ffmpeg tarball alone is
-127 MB) and unpacks to roughly 450 MB on disk — BtbN's build is a full GPL monolith,
-so `ffmpeg` and `ffprobe` are ~146 MB each, plus deno at ~110 MB. Irrelevant against
-10 GB, but it's why the first start is slow. Then `pip install` runs.
+Expect several minutes. First boot downloads ~170 MB (the ffmpeg tarball alone is
+127 MB). Measured on a test run: `bin/` lands at 279 MB with ffmpeg + ffprobe, ~390 MB
+once deno is added — BtbN's build is a full GPL monolith, so the two binaries are
+~146 MB each. Irrelevant against 10 GB, but it's why the first start is slow. Then
+`pip install` runs.
+
+`pip` flags vary by image — unprivileged containers can't write to a root-owned
+site-packages, and Debian-based images refuse `--user` under PEP 668. The bootstrap
+tries `--user`, then `--break-system-packages`, then a plain install, and logs which
+one worked (`[bootstrap] pip flags: ...`).
 
 Subsequent boots skip both (deps reinstall only when `requirements.txt`'s hash
 changes). Watch for `ffmpeg version ...` then `[bootstrap] starting bot on port ...`.
