@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -196,6 +197,41 @@ def check_frontend():
             "it cannot be built here (no Node, and the build needs >1GB RAM).")
 
 
+def start_tunnel(port):
+    """Launch cloudflared, and be loud about every way it can fail to launch.
+
+    Every branch here logs. A silent skip is indistinguishable from a working
+    tunnel until you go looking for the Activity and find nothing serving it.
+    """
+    token = os.getenv("CLOUDFLARE_TUNNEL_TOKEN")
+    if not token:
+        log("NO TUNNEL: CLOUDFLARE_TUNNEL_TOKEN is not set in the environment "
+            "or .env, so cloudflared was neither downloaded nor started. "
+            "The Activity will not be reachable from Discord.")
+        return
+
+    exe = BIN_DIR / "cloudflared"
+    if not os.access(exe, os.X_OK):
+        log("NO TUNNEL: token is set but %s is missing. Restart the server — "
+            "it is fetched on boot once the token is visible." % exe)
+        return
+
+    log("starting cloudflared -> localhost:%s" % port)
+    proc = subprocess.Popen([
+        str(exe), "tunnel", "--no-autoupdate", "run", "--token", token,
+    ])
+
+    # A rejected token kills cloudflared within a second or two. Catch that now
+    # rather than exec'ing away and leaving it looking like a silent success.
+    time.sleep(3)
+    rc = proc.poll()
+    if rc is None:
+        log("cloudflared is up (pid %d)" % proc.pid)
+    else:
+        log("TUNNEL FAILED: cloudflared exited with code %s — check the token "
+            "and the cloudflared output above." % rc)
+
+
 def main():
     os.chdir(ROOT)
     BIN_DIR.mkdir(parents=True, exist_ok=True)
@@ -221,12 +257,7 @@ def main():
     except Exception as e:
         log("ffmpeg check failed: %s" % e)
 
-    if os.getenv("CLOUDFLARE_TUNNEL_TOKEN"):
-        log("starting cloudflared -> localhost:%s" % port)
-        subprocess.Popen([
-            str(BIN_DIR / "cloudflared"), "tunnel", "--no-autoupdate",
-            "run", "--token", os.environ["CLOUDFLARE_TUNNEL_TOKEN"],
-        ])
+    start_tunnel(port)
 
     log("starting bot on port %s" % port)
     # exec, not Popen: the bot takes over this PID so the panel's Stop button
