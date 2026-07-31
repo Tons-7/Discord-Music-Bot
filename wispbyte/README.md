@@ -69,9 +69,16 @@ Optional knobs read by `start.sh`:
 
 ## 5. First boot
 
-Expect 2–5 minutes: ~110 MB of binaries plus `pip install`. Subsequent boots skip both
-(deps reinstall only when `requirements.txt`'s hash changes). Watch for
-`ffmpeg version ...` then `[bootstrap] starting bot on port ...` in the console.
+Expect several minutes. First boot downloads ~200 MB (the ffmpeg tarball alone is
+127 MB) and unpacks to roughly 450 MB on disk — BtbN's build is a full GPL monolith,
+so `ffmpeg` and `ffprobe` are ~146 MB each, plus deno at ~110 MB. Irrelevant against
+10 GB, but it's why the first start is slow. Then `pip install` runs.
+
+Subsequent boots skip both (deps reinstall only when `requirements.txt`'s hash
+changes). Watch for `ffmpeg version ...` then `[bootstrap] starting bot on port ...`.
+
+Binary size doesn't cost RAM — ELF pages are demand-loaded, so a transcoding ffmpeg
+is ~40 MB resident regardless.
 
 ## Living within 1 GB of RAM
 
