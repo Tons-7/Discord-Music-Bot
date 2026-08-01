@@ -24,7 +24,27 @@ import time
 from pathlib import Path
 
 MUSIC_DIR = Path(os.getenv("MUSIC_BOT_DIR") or Path(__file__).resolve().parents[1])
-GAMES_DIR = Path(os.getenv("GAME_TRACKER_DIR") or MUSIC_DIR.parent / "game-tracker")
+
+
+def _default_games_dir():
+    """Support both layouts without any configuration.
+
+    Nested (game-tracker inside this repo's directory) is checked first because
+    it needs no file moving: the panel console is stdin to the running process,
+    not a shell, so rearranging /home/container means SFTP and manual drudgery.
+    Leaving the music bot at the container root and dropping the tracker inside
+    it avoids that entirely. Sibling layout still works if you did move things.
+    """
+    nested = MUSIC_DIR / "game-tracker"
+    if nested.is_dir():
+        return nested
+    sibling = MUSIC_DIR.parent / "game-tracker"
+    if sibling.is_dir():
+        return sibling
+    return nested  # neither exists yet; report the one to create
+
+
+GAMES_DIR = Path(os.getenv("GAME_TRACKER_DIR") or _default_games_dir())
 
 # name -> (working directory, argv). The music bot goes through bootstrap.py so
 # it still gets ffmpeg, cloudflared and the tunnel; bootstrap execs main.py in
