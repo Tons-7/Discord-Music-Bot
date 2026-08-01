@@ -49,6 +49,43 @@ def log(msg):
     print("[run] %s" % msg, flush=True)
 
 
+def git_pull(name):
+    """Update a checkout before starting it.
+
+    The egg's own AUTO_UPDATE only pulls /home/container, which stops being a
+    checkout once both bots live in subfolders — so without this there is no
+    way to deploy an update except by hand. Set AUTO_UPDATE=0 to skip.
+
+    --ff-only on purpose: if a checkout has diverged or has local edits, say so
+    and start the old code rather than silently building a merge commit on a
+    server nobody is watching.
+    """
+    cwd = BOTS[name][0]
+    if not (cwd / ".git").is_dir():
+        log("%s: not a git checkout, skipping pull" % name)
+        return
+    try:
+        r = subprocess.run(
+            ["git", "pull", "--ff-only"], cwd=str(cwd),
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception as e:
+        log("%s: git pull failed (%s) — starting existing code" % (name, e))
+        return
+
+    # Prefer stdout ("Already up to date." / "Fast-forward") over stderr, which
+    # ends on a ref-range line that says nothing about what actually happened.
+    def last_line(text):
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return lines[-1] if lines else ""
+
+    if r.returncode == 0:
+        log("%s: %s" % (name, last_line(r.stdout) or last_line(r.stderr) or "pulled"))
+    else:
+        log("%s: git pull FAILED — %s — starting existing code"
+            % (name, last_line(r.stderr) or last_line(r.stdout) or r.returncode))
+
+
 def spawn(name):
     cwd, argv = BOTS[name]
     if not cwd.is_dir():
@@ -80,6 +117,13 @@ def main():
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+
+    # Pull once at boot, not on every restart — a crash-looping bot should not
+    # hammer the remote, and the code it crashed on is the code to debug.
+    if os.getenv("AUTO_UPDATE", "1") != "0":
+        for name in BOTS:
+            if BOTS[name][0].is_dir():
+                git_pull(name)
 
     for name in BOTS:
         _procs[name] = spawn(name)
