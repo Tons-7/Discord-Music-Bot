@@ -84,10 +84,12 @@ def git_pull(name):
     if not (cwd / ".git").is_dir():
         log("%s: not a git checkout, skipping pull" % name)
         return
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
     try:
         r = subprocess.run(
             ["git", "pull", "--ff-only"], cwd=str(cwd),
             capture_output=True, text=True, timeout=120,
+            stdin=subprocess.DEVNULL, env=env,
         )
     except Exception as e:
         log("%s: git pull failed (%s) — starting existing code" % (name, e))
