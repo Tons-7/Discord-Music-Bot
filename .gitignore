@@ -18,6 +18,10 @@ audio_cache
 
 .claude/
 
+# Second bot deployed alongside this one on the same host (see
+# wispbyte/run_both.py). It carries its own .git; never commit it into this one.
+game-tracker/
+
 # Activity frontend build artifacts
 activity-frontend/node_modules/
 activity-frontend/.next/
