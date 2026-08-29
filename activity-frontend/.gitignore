@@ -15,9 +15,8 @@
 
 # next.js
 /.next/
-# /out/ is deliberately tracked — the Wispbyte host is a Python egg with no Node
-# and not enough RAM to run the Next build, so the export ships in the repo.
-# Rebuild and commit after any UI change. See wispbyte/README.md.
+# /out/ is deliberately tracked so hosts without Node can serve the export.
+# Rebuild and commit after any UI change.
 
 # production
 /build
