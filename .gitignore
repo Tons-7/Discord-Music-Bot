@@ -18,14 +18,9 @@ audio_cache
 
 .claude/
 
-# Second bot deployed alongside this one on the same host (see
-# wispbyte/run_both.py). It carries its own .git; never commit it into this one.
-game-tracker/
-
 # Activity frontend build artifacts
 activity-frontend/node_modules/
 activity-frontend/.next/
 
-# out/ is deliberately committed: the Wispbyte host is a Python egg with no Node,
-# and the Next build needs more RAM than the box has. Rebuild and commit it after
-# any UI change or the host keeps serving the old bundle. See wispbyte/README.md.
+# out/ is deliberately committed so hosts without Node can serve the Activity
+# UI. Rebuild and commit it after any UI change or they keep the old bundle.
