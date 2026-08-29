@@ -85,9 +85,13 @@ def git_pull(name):
         log("%s: not a git checkout, skipping pull" % name)
         return
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    # The egg's installer clones as root but the server runs as an unprivileged
+    # uid, so the checkout is owned by someone else and git >= 2.35.2 refuses
+    # to touch it ("detected dubious ownership"). Whitelisting via -c keeps it
+    # per-invocation instead of depending on a writable ~/.gitconfig.
     try:
         r = subprocess.run(
-            ["git", "pull", "--ff-only"], cwd=str(cwd),
+            ["git", "-c", "safe.directory=*", "pull", "--ff-only"], cwd=str(cwd),
             capture_output=True, text=True, timeout=120,
             stdin=subprocess.DEVNULL, env=env,
         )
@@ -103,9 +107,16 @@ def git_pull(name):
 
     if r.returncode == 0:
         log("%s: %s" % (name, last_line(r.stdout) or last_line(r.stderr) or "pulled"))
-    else:
-        log("%s: git pull FAILED — %s — starting existing code"
-            % (name, last_line(r.stderr) or last_line(r.stdout) or r.returncode))
+        return
+
+    # Print everything git said: the real cause ("dubious ownership", "could
+    # not read Username", "Your local changes would be overwritten") is rarely
+    # the last line, and the boot log is the only place anyone will see it.
+    log("%s: git pull FAILED (exit %s) — starting existing code" % (name, r.returncode))
+    for text in (r.stderr, r.stdout):
+        for ln in text.splitlines():
+            if ln.strip():
+                log("%s:   %s" % (name, ln.rstrip()))
 
 
 def spawn(name):
