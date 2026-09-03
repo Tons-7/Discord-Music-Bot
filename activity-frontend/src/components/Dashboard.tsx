@@ -18,6 +18,7 @@ import FavoritesPanel from "./FavoritesPanel";
 import StatsPanel from "./StatsPanel";
 import PiPView from "./PiPView";
 import { useLayoutMode, LayoutMode } from "@/hooks/useLayoutMode";
+import { useLocalVolume } from "@/hooks/useLocalVolume";
 import { ProgressStrip, LiveTime } from "./ui/SeekBar";
 import { PlayIcon, PauseIcon, NoteIcon } from "./ui/icons";
 import { cn, proxyImg } from "@/lib/utils";
@@ -67,6 +68,7 @@ export default function Dashboard() {
   const { current } = state;
 
   const layoutMode = useLayoutMode();
+  const [userVolume, setUserVolume] = useLocalVolume();
 
   const audio = useAudioPlayer(
     guildId,
@@ -76,7 +78,7 @@ export default function Dashboard() {
     eventVersion,
     state.speed,
     state.audio_effect,
-    state.volume,
+    userVolume,
     state.is_connected,
   );
 
@@ -159,7 +161,7 @@ export default function Dashboard() {
         panelOpen && "max-sm:hidden"
       )}>
         <div className="flex-1 overflow-hidden">
-          <NowPlaying audio={audio} />
+          <NowPlaying audio={audio} volume={userVolume} onVolumeChange={setUserVolume} />
         </div>
       </div>
 

@@ -21,7 +21,9 @@ const AUDIO_EFFECTS: readonly [string, string][] = [
 ];
 const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
-export default function NowPlaying({ audio }: { audio: AudioPlayerHandle }) {
+export default function NowPlaying({ audio, volume, onVolumeChange }: {
+  audio: AudioPlayerHandle; volume: number; onVolumeChange: (v: number) => void;
+}) {
   const { state, guildId, sendCommand } = useGuildState();
   const serverPos = useServerPosition();
   const { toast } = useToast();
@@ -37,9 +39,13 @@ export default function NowPlaying({ audio }: { audio: AudioPlayerHandle }) {
   const isPaused = audio.ready ? !audio.playing : (current?.is_paused ?? true);
   const hasSong = !!current;
 
-  const [localVol, setLocalVol] = useState(state.volume);
+  // In a voice channel the bot plays one shared stream, so volume stays a
+  // server-wide command. Activity audio is per listener — keep it local.
+  const sharedVolume = state.is_connected;
+  const sourceVol = sharedVolume ? state.volume : volume;
+  const [localVol, setLocalVol] = useState(sourceVol);
   const [dragging, setDragging] = useState(false);
-  useEffect(() => { if (!dragging) setLocalVol(state.volume); }, [state.volume, dragging]);
+  useEffect(() => { if (!dragging) setLocalVol(sourceVol); }, [sourceVol, dragging]);
 
   const [expanded, setExpanded] = useState<"speed" | "fx" | "volume" | null>(null);
   const speedAnchorRef = useRef<HTMLButtonElement>(null);
@@ -78,9 +84,15 @@ export default function NowPlaying({ audio }: { audio: AudioPlayerHandle }) {
       .catch((e: any) => toast(e?.message || "Seek failed", "error"));
   }, [audio, sendCommand, totalDur, toast]);
 
+  const applyVolume = useCallback((v: number) => {
+    setLocalVol(v);
+    audio.setVolume(v);
+  }, [audio]);
+
   const commitVolume = useCallback((v: number) => {
-    sendCommand("volume", { level: v }).catch(() => {});
-  }, [sendCommand]);
+    if (sharedVolume) sendCommand("volume", { level: v }).catch(() => {});
+    else onVolumeChange(v);
+  }, [sharedVolume, sendCommand, onVolumeChange]);
 
   const thumb = useMemo(() => current?.thumbnail ? proxyImg(current.thumbnail) : null, [current?.thumbnail]);
 
@@ -221,11 +233,11 @@ export default function NowPlaying({ audio }: { audio: AudioPlayerHandle }) {
 
             {/* Volume */}
             <div className="flex items-center gap-1.5 justify-end @max-[42rem]:hidden">
-              <Btn label={localVol === 0 ? "Unmute" : "Mute"} onClick={() => { const v = state.volume === 0 ? 50 : 0; setLocalVol(v); commitVolume(v); audio.setVolume(v); }}>
+              <Btn label={localVol === 0 ? "Unmute" : "Mute"} onClick={() => { const v = localVol === 0 ? 50 : 0; applyVolume(v); commitVolume(v); }}>
                 <VolumeIcon muted={localVol === 0} />
               </Btn>
               <input type="range" min={0} max={100} value={localVol} aria-label="Volume"
-                onChange={(e) => { const v = Number(e.target.value); setDragging(true); setLocalVol(v); audio.setVolume(v); }}
+                onChange={(e) => { setDragging(true); applyVolume(Number(e.target.value)); }}
                 onMouseUp={() => { setDragging(false); commitVolume(localVol); }}
                 onTouchEnd={() => { setDragging(false); commitVolume(localVol); }}
                 className="w-16 h-0.5" />
@@ -245,7 +257,7 @@ export default function NowPlaying({ audio }: { audio: AudioPlayerHandle }) {
               <Popover open={expanded === "volume"} onClose={closeExpanded} anchorRef={volAnchorRef} className="px-3 py-2.5">
                 <input
                   type="range" min={0} max={100} value={localVol} aria-label="Volume"
-                  onChange={(e) => { const v = Number(e.target.value); setDragging(true); setLocalVol(v); audio.setVolume(v); }}
+                  onChange={(e) => { setDragging(true); applyVolume(Number(e.target.value)); }}
                   onPointerUp={() => { setDragging(false); commitVolume(localVol); }}
                   className="w-36"
                 />
