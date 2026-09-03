@@ -6,7 +6,7 @@ from typing import List
 import discord
 from discord.ext import commands
 
-from config import COLOR, MAX_PLAYLIST_SIZE, SONGS_PER_PAGE
+from config import COLOR, MAX_PLAYLIST_SIZE, PLAYLIST_PERMISSION_RANK, SONGS_PER_PAGE
 from models.song import Song
 from utils.helpers import get_existing_urls, interaction_check, create_embed, create_v2_embed
 from views.pagination import PaginationView
@@ -121,6 +121,7 @@ class PlaylistCommands(commands.Cog):
     async def _get_collab_playlist_songs(
             self, interaction: discord.Interaction, name: str,
             *, use_followup: bool, global_mode: bool = False, collab_only: bool = False,
+            need: str = "edit",
     ) -> tuple[list[dict] | None, int | None, int | None]:
         """Like _get_playlist_songs but also checks collaborator access.
         If collab_only=True, skip ownership check — only find playlists where user is a collaborator.
@@ -150,6 +151,17 @@ class PlaylistCommands(commands.Cog):
             embed = create_embed("Error", f"{label} **{name}** not found", COLOR, self.bot.user)
             await send(embed=embed, ephemeral=True)
             return None, None, None
+
+        if owner_id != interaction.user.id:
+            level = await self.bot.get_collaborator_permission(pid, interaction.user.id, global_mode)
+            if PLAYLIST_PERMISSION_RANK.get(level or "", 0) < PLAYLIST_PERMISSION_RANK[need]:
+                embed = create_embed(
+                    "Error",
+                    f"You only have **{level or 'no'}** access to **{name}**",
+                    COLOR, self.bot.user,
+                )
+                await send(embed=embed, ephemeral=True)
+                return None, None, None
 
         try:
             songs_json = result[0][0]
@@ -300,7 +312,7 @@ class PlaylistCommands(commands.Cog):
         try:
             # Check owner or collaborator access
             existing_songs, owner_id, pid = await self._get_collab_playlist_songs(
-                interaction, name, use_followup=True, global_mode=global_mode, collab_only=collaborative
+                interaction, name, use_followup=True, global_mode=global_mode, need="append", collab_only=collaborative
             )
             if existing_songs is None:
                 return
@@ -479,7 +491,7 @@ class PlaylistCommands(commands.Cog):
 
         try:
             existing_songs, owner_id, pid = await self._get_collab_playlist_songs(
-                interaction, name, use_followup=True, global_mode=global_mode, collab_only=collaborative
+                interaction, name, use_followup=True, global_mode=global_mode, need="append", collab_only=collaborative
             )
             if existing_songs is None:
                 return
@@ -548,7 +560,7 @@ class PlaylistCommands(commands.Cog):
 
         try:
             existing_songs, owner_id, pid = await self._get_collab_playlist_songs(
-                interaction, name, use_followup=True, global_mode=global_mode, collab_only=collaborative
+                interaction, name, use_followup=True, global_mode=global_mode, need="append", collab_only=collaborative
             )
             if existing_songs is None:
                 return
@@ -640,7 +652,7 @@ class PlaylistCommands(commands.Cog):
 
         try:
             playlist_items, owner_id, pid = await self._get_collab_playlist_songs(
-                interaction, name, use_followup=False, global_mode=global_mode, collab_only=collaborative
+                interaction, name, use_followup=False, global_mode=global_mode, need="edit", collab_only=collaborative
             )
             if playlist_items is None:
                 return
@@ -693,7 +705,7 @@ class PlaylistCommands(commands.Cog):
 
         try:
             playlist_items, owner_id, pid = await self._get_collab_playlist_songs(
-                interaction, name, use_followup=False, global_mode=global_mode, collab_only=collaborative
+                interaction, name, use_followup=False, global_mode=global_mode, need="edit", collab_only=collaborative
             )
             if playlist_items is None:
                 return
@@ -756,7 +768,7 @@ class PlaylistCommands(commands.Cog):
 
         try:
             playlist_items, _, _ = await self._get_collab_playlist_songs(
-                interaction, name, use_followup=False, global_mode=global_mode, collab_only=collaborative
+                interaction, name, use_followup=False, global_mode=global_mode, need="view", collab_only=collaborative
             )
             if playlist_items is None:
                 return
@@ -848,7 +860,7 @@ class PlaylistCommands(commands.Cog):
 
         try:
             playlist_items, _, _ = await self._get_collab_playlist_songs(
-                interaction, name, use_followup=False, global_mode=global_mode, collab_only=collaborative
+                interaction, name, use_followup=False, global_mode=global_mode, need="view", collab_only=collaborative
             )
             if playlist_items is None:
                 return
@@ -951,7 +963,8 @@ class PlaylistCommands(commands.Cog):
     # Collab handler methods
 
     async def _handle_collab_add(
-            self, interaction: discord.Interaction, name: str, user: discord.Member, global_mode: bool = False
+            self, interaction: discord.Interaction, name: str, user: discord.Member,
+            global_mode: bool = False, permission: str = "edit"
     ):
         label = "Global playlist" if global_mode else "Playlist"
         guild_id = None if global_mode else interaction.guild.id
@@ -978,10 +991,10 @@ class PlaylistCommands(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        await self.bot.add_collaborator(pid, user.id, global_mode)
+        await self.bot.add_collaborator(pid, user.id, global_mode, permission)
         embed = create_embed(
             "Collaborator Added",
-            f"Added **{user.display_name}** as a collaborator on {label.lower()} **{name}**",
+            f"Added **{user.display_name}** to {label.lower()} **{name}** with `{permission}` access",
             COLOR, self.bot.user
         )
         await interaction.response.send_message(embed=embed, silent=True)
@@ -1024,17 +1037,17 @@ class PlaylistCommands(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        collab_ids = await self.bot.get_collaborators(pid, global_mode)
-        if not collab_ids:
+        collaborators = await self.bot.get_collaborators(pid, global_mode)
+        if not collaborators:
             view = create_v2_embed(f"{label}: {name}", "No collaborators", COLOR)
             await interaction.response.send_message(view=view, silent=True)
             return
 
         lines = []
-        for uid in collab_ids:
+        for uid, permission in collaborators:
             user = interaction.guild.get_member(uid) or self.bot.get_user(uid)
             display = user.display_name if user else f"User {uid}"
-            lines.append(f"- {display}")
+            lines.append(f"- {display} (`{permission}`)")
 
         view = create_v2_embed(
             f"Collaborators: {name}",
@@ -1162,9 +1175,16 @@ class PlaylistCommands(commands.Cog):
         await self._handle_delete(interaction, name)
 
     @playlist_group.command(name="collab-add", description="Add a collaborator to your playlist")
-    @discord.app_commands.describe(name="Playlist name", user="User to add as collaborator")
-    async def playlist_collab_add(self, interaction: discord.Interaction, name: str, user: discord.Member):
-        await self._handle_collab_add(interaction, name, user)
+    @discord.app_commands.describe(name="Playlist name", user="User to add as collaborator",
+                                   permission="What they may do (default: edit)")
+    @discord.app_commands.choices(permission=[
+        discord.app_commands.Choice(name="View — play it, no edits", value="view"),
+        discord.app_commands.Choice(name="Append — also add songs", value="append"),
+        discord.app_commands.Choice(name="Edit — also remove and reorder", value="edit"),
+    ])
+    async def playlist_collab_add(self, interaction: discord.Interaction, name: str, user: discord.Member,
+                                  permission: str = "edit"):
+        await self._handle_collab_add(interaction, name, user, permission=permission)
 
     @playlist_group.command(name="collab-remove", description="Remove a collaborator from your playlist")
     @discord.app_commands.describe(name="Playlist name", user="User to remove")
@@ -1263,9 +1283,16 @@ class PlaylistCommands(commands.Cog):
         await self._handle_delete(interaction, name, global_mode=True)
 
     @globalplaylist_group.command(name="collab-add", description="Add a collaborator to your global playlist")
-    @discord.app_commands.describe(name="Global playlist name", user="User to add as collaborator")
-    async def globalplaylist_collab_add(self, interaction: discord.Interaction, name: str, user: discord.Member):
-        await self._handle_collab_add(interaction, name, user, global_mode=True)
+    @discord.app_commands.describe(name="Global playlist name", user="User to add as collaborator",
+                                   permission="What they may do (default: edit)")
+    @discord.app_commands.choices(permission=[
+        discord.app_commands.Choice(name="View — play it, no edits", value="view"),
+        discord.app_commands.Choice(name="Append — also add songs", value="append"),
+        discord.app_commands.Choice(name="Edit — also remove and reorder", value="edit"),
+    ])
+    async def globalplaylist_collab_add(self, interaction: discord.Interaction, name: str, user: discord.Member,
+                                        permission: str = "edit"):
+        await self._handle_collab_add(interaction, name, user, global_mode=True, permission=permission)
 
     @globalplaylist_group.command(name="collab-remove", description="Remove a collaborator from your global playlist")
     @discord.app_commands.describe(name="Global playlist name", user="User to remove")

@@ -8,6 +8,7 @@ import { apiFetch } from "@/lib/api";
 import IconButton from "./ui/IconButton";
 import Popover from "./ui/Popover";
 import { cn } from "@/lib/utils";
+import { playlistCan, type Playlist } from "@/types";
 
 export interface PlaylistCandidate {
   webpage_url: string;
@@ -18,13 +19,8 @@ export interface PlaylistCandidate {
   url?: string;
 }
 
-interface Playlist {
-  name: string;
-  song_count?: number;
-}
-
 // Returns true when the popover should close (i.e. the add succeeded).
-type PickHandler = (name: string, globalMode: boolean) => Promise<boolean>;
+type PickHandler = (name: string, globalMode: boolean, ownerId: string | null) => Promise<boolean>;
 
 function PlaylistAddIcon({ className }: { className?: string }) {
   return (
@@ -34,11 +30,21 @@ function PlaylistAddIcon({ className }: { className?: string }) {
   );
 }
 
-function PickerButton({ label, size, className, disabled, onPick, children }: {
+function CopyIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V5a2 2 0 012-2h9a2 2 0 012 2v9a2 2 0 01-2 2h-2M5 7h9a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V9a2 2 0 012-2z" />
+    </svg>
+  );
+}
+
+function PickerButton({ label, size, className, disabled, excludeName, excludeGlobal, onPick, children }: {
   label: string;
   size: "xs" | "sm" | "md";
   className?: string;
   disabled?: boolean;
+  excludeName?: string;
+  excludeGlobal?: boolean;
   onPick: PickHandler;
   children: React.ReactNode;
 }) {
@@ -61,7 +67,7 @@ function PickerButton({ label, size, className, disabled, onPick, children }: {
       </IconButton>
       <Popover open={open} onClose={close} anchorRef={anchorRef} className="w-56 p-2">
         {/* Mounted only while open, so the playlist fetch is on demand */}
-        <PlaylistPicker onPick={onPick} onDone={close} />
+        <PlaylistPicker onPick={onPick} onDone={close} excludeName={excludeName} excludeGlobal={excludeGlobal} />
       </Popover>
     </>
   );
@@ -79,13 +85,14 @@ export default function AddToPlaylistButton({ song, size = "xs", className }: {
   const { guildId } = useGuildState();
   const { toast } = useToast();
 
-  const onPick: PickHandler = async (name, globalMode) => {
+  const onPick: PickHandler = async (name, globalMode, ownerId) => {
     try {
       await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add`, {
         method: "POST",
         body: JSON.stringify({
           song_url: song.webpage_url,
           global_mode: globalMode,
+          owner_id: ownerId,
           song: {
             title: song.title,
             duration: song.duration ?? 0,
@@ -111,6 +118,65 @@ export default function AddToPlaylistButton({ song, size = "xs", className }: {
 }
 
 /**
+ * Append one playlist's songs into another of the user's choice; the picker's
+ * Server/Global tab selects the destination scope, duplicates are skipped.
+ */
+export function CopyPlaylistButton({ sourceName, sourceGlobal, sourceOwnerId, size = "sm", className }: {
+  sourceName: string;
+  sourceGlobal: boolean;
+  sourceOwnerId?: string | null;
+  size?: "xs" | "sm" | "md";
+  className?: string;
+}) {
+  const { guildId } = useGuildState();
+  const { toast } = useToast();
+
+  const onPick: PickHandler = async (name, globalMode, targetOwnerId) => {
+    try {
+      const res = await apiFetch<{ added: number; skipped: number; dropped?: number; truncated?: boolean }>(
+        `/api/guild/${guildId}/playlists/${encodeURIComponent(sourceName)}/copy`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            target: name,
+            global_mode: sourceGlobal,
+            target_global_mode: globalMode,
+            owner_id: sourceOwnerId ?? null,
+            target_owner_id: targetOwnerId ?? null,
+          }),
+        },
+      );
+      if (res.added === 0) {
+        toast(`Nothing new — all ${res.skipped} song${res.skipped === 1 ? " is" : "s are"} already in "${name}"`, "success");
+        return true;
+      }
+      const parts = [];
+      if (res.skipped > 0) parts.push(`${res.skipped} already there`);
+      if (res.dropped) parts.push(`${res.dropped} dropped, playlist full`);
+      const note = parts.length ? ` (${parts.join(", ")})` : "";
+      toast(`Copied ${res.added} song${res.added === 1 ? "" : "s"} to "${name}"${note}`, "success");
+      return true;
+    } catch (e: any) {
+      toast(e?.message || "Could not copy the playlist", "error");
+      return false;
+    }
+  };
+
+  return (
+    <PickerButton
+      label="Copy to playlist"
+      size={size}
+      className={className}
+      excludeName={sourceName}
+      excludeGlobal={sourceGlobal}
+      onPick={onPick}
+    >
+      <CopyIcon className="w-4 h-4" />
+    </PickerButton>
+  );
+}
+
+/**
  * Save the whole session (current song + queue) to a playlist, mirroring the
  * bot's `/playlist add-all-queue`: duplicates against the playlist are skipped.
  */
@@ -122,15 +188,16 @@ export function AddQueueToPlaylistButton({ disabled, size = "sm", className }: {
   const { guildId } = useGuildState();
   const { toast } = useToast();
 
-  const onPick: PickHandler = async (name, globalMode) => {
+  const onPick: PickHandler = async (name, globalMode, ownerId) => {
     try {
-      const res = await apiFetch<{ added: number; skipped: number; truncated?: boolean }>(
+      const res = await apiFetch<{ added: number; skipped: number; dropped?: number; truncated?: boolean }>(
         `/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add-queue`,
-        { method: "POST", body: JSON.stringify({ global_mode: globalMode }) },
+        { method: "POST", body: JSON.stringify({ global_mode: globalMode, owner_id: ownerId }) },
       );
-      const note = res.truncated
-        ? " (playlist size limit reached)"
-        : res.skipped > 0 ? ` (${res.skipped} already there)` : "";
+      const parts = [];
+      if (res.skipped > 0) parts.push(`${res.skipped} already there`);
+      if (res.dropped) parts.push(`${res.dropped} dropped, playlist full`);
+      const note = parts.length ? ` (${parts.join(", ")})` : "";
       toast(`Added ${res.added} song${res.added === 1 ? "" : "s"} to "${name}"${note}`, "success");
       return true;
     } catch (e: any) {
@@ -152,7 +219,12 @@ export function AddQueueToPlaylistButton({ disabled, size = "sm", className }: {
   );
 }
 
-function PlaylistPicker({ onPick, onDone }: { onPick: PickHandler; onDone: () => void }) {
+function PlaylistPicker({ onPick, onDone, excludeName, excludeGlobal }: {
+  onPick: PickHandler;
+  onDone: () => void;
+  excludeName?: string;
+  excludeGlobal?: boolean;
+}) {
   const { guildId } = useGuildState();
   const { toast } = useToast();
   const { mutate } = useSWRConfig();
@@ -164,12 +236,16 @@ function PlaylistPicker({ onPick, onDone }: { onPick: PickHandler; onDone: () =>
 
   const listKey = `/api/guild/${guildId}/playlists?global_mode=${globalMode}`;
   const { data, isLoading } = useSWR<{ playlists: Playlist[] }>(listKey);
-  const playlists = data?.playlists ?? [];
+  // Every picker target is written to, so a view-only share is not a candidate.
+  const playlists = (data?.playlists ?? []).filter(p =>
+    playlistCan(p.permission, "append")
+    && !(p.name === excludeName && globalMode === excludeGlobal)
+  );
 
-  const pick = async (name: string) => {
+  const pick = async (name: string, ownerId: string | null = null) => {
     if (busy) return;
     setBusy(true);
-    const ok = await onPick(name, globalMode);
+    const ok = await onPick(name, globalMode, ownerId);
     setBusy(false);
     if (!ok) return;
     mutate(listKey);
@@ -194,7 +270,7 @@ function PlaylistPicker({ onPick, onDone }: { onPick: PickHandler; onDone: () =>
       return;
     }
     setBusy(false);
-    await pick(name);
+    await pick(name, null);
   };
 
   return (
@@ -223,7 +299,7 @@ function PlaylistPicker({ onPick, onDone }: { onPick: PickHandler; onDone: () =>
           <button
             key={p.name}
             disabled={busy}
-            onClick={() => pick(p.name)}
+            onClick={() => pick(p.name, p.owner_id)}
             className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-left text-[11px] text-white/80 hover:bg-white/[0.08] disabled:opacity-50"
           >
             <span className="truncate">{p.name}</span>

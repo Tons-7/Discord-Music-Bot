@@ -63,14 +63,17 @@ callback calls `play_next()` again via `run_coroutine_threadsafe`.
 **Autoplay:** When queue empties and autoplay is enabled, uses Last.fm similar tracks/artists/tags to find related
 songs. Pre-fetches next song in background while current plays.
 
-**Database:** SQLite (`music_bot.db`, schema version 3) with tables:
+**Database:** SQLite (`music_bot.db`, schema version 5) with tables:
 
 - `playlists` — per-guild user playlists.
 - `global_playlists` — cross-guild user playlists.
 - `guild_settings` — autoplay, DJ role, default volume, effects, etc.
 - `favorites` — user-favorited songs with play counts.
 - `user_stats` — per-user per-guild listening statistics.
-- `playlist_collaborators` — shared playlist access control.
+- `playlist_collaborators` — shared playlist access, with a `permission` level per collaborator
+  (`view` < `append` < `edit`; the owner always outranks them). Levels live in `config.PLAYLIST_PERMISSIONS`
+  and are enforced in both `activity/routes/playlist_routes.py` (`_resolve_playlist`/`_require`) and
+  `cogs/playlist_commands.py` (`_get_collab_playlist_songs(need=...)`).
 - `schema_version` — tracks DB migration version.
 
 Queue state persisted on changes and restored on startup.

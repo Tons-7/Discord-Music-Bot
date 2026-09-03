@@ -76,8 +76,9 @@ export default function SettingsPanel() {
     );
   }
 
+  // h-full, not flex-1: the parent is not a flex container, so it never sized.
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-6">
+    <div className="h-full overflow-y-auto px-4 py-4 flex flex-col gap-6">
       <Setting
         label="DJ role"
         hint="Only this role (and admins) can skip, stop, seek, or edit the queue."
