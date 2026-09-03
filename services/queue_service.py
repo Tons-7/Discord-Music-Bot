@@ -75,30 +75,34 @@ class QueueService:
             logger.info(f"Added finished song to loop backup: {song.title}")
 
     def add_songs_to_history(self, guild_id: int, songs: List[Song]):
-        """Bulk add_to_history: dedupe once (O(n+m)) instead of per-song (O(n*m))."""
+        """Bulk add_to_history: same move-to-most-recent semantics, deduped once (O(n+m))."""
         if not songs:
             return
 
         guild_data = self.bot.get_guild_data(guild_id)
-        history = guild_data["history"]
-        history_urls = {s.webpage_url for s in history}
         backup_urls = {s.webpage_url for s in guild_data["loop_backup"]}
         added_backup = 0
 
+        # Last occurrence wins, mirroring repeated per-song appends
+        incoming = {}
         for song in songs:
-            if song.webpage_url not in history_urls:
-                history.append(Song.from_dict(song.to_dict()))
-                history_urls.add(song.webpage_url)
+            incoming.pop(song.webpage_url, None)
+            incoming[song.webpage_url] = song
+
+        history = [s for s in guild_data["history"] if s.webpage_url not in incoming]
+
+        for song in incoming.values():
+            history.append(Song.from_dict(song.to_dict()))
             if song.webpage_url not in backup_urls:
                 guild_data["loop_backup"].append(Song.from_dict(song.to_dict()))
                 backup_urls.add(song.webpage_url)
                 added_backup += 1
 
-        guild_data["history_position"] = len(history)
-
         if len(history) > MAX_HISTORY_SIZE:
-            guild_data["history"] = history[-MAX_HISTORY_SIZE:]
-            guild_data["history_position"] = len(guild_data["history"])
+            history = history[-MAX_HISTORY_SIZE:]
+
+        guild_data["history"] = history
+        guild_data["history_position"] = len(history)
 
         if added_backup:
             logger.info(f"Added {added_backup} skipped song(s) to loop backup")

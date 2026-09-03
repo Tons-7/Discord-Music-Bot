@@ -15,6 +15,9 @@ from utils.helpers import format_duration, build_progress_bar, create_embed, ext
 
 logger = logging.getLogger(__name__)
 
+# How many recent history entries autoplay treats as "already played"
+AUTOPLAY_REPEAT_WINDOW = 30
+
 
 class PlaybackService:
     def __init__(self, bot):
@@ -644,6 +647,18 @@ class PlaybackService:
         await self.bot.save_guild_queue(guild_id)
         return False
 
+    def _recent_backup_titles(self, guild_data: dict) -> set:
+        """Recently queued titles to avoid repeating.
+
+        Windowed like history: loop_backup grows for the whole session, and in
+        queue-loop mode it *is* the playlist, so excluding all of it would leave
+        autoplay nothing to pick.
+        """
+        if guild_data.get("loop_mode") == "queue":
+            return set()
+        backup = guild_data.get("loop_backup", [])
+        return {self._normalize_title(s.title) for s in backup[-AUTOPLAY_REPEAT_WINDOW:]}
+
     async def pick_autoplay_song(self, guild_id: int, current_song: Song) -> Optional[Song]:
         """Pick the next autoplay song with no side effects.
 
@@ -661,8 +676,9 @@ class PlaybackService:
 
         history = guild_data.get("history", [])
         recent_titles = {
-            self._normalize_title(h.title) for h in history[-10:]
+            self._normalize_title(h.title) for h in history[-AUTOPLAY_REPEAT_WINDOW:]
         } if history else set()
+        recent_titles.update(self._recent_backup_titles(guild_data))
         if current_song:
             recent_titles.add(self._normalize_title(current_song.title))
 
@@ -772,8 +788,9 @@ class PlaybackService:
             existing_urls = {s.webpage_url for s in guild_data.get("queue", [])}
             history = guild_data.get("history", [])
             recent_titles = {
-                self._normalize_title(h.title) for h in history[-10:]
+                self._normalize_title(h.title) for h in history[-AUTOPLAY_REPEAT_WINDOW:]
             } if history else set()
+            recent_titles.update(self._recent_backup_titles(guild_data))
             recent_titles.add(self._normalize_title(current_song.title))
 
             for attempt in range(2):

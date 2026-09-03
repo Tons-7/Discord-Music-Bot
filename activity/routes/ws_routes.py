@@ -62,6 +62,7 @@ async def guild_websocket(websocket: WebSocket, guild_id: int):
             data = await websocket.receive_json()
             # Commands over WS are handled by REST endpoints
             # This loop just keeps the connection alive
+            ws_manager.touch(websocket)
             if data.get("type") == "PING":
                 await websocket.send_json({"type": "PONG"})
 

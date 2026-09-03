@@ -45,17 +45,8 @@ async def add_favorite(body: FavoriteBody, user=Depends(get_current_user), bot=D
 
 
 async def _remove_favorite_by_url(bot, uid: int, url: str):
-    """Remove the favorite whose webpage_url matches `url`.
-
-    Returns (success, title) so callers can surface the removed title.
-    remove_favorite expects a 1-based position, matching get_favorites order.
-    """
-    favorites = await bot.get_favorites(uid)
-    for index, fav in enumerate(favorites):
-        if (fav.get("webpage_url") or fav.get("url")) == url:
-            success = await bot.remove_favorite(uid, index + 1)
-            return success, fav.get("title")
-    return False, None
+    """Remove the favorite whose webpage_url matches `url`. Returns (success, title)."""
+    return await bot.remove_favorite_by_url(uid, url)
 
 
 @router.delete("")

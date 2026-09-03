@@ -138,12 +138,44 @@ export default function PlaylistPanel() {
     } catch (e: any) { toast(e.message, "error"); }
   };
 
-  const handleRemoveSong = async (pos: number) => {
+  // The add endpoint appends, so restoring the original slot takes a follow-up
+  // move. Keys are rebuilt from the captured playlist: the user may have
+  // navigated elsewhere while the undo toast was up.
+  const undoRemoveSong = async (song: PlaylistSong, pos: number, name: string, isGlobal: boolean) => {
+    const base = `/api/guild/${guildId}/playlists/${encodeURIComponent(name)}`;
+    const suffix = `global_mode=${isGlobal}`;
+    try {
+      const res = await apiFetch<{ song_count: number }>(`${base}/add`, {
+        method: "POST",
+        body: JSON.stringify({
+          song_url: song.webpage_url,
+          global_mode: isGlobal,
+          song: { title: song.title, uploader: song.uploader, duration: song.duration, thumbnail: song.thumbnail || "" },
+        }),
+      });
+      const from = (res.song_count ?? 0) - 1;
+      if (from > pos) {
+        await apiFetch(`${base}/move`, {
+          method: "POST",
+          body: JSON.stringify({ from_pos: from, to_pos: pos, global_mode: isGlobal }),
+        });
+      }
+    } catch (e: any) {
+      toast(e.message || "Undo failed", "error");
+    } finally {
+      mutate(`${base}?${suffix}`);
+      mutate(`/api/guild/${guildId}/playlists?${suffix}`);
+    }
+  };
+
+  const handleRemoveSong = async (song: PlaylistSong, pos: number) => {
     if (!detailKey) return;
+    const name = selectedName;
+    const isGlobal = globalMode;
     mutate(detailKey, { songs: songs.filter((_, i) => i !== pos) }, { revalidate: false });
     try {
-      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(selectedName)}/${pos}?${gm}`, { method: "DELETE" });
-      toast("Removed", "success");
+      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/${pos}?${gm}`, { method: "DELETE" });
+      toast("Removed", "success", { label: "Undo", onClick: () => undoRemoveSong(song, pos, name, isGlobal) });
     } catch (e: any) { toast(e.message, "error"); }
     finally { mutate(detailKey); mutate(listKey); }
   };
@@ -378,7 +410,7 @@ export default function PlaylistPanel() {
                       queueing={queueingUrl === song.webpage_url}
                       added={addedUrls.has(song.webpage_url)}
                       onQueue={() => handleQueueSong(song)}
-                      onRemove={() => handleRemoveSong(i)}
+                      onRemove={() => handleRemoveSong(song, i)}
                     />
                   ))}
                 </div>

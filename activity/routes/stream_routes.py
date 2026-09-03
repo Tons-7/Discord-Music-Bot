@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from starlette.responses import StreamingResponse
 
 from activity.auth import authenticate_query_or_header
-from activity.dependencies import get_bot, get_ws_manager, guild_member
+from activity.dependencies import get_bot, get_ws_manager, guild_member, require_dj
 from activity.helpers import activity_advance, broadcast_state
 from activity.state_serializer import serialize_song
 from activity.tasks import spawn
@@ -112,7 +112,7 @@ async def _download_to_cache(bot, webpage_url: str, title: str = ""):
             ydl.extract_info(webpage_url, download=True)
 
     try:
-        await asyncio.get_running_loop().run_in_executor(bot.executor, do_download)
+        await asyncio.get_running_loop().run_in_executor(bot.download_executor, do_download)
         if cache_path.exists():
             logger.info(f"Activity cached: {title or webpage_url}")
         else:
@@ -288,6 +288,11 @@ async def play_song(
     force=true is a user-initiated skip; without it the advance is idempotent
     (no-op while something is already playing).
     """
+    # A forced advance is a skip, so it needs what /skip needs. The unforced
+    # call is the end-of-song nudge any listener's client makes.
+    if force:
+        require_dj(bot, guild_id, int(user["id"]))
+
     new_current = await activity_advance(bot, ws, guild_id, ended_url=ended_url, force=force)
     await broadcast_state(bot, ws, guild_id)
     return {"ok": True, "current": serialize_song(new_current) if new_current else None}

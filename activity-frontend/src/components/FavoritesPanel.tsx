@@ -38,6 +38,24 @@ export default function FavoritesPanel() {
     }
   };
 
+  // Favorites are ordered by added_at and there is no reorder endpoint, so an
+  // undone removal comes back at the end of the list rather than its old slot.
+  const undoRemove = async (fav: FavSong) => {
+    try {
+      await apiFetch("/api/favorites", {
+        method: "POST",
+        body: JSON.stringify({
+          title: fav.title, url: "", duration: fav.duration,
+          thumbnail: fav.thumbnail, uploader: fav.uploader, webpage_url: fav.webpage_url,
+        }),
+      });
+    } catch (e: any) {
+      toast(e.message || "Undo failed", "error");
+    } finally {
+      mutate(FAVORITES_KEY);
+    }
+  };
+
   const handleRemove = async (fav: FavSong, pos: number) => {
     mutate(
       FAVORITES_KEY,
@@ -47,7 +65,7 @@ export default function FavoritesPanel() {
     );
     try {
       await apiFetch(`/api/favorites/${pos + 1}`, { method: "DELETE" }); // bot uses 1-based
-      toast("Removed from favorites", "success");
+      toast("Removed from favorites", "success", { label: "Undo", onClick: () => undoRemove(fav) });
     } catch (e: any) {
       toast(e.message, "error");
     } finally {
