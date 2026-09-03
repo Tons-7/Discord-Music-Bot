@@ -26,7 +26,7 @@ import { formatDuration, proxyImg, cn } from "@/lib/utils";
 import { apiFetch } from "@/lib/api";
 import MarqueeText from "./MarqueeText";
 import FavHeart from "./FavHeart";
-import AddToPlaylistButton from "./AddToPlaylistButton";
+import AddToPlaylistButton, { AddQueueToPlaylistButton } from "./AddToPlaylistButton";
 import EmptyState from "./EmptyState";
 import IconButton from "./ui/IconButton";
 import { CloseIcon, PlayIcon, NoteIcon } from "./ui/icons";
@@ -153,15 +153,18 @@ export default function QueuePanel() {
           {displayed.length} song{displayed.length !== 1 ? "s" : ""}
           {queue_duration > 0 && <span className="text-white/40"> · {formatDuration(queue_duration)}</span>}
         </span>
-        <button
-          onClick={handleClear}
-          className={cn(
-            "text-[11px] font-medium px-2 py-1 -my-1 rounded-md transition-colors",
-            confirmClear ? "text-white bg-danger" : "text-danger/60 hover:text-danger"
-          )}
-        >
-          {confirmClear ? "Tap to confirm" : "Clear"}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <AddQueueToPlaylistButton disabled={displayed.length === 0 && !state.current} />
+          <button
+            onClick={handleClear}
+            className={cn(
+              "text-[11px] font-medium px-2 py-1 -my-1 rounded-md transition-colors",
+              confirmClear ? "text-white bg-danger" : "text-danger/60 hover:text-danger"
+            )}
+          >
+            {confirmClear ? "Tap to confirm" : "Clear"}
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 pb-3">

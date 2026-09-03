@@ -424,36 +424,52 @@ async def add_all_queue_to_playlist(
     if pid is None:
         raise HTTPException(status_code=404, detail=f"{label} '{name}' not found")
 
+    # Mirrors _handle_add_all_queue in cogs/playlist_commands.py: current song
+    # first, then the queue, deduped within the session and against the playlist.
     guild_data = bot.get_guild_data(guild_id)
-    queue = guild_data.get("queue", [])
+    session: list[dict] = []
+    seen = set()
+
     current = guild_data.get("current")
+    if current:
+        session.append(current.to_dict())
+        seen.add(current.webpage_url)
+
+    for qs in guild_data.get("queue", []):
+        if qs.webpage_url not in seen:
+            session.append(qs.to_dict())
+            seen.add(qs.webpage_url)
 
     existing_urls = {s.get("webpage_url") for s in songs}
-    added = 0
+    to_add = [s for s in session if s.get("webpage_url") not in existing_urls]
+    skipped = len(session) - len(to_add)
 
-    # Add current song first if playing
-    if current and current.webpage_url not in existing_urls and len(songs) < MAX_PLAYLIST_SIZE:
-        songs.append(current.to_dict())
-        existing_urls.add(current.webpage_url)
-        added += 1
-
-    for s in queue:
-        if len(songs) >= MAX_PLAYLIST_SIZE:
-            break
-        if s.webpage_url not in existing_urls:
-            songs.append(s.to_dict())
-            existing_urls.add(s.webpage_url)
-            added += 1
-
-    if added == 0:
+    if not to_add:
         raise HTTPException(status_code=400, detail="No new songs to add (all duplicates or queue empty)")
 
+    truncated = False
+    if len(songs) + len(to_add) > MAX_PLAYLIST_SIZE:
+        to_add = to_add[:max(0, MAX_PLAYLIST_SIZE - len(songs))]
+        truncated = True
+        if not to_add:
+            raise HTTPException(status_code=400, detail=f"{label} is full ({MAX_PLAYLIST_SIZE} songs max)")
+
+    for song_dict in to_add:
+        song_dict["requested_by"] = f"<@{uid}>"
+
+    songs.extend(to_add)
     await bot.execute_db_query(
         f"UPDATE {table} SET songs = ? WHERE id = ?",
         (json.dumps(songs), pid),
     )
 
-    return {"ok": True, "added": added, "song_count": len(songs)}
+    return {
+        "ok": True,
+        "added": len(to_add),
+        "skipped": skipped,
+        "truncated": truncated,
+        "song_count": len(songs),
+    }
 
 
 # ── Collaborator management ───────────────────────────────────────────
