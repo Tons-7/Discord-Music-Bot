@@ -3,6 +3,8 @@
 import { useEffect, useEffectEvent, useRef, useReducer, useCallback, useMemo, useState } from "react";
 import type { GuildState } from "@/types";
 
+const PING_INTERVAL_MS = 25000;
+
 const INITIAL_STATE: GuildState = {
   current: null,
   queue: [],
@@ -70,6 +72,7 @@ export function useWebSocket(
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
   const retriesRef = useRef(0);
 
   const serverPosRef = useRef<PositionSlice>({ position: 0, is_paused: false });
@@ -124,6 +127,7 @@ export function useWebSocket(
   const handleClose = useEffectEvent(() => {
     setConnected(false);
     wsRef.current = null;
+    clearInterval(pingIntervalRef.current);
 
     // Reconnect with exponential backoff
     const delay = Math.min(1000 * 2 ** retriesRef.current, 30000);
@@ -151,6 +155,12 @@ export function useWebSocket(
     ws.onopen = () => {
       setConnected(true);
       retriesRef.current = 0;
+      // An idle socket (paused, or nothing playing) sends no traffic, and
+      // proxies drop it silently — no onclose fires. Ping so the drop surfaces.
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "PING" }));
+      }, PING_INTERVAL_MS);
     };
 
     ws.onmessage = (event) => handleMessage(event);
@@ -166,6 +176,7 @@ export function useWebSocket(
     connect();
     return () => {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      clearInterval(pingIntervalRef.current);
       if (wsRef.current) {
         wsRef.current.onclose = null;
         wsRef.current.close();
@@ -180,6 +191,7 @@ export function useWebSocket(
       if (document.visibilityState !== "visible") return;
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      clearInterval(pingIntervalRef.current);
       retriesRef.current = 0;
       if (wsRef.current) {
         wsRef.current.onclose = null;

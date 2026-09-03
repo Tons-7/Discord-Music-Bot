@@ -39,7 +39,6 @@ _activity_ytdl_opts = {
     # No player_client override — pinned client lists go stale and break
 }
 
-_activity_ytdl = yt_dlp.YoutubeDL(_activity_ytdl_opts)
 
 _ACTIVITY_CACHE_DIR = Path(AUDIO_CACHE_DIR) / "activity"
 _ACTIVITY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -136,10 +135,13 @@ async def _get_stream_url(bot, webpage_url: str, force: bool = False) -> str:
         if cached and now - cached[1] < _STREAM_CACHE_TTL:
             return cached[0]
 
-    info = await asyncio.get_running_loop().run_in_executor(
-        bot.executor,
-        lambda: _activity_ytdl.extract_info(webpage_url, download=False),
-    )
+    # A YoutubeDL instance is not thread-safe and extractions run concurrently
+    # in bot.executor (one per Activity client), so build one per call.
+    def do_extract():
+        with yt_dlp.YoutubeDL(_activity_ytdl_opts) as ydl:
+            return ydl.extract_info(webpage_url, download=False)
+
+    info = await asyncio.get_running_loop().run_in_executor(bot.executor, do_extract)
     if not info or not info.get("url"):
         raise ValueError("No stream URL extracted")
 
