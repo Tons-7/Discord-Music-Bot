@@ -17,13 +17,17 @@ import LyricsPanel from "./LyricsPanel";
 import FavoritesPanel from "./FavoritesPanel";
 import StatsPanel from "./StatsPanel";
 import PiPView from "./PiPView";
+import ConnectionStatus from "./ConnectionStatus";
+import SettingsPanel from "./SettingsPanel";
 import { useLayoutMode, LayoutMode } from "@/hooks/useLayoutMode";
 import { useLocalVolume } from "@/hooks/useLocalVolume";
+import { useTransportControls } from "@/hooks/useTransportControls";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { ProgressStrip, LiveTime } from "./ui/SeekBar";
 import { PlayIcon, PauseIcon, NoteIcon } from "./ui/icons";
 import { cn, proxyImg } from "@/lib/utils";
 
-type Panel = "search" | "queue" | "history" | "playlists" | "lyrics" | "favorites" | "stats" | null;
+type Panel = "search" | "queue" | "history" | "playlists" | "lyrics" | "favorites" | "stats" | "settings" | null;
 
 const PANELS: { id: Exclude<Panel, null>; icon: React.ReactNode; label: string }[] = [
   {
@@ -51,6 +55,10 @@ const PANELS: { id: Exclude<Panel, null>; icon: React.ReactNode; label: string }
     icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" /></svg>,
   },
   {
+    id: "settings", label: "Settings",
+    icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 011.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.559.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 01-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.397.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 01-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 01.12-1.45l.773-.773a1.125 1.125 0 011.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>,
+  },
+  {
     id: "history", label: "History",
     icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>,
   },
@@ -58,7 +66,7 @@ const PANELS: { id: Exclude<Panel, null>; icon: React.ReactNode; label: string }
 
 // Mobile bottom nav: 4 primary tabs + a "More" sheet (7 tabs don't fit a phone)
 const MOBILE_PRIMARY: Exclude<Panel, null>[] = ["search", "queue", "playlists", "lyrics"];
-const MOBILE_MORE: Exclude<Panel, null>[] = ["favorites", "stats", "history"];
+const MOBILE_MORE: Exclude<Panel, null>[] = ["favorites", "stats", "history", "settings"];
 
 export default function Dashboard() {
   const [activePanel, setActivePanel] = useState<Panel>(null);
@@ -144,6 +152,22 @@ export default function Dashboard() {
     [audio.seek, sendCommand],
   );
 
+  const transport = useTransportControls(audio, userVolume, setUserVolume, getDisplayPosition);
+
+  useKeyboardShortcuts({
+    ...transport,
+    focusSearch: () => {
+      setActivePanel("search");
+      // The panel is already mounted but display:none while hidden — focus once
+      // the open state has painted.
+      requestAnimationFrame(() => {
+        const input = document.querySelector<HTMLInputElement>('[data-panel="search"] input');
+        input?.focus();
+        input?.select();
+      });
+    },
+  });
+
   if (layoutMode === LayoutMode.PiP) {
     return <PiPView audio={audio} />;
   }
@@ -222,6 +246,8 @@ export default function Dashboard() {
           </MobileNavBtn>
         </div>
       </div>
+
+      <ConnectionStatus />
 
       {moreOpen && (
         <MoreSheet
@@ -321,12 +347,14 @@ const Panels = memo(function Panels({ panel, getPosition, onSeek }: {
   return (
     <>
       <Activity mode={mode("queue")}><QueuePanel /></Activity>
-      <Activity mode={mode("search")}><SearchPanel /></Activity>
+      {/* data-panel: the "/" shortcut focuses this panel's input from Dashboard */}
+      <Activity mode={mode("search")}><div data-panel="search" className="h-full"><SearchPanel /></div></Activity>
       <Activity mode={mode("history")}><HistoryPanel /></Activity>
       <Activity mode={mode("playlists")}><PlaylistPanel /></Activity>
       <Activity mode={mode("lyrics")}><LyricsPanel getPosition={getPosition} onSeek={onSeek} /></Activity>
       <Activity mode={mode("favorites")}><FavoritesPanel /></Activity>
       <Activity mode={mode("stats")}><StatsPanel /></Activity>
+      <Activity mode={mode("settings")}><SettingsPanel /></Activity>
     </>
   );
 });

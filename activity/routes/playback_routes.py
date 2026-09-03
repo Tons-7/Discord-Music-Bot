@@ -253,6 +253,7 @@ async def set_effect(guild_id: int, body: EffectBody, user=Depends(dj_member), b
     return {"ok": True, "audio_effect": body.effect}
 
 
+# Any member, not DJ: autoplay is a listening preference, not a transport control.
 @router.post("/autoplay")
 async def toggle_autoplay(guild_id: int, user=Depends(guild_member), bot=Depends(get_bot), ws=Depends(get_ws_manager)):
     guild_data = bot.get_guild_data(guild_id)

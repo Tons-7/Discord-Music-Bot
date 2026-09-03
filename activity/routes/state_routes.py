@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query, Request
 
-from activity.dependencies import get_bot, guild_member
+from activity.dependencies import dj_member, get_bot, guild_member
 from activity.helpers import broadcast_state
 from activity.state_serializer import serialize_guild_state, serialize_song
 from config import SONGS_PER_PAGE
@@ -47,7 +47,7 @@ async def get_history(guild_id: int, user=Depends(guild_member), bot=Depends(get
 
 
 @router.post("/history/clear")
-async def clear_history(guild_id: int, request: Request, user=Depends(guild_member), bot=Depends(get_bot)):
+async def clear_history(guild_id: int, request: Request, user=Depends(dj_member), bot=Depends(get_bot)):
     guild_data = bot.get_guild_data(guild_id)
     guild_data["history"].clear()
     guild_data["history_position"] = 0

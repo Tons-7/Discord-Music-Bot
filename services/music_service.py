@@ -6,11 +6,38 @@ import time
 from typing import Optional, Dict, List, Set
 
 import aiohttp
+import yt_dlp
 
 from config import MAX_PLAYLIST_SIZE
 from models.song import Song
 
 logger = logging.getLogger(__name__)
+
+# Autoplay YouTube match filtering
+MIN_AUTOPLAY_DURATION = 60
+MAX_AUTOPLAY_DURATION = 720
+YOUTUBE_MATCH_CANDIDATES = 5
+
+JUNK_TITLE_PATTERNS = {
+    "mix": r"\bmix(es)?\b",
+    "megamix": r"\bmega\s?mix\b",
+    "full album": r"\bfull\s+album\b",
+    "live": r"\blive\b",
+    "karaoke": r"\bkaraoke\b",
+    "instrumental": r"\binstrumentals?\b",
+    "reaction": r"\breactions?\b",
+    "cover": r"\bcovers?\b",
+    "sped up": r"\bsped[\s-]?up\b",
+    "slowed": r"\bslowed\b",
+    "nightcore": r"\bnightcore\b",
+    "1 hour": r"\b1\s*hour\b",
+    "10 hours": r"\b\d{1,3}\s*hours\b",
+    "loop": r"\bloop(ed|ing)?\b",
+    "compilation": r"\bcompilations?\b",
+    "playlist": r"\bplaylists?\b",
+    "best of": r"\bbest\s+of\b",
+    "type beat": r"\btype\s+beat\b",
+}
 
 
 class MusicService:
@@ -38,6 +65,15 @@ class MusicService:
             self.bot._lastfm_call_times.append(time.monotonic())
 
     # YouTube helpers
+
+    def _extract(self, target: str, **kwargs):
+        """yt-dlp extraction on a per-call instance.
+
+        A YoutubeDL object is not thread-safe and these calls run concurrently
+        in bot.executor, so the shared bot.ytdl must not be reused here.
+        """
+        with yt_dlp.YoutubeDL(self.bot.ytdl_format_options) as ydl:
+            return ydl.extract_info(target, **kwargs)
 
     @staticmethod
     def _normalize_youtube_entry(entry: Dict) -> Optional[Dict]:
@@ -146,7 +182,7 @@ class MusicService:
             try:
                 data = await loop.run_in_executor(
                     self.bot.executor,
-                    lambda: self.bot.ytdl.extract_info(url, download=False),
+                    lambda: self._extract(url, download=False),
                 )
                 if data:
                     return data
@@ -164,16 +200,22 @@ class MusicService:
             search_prefix = f"ytsearch{limit}:" if limit > 1 else "ytsearch:"
             data = await loop.run_in_executor(
                 self.bot.executor,
-                lambda: self.bot.ytdl.extract_info(f"{search_prefix}{query}", download=False),
+                lambda: self._extract(f"{search_prefix}{query}", download=False),
             )
 
             if data and "entries" in data and data["entries"]:
+                entries = [
+                    e for e in (
+                        self._normalize_youtube_entry(raw_entry)
+                        for raw_entry in data["entries"] if raw_entry
+                    ) if e
+                ]
+
                 if limit == 1:
-                    for raw_entry in data["entries"]:
-                        normalized = self._normalize_youtube_entry(raw_entry)
-                        if normalized:
-                            return normalized
-                else:
+                    return entries[0] if entries else None
+
+                if entries:
+                    data["entries"] = entries
                     return data  # Return full results for multi-search
         except Exception as e:
             logger.error(f"YouTube search error: {e}")
@@ -187,7 +229,7 @@ class MusicService:
 
             playlist_info = await loop.run_in_executor(
                 self.bot.executor,
-                lambda: self.bot.ytdl.extract_info(url, download=False, process=False),
+                lambda: self._extract(url, download=False, process=False),
             )
 
             if not playlist_info or "entries" not in playlist_info:
@@ -539,7 +581,121 @@ class MusicService:
         normalized = re.sub(r'\s+', ' ', normalized)
         return normalized
 
+    # Autoplay YouTube match verification
+
+    def _pick_best_youtube_match(
+            self, entries: List[Dict], track_name: str, track_artist: str,
+            candidate_duration: Optional[int] = None, relaxed: bool = False
+    ) -> Optional[Dict]:
+        """Pick the YouTube result that actually is the Last.fm candidate.
+
+        Returns None when every entry looks like a mix/karaoke/reaction/etc.
+        ``relaxed`` drops the name/artist requirement and accepts any entry that
+        is not junk and has a sane runtime — used only to keep autoplay alive
+        when no candidate produced a confident match.
+        """
+        if not entries:
+            return None
+
+        norm_name = self._normalize_track_name(track_name)
+        norm_artist = self._normalize_track_name(self._clean_artist_name(track_artist))
+        name_words = [w for w in norm_name.split() if len(w) > 2]
+
+        # A keyword that is part of the candidate's own name/artist can't be junk here
+        active_patterns = [
+            pattern for keyword, pattern in JUNK_TITLE_PATTERNS.items()
+            if not (re.search(pattern, track_name, re.IGNORECASE)
+                    or re.search(pattern, track_artist, re.IGNORECASE)
+                    or keyword in norm_name)
+        ]
+
+        allow_long = bool(candidate_duration and candidate_duration > MAX_AUTOPLAY_DURATION)
+
+        best_entry = None
+        best_score = -1.0 if relaxed else 0.0
+
+        for index, raw_entry in enumerate(entries):
+            if not raw_entry:
+                continue
+
+            entry = self._normalize_youtube_entry(raw_entry)
+            if not entry:
+                continue
+
+            title = entry.get("title") or ""
+            uploader = entry.get("uploader") or entry.get("channel") or ""
+
+            if self.is_livestream(entry) or entry.get("live_status") in ("is_live", "is_upcoming"):
+                logger.debug(f"Rejected '{title}' (livestream)")
+                continue
+
+            junk = next((p for p in active_patterns if re.search(p, title, re.IGNORECASE)), None)
+            if junk:
+                logger.debug(f"Rejected '{title}' (matched junk pattern {junk})")
+                continue
+
+            duration = entry.get("duration")
+            if duration is not None:
+                if duration < MIN_AUTOPLAY_DURATION:
+                    logger.debug(f"Rejected '{title}' (too short: {duration}s)")
+                    continue
+                if duration > MAX_AUTOPLAY_DURATION and not allow_long:
+                    logger.debug(f"Rejected '{title}' (too long: {duration}s)")
+                    continue
+
+            norm_title = self._normalize_track_name(title)
+            norm_uploader = self._normalize_track_name(self._clean_uploader(uploader))
+
+            score = 0.0
+            if norm_name and norm_name in norm_title:
+                score += 5.0
+            elif name_words and sum(w in norm_title for w in name_words) >= (len(name_words) + 1) // 2:
+                score += 2.0
+
+            if norm_artist and norm_artist in norm_title:
+                score += 2.0
+            if norm_artist and norm_artist in norm_uploader:
+                score += 2.0
+            if norm_artist and re.search(r'\s*[-\u2013]\s*Topic$', uploader, re.IGNORECASE) \
+                    and norm_artist in norm_uploader:
+                score += 3.0
+
+            score -= index * 0.01
+
+            if score > best_score:
+                best_score = score
+                best_entry = entry
+
+        if best_entry:
+            logger.debug(f"Best YouTube match for '{track_name}': '{best_entry.get('title')}' (score {best_score:.2f})")
+        return best_entry
+
     # Related songs (Last.fm autoplay)
+
+    async def _resolve_candidate_duration(self, candidate: Dict) -> Optional[int]:
+        """Last.fm runtime (seconds) for a candidate, resolved only when it is actually searched.
+
+        pylast drops the <duration> node from getSimilar/getTopTracks responses, so the
+        only source is track.getInfo — done here, once per attempted candidate, instead
+        of once per collected candidate.
+        """
+        if 'duration' in candidate:
+            return candidate['duration']
+
+        candidate['duration'] = None
+        track = candidate.get('track')
+
+        if track is not None:
+            try:
+                await self._rate_limit_lastfm()
+                loop = asyncio.get_running_loop()
+                milliseconds = await loop.run_in_executor(self.bot.executor, track.get_duration)
+                if milliseconds:
+                    candidate['duration'] = int(milliseconds) // 1000
+            except Exception as e:
+                logger.debug(f"Last.fm duration lookup failed for '{candidate.get('name')}': {e}")
+
+        return candidate['duration']
 
     async def get_related_songs(self, song: 'Song', limit: int = 1) -> List[Dict]:
         try:
@@ -588,7 +744,8 @@ class MusicService:
                                     'name': track_name,
                                     'artist': track_artist,
                                     'priority': priority,
-                                    'source': 'similar_tracks'
+                                    'source': 'similar_tracks',
+                                    'track': track_item
                                 })
                                 seen_track_names.add(normalized_name)
                                 if normalized_artist not in seen_artists:
@@ -644,7 +801,8 @@ class MusicService:
                                             'name': track_name,
                                             'artist': track_artist,
                                             'priority': priority,
-                                            'source': 'similar_artists'
+                                            'source': 'similar_artists',
+                                            'track': track_item
                                         })
                                         seen_track_names.add(normalized_name)
                                         if normalized_artist not in seen_artists:
@@ -705,7 +863,8 @@ class MusicService:
                                             'name': track_name,
                                             'artist': track_artist,
                                             'priority': priority,
-                                            'source': f'tag_{tag_name}'
+                                            'source': f'tag_{tag_name}',
+                                            'track': track_item
                                         })
                                         seen_track_names.add(normalized_name)
                                         if normalized_artist not in seen_artists:
@@ -755,7 +914,8 @@ class MusicService:
                                     'name': track_name,
                                     'artist': track_artist,
                                     'priority': priority,
-                                    'source': f'content_tag_{content_name}'
+                                    'source': f'content_tag_{content_name}',
+                                    'track': track_item
                                 })
                                 seen_track_names.add(normalized_name)
                                 if normalized_artist not in seen_artists:
@@ -804,7 +964,8 @@ class MusicService:
                                 if norm not in seen_track_names:
                                     candidate_tracks.append({
                                         'name': name, 'artist': artist,
-                                        'priority': 2, 'source': 'title_search'
+                                        'priority': 2, 'source': 'title_search',
+                                        'track': track_item
                                     })
                                     seen_track_names.add(norm)
                             except Exception:
@@ -825,6 +986,7 @@ class MusicService:
             logger.info(f"Total candidates collected: {len(candidate_tracks)} (prioritizing different artists)")
 
             related_songs = []
+            fallback_song = None
             attempts = 0
             max_attempts = min(len(candidate_tracks), limit * 5)
 
@@ -849,7 +1011,34 @@ class MusicService:
                     youtube_query = f"{track_name} {track_artist}"
 
                     logger.debug(f"Searching YouTube for: {youtube_query} (from {source})")
-                    song_data = await self.search_youtube(youtube_query)
+                    results = await self.search_youtube(youtube_query, limit=YOUTUBE_MATCH_CANDIDATES)
+
+                    if isinstance(results, dict) and "entries" in results:
+                        entries = [e for e in (results.get("entries") or []) if e]
+                    elif results:
+                        entries = [results]
+                    else:
+                        entries = []
+
+                    # The Last.fm runtime is only consulted to relax the 12-minute
+                    # cap, so skip the extra API call unless something is long.
+                    candidate_duration = (
+                        await self._resolve_candidate_duration(candidate)
+                        if any((e.get("duration") or 0) > MAX_AUTOPLAY_DURATION for e in entries)
+                        else None
+                    )
+
+                    song_data = self._pick_best_youtube_match(
+                        entries, track_name, track_artist, candidate_duration
+                    )
+
+                    if not song_data and fallback_song is None:
+                        # Remember one plausible-but-unconfirmed pick so a run where
+                        # nothing verifies still plays something instead of stopping.
+                        fallback_song = self._pick_best_youtube_match(
+                            entries, track_name, track_artist,
+                            candidate_duration, relaxed=True,
+                        )
 
                     if song_data:
                         related_songs.append(song_data)
@@ -857,12 +1046,21 @@ class MusicService:
                             f"Added song {len(related_songs)}/{limit}: "
                             f"{track_name} by {track_artist} (from {source})"
                         )
+                    else:
+                        logger.info(
+                            f"No verified YouTube match for '{track_name}' by "
+                            f"'{track_artist}' ({len(entries)} results), skipping"
+                        )
 
                     await asyncio.sleep(0.3)
 
                 except Exception as track_error:
                     logger.warning(f"Error processing track: {track_error}")
                     continue
+
+            if not related_songs and fallback_song:
+                logger.info(f"No verified match for any candidate; falling back to '{fallback_song.get('title')}'")
+                related_songs.append(fallback_song)
 
             logger.info(f"Returning {len(related_songs)} related songs")
             return related_songs

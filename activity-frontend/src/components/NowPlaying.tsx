@@ -4,15 +4,16 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useGuildState, useServerPosition } from "./GuildStateProvider";
 import { useToast } from "./Toast";
 import { formatDuration, cn, proxyImg } from "@/lib/utils";
-import { apiFetch } from "@/lib/api";
 import MarqueeText from "./MarqueeText";
 import FavHeart from "./FavHeart";
 import AddToPlaylistButton from "./AddToPlaylistButton";
 import InviteButton from "./InviteButton";
+import ListenersBar from "./ListenersBar";
 import Popover from "./ui/Popover";
 import { SeekBar, LiveTime } from "./ui/SeekBar";
 import { PlayIcon, PauseIcon, NoteIcon } from "./ui/icons";
 import type { AudioPlayerHandle } from "@/hooks/useAudioPlayer";
+import { useTransportControls } from "@/hooks/useTransportControls";
 import type { LoopMode } from "@/types";
 
 const NEXT_LOOP: Record<LoopMode, LoopMode> = { off: "song", song: "queue", queue: "off" };
@@ -25,7 +26,7 @@ const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 export default function NowPlaying({ audio, volume, onVolumeChange }: {
   audio: AudioPlayerHandle; volume: number; onVolumeChange: (v: number) => void;
 }) {
-  const { state, guildId, sendCommand } = useGuildState();
+  const { state, sendCommand } = useGuildState();
   const serverPos = useServerPosition();
   const { toast } = useToast();
   const { current } = state;
@@ -56,23 +57,16 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
 
   const noNext = state.queue.length === 0 && !state.autoplay && !state.is_connected && state.loop_mode === "off";
 
-  const handleSkip = useCallback(async () => {
-    if (noNext) return;
-    audio.stop();
-    if (state.is_connected) await sendCommand("skip");
-    // force=true marks a user-initiated skip; plain /play no-ops while playing
-    else await apiFetch(`/api/guild/${guildId}/play?force=true`, { method: "POST" }).catch(() => {});
-  }, [noNext, state.is_connected, audio, sendCommand, guildId]);
-
-  const handlePrevious = useCallback(async () => {
-    audio.stop();
-    await sendCommand("previous");
-  }, [audio, sendCommand]);
+  const transport = useTransportControls(audio, volume, onVolumeChange, getDisplayPosition);
 
   const handleStop = useCallback(async () => {
     audio.stop();
-    await sendCommand("stop");
-  }, [audio, sendCommand]);
+    try {
+      await sendCommand("stop");
+    } catch (e: any) {
+      toast(e?.message || "Could not stop", "error");
+    }
+  }, [audio, sendCommand, toast]);
 
   const handleSeek = useCallback((seconds: number) => {
     // Match the server clamp (duration - 5) so seeking to the bar's end can't
@@ -102,7 +96,8 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
       {thumb && <img src={thumb} alt="" className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125 opacity-20" />}
       <div className="absolute inset-0 bg-gradient-to-b from-surface-1/50 via-surface-1/30 to-surface-1/80" />
 
-      <div className="absolute top-3 right-3 z-20">
+      <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
+        <ListenersBar />
         <InviteButton />
       </div>
 
@@ -211,7 +206,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
               >
                 <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z" /></svg>
               </ToggleBtn>
-              <Btn onClick={handlePrevious} disabled={!hasSong || state.history.length === 0} label="Previous">
+              <Btn onClick={transport.previous} disabled={!hasSong || state.history.length === 0} label="Previous">
                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
               </Btn>
               <button onClick={audio.playPause} disabled={!hasSong}
@@ -221,7 +216,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
                 )}>
                 {isPaused ? <PlayIcon className="w-6 h-6 ml-0.5" /> : <PauseIcon className="w-6 h-6" />}
               </button>
-              <Btn onClick={handleSkip} disabled={!hasSong || noNext} label="Skip">
+              <Btn onClick={transport.next} disabled={!hasSong || noNext} label="Skip">
                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
               </Btn>
               <ToggleBtn

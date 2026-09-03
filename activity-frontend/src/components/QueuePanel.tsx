@@ -29,8 +29,8 @@ import FavHeart from "./FavHeart";
 import AddToPlaylistButton, { AddQueueToPlaylistButton } from "./AddToPlaylistButton";
 import EmptyState from "./EmptyState";
 import IconButton from "./ui/IconButton";
-import { CloseIcon, PlayIcon, NoteIcon } from "./ui/icons";
-import type { Song } from "@/types";
+import { CloseIcon, PlayIcon, NoteIcon, SearchIcon } from "./ui/icons";
+import type { GuildState, Song } from "@/types";
 
 export default function QueuePanel() {
   const { state, guildId } = useGuildState();
@@ -41,6 +41,9 @@ export default function QueuePanel() {
   const [localQueue, setLocalQueue] = useState<Song[] | null>(null);
   const [removedUrls, setRemovedUrls] = useState<Set<string>>(new Set());
   const [confirmClear, setConfirmClear] = useState(false);
+  // Client-side only. While it's non-empty the rows no longer line up with the
+  // server queue, so reordering is disabled for its duration.
+  const [filter, setFilter] = useState("");
   // Row whose long-press drag is arming (touch delay constraint) — visual cue
   const [armingUrl, setArmingUrl] = useState<string | null>(null);
   // dnd-kit fires a click on the drag's mouseup — suppress button actions after a drag
@@ -62,6 +65,16 @@ export default function QueuePanel() {
     return removedUrls.size ? base.filter(s => !removedUrls.has(s.webpage_url)) : base;
   }, [localQueue, queue, removedUrls]);
 
+  const query = filter.trim().toLowerCase();
+  const filtering = query.length > 0;
+  // Rows carry their index in the unfiltered queue, so numbering stays true
+  // while filtered and drag indices never come from the filtered list.
+  const rows = displayed
+    .map((song, index) => ({ song, index }))
+    .filter(({ song }) => !filtering
+      || song.title.toLowerCase().includes(query)
+      || (song.uploader || "").toLowerCase().includes(query));
+
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
@@ -73,11 +86,35 @@ export default function QueuePanel() {
     [queue],
   );
 
+  // /queue/add always appends, so restoring the original slot takes a follow-up
+  // move. The position is read back from the server rather than assumed: other
+  // clients may have changed the queue while the toast was up.
+  const undoRemove = async (song: Song, pos: number) => {
+    try {
+      const res = await apiFetch<{ duplicate?: boolean }>(`/api/guild/${guildId}/queue/add`, {
+        method: "POST", body: JSON.stringify({ query: song.webpage_url }),
+      });
+      if (res.duplicate) return;
+      const server = await apiFetch<GuildState>(`/api/guild/${guildId}/state`);
+      const from = server.queue.findIndex(s => s.webpage_url === song.webpage_url);
+      const to = Math.min(pos, server.queue.length - 1);
+      if (from >= 0 && to >= 0 && from !== to) {
+        await apiFetch(`/api/guild/${guildId}/queue/move`, {
+          method: "POST", body: JSON.stringify({ from_pos: from, to_pos: to }),
+        });
+      }
+    } catch (e: any) {
+      toast(e.message || "Undo failed", "error");
+    }
+  };
+
   const handleRemove = (song: Song) => {
     const pos = serverIndex(song.webpage_url);
     if (pos < 0) return;
     setRemovedUrls(prev => new Set(prev).add(song.webpage_url));
-    apiFetch(`/api/guild/${guildId}/queue/${pos}`, { method: "DELETE" }).catch((e: any) => {
+    apiFetch(`/api/guild/${guildId}/queue/${pos}`, { method: "DELETE" }).then(() => {
+      toast(`Removed "${song.title}"`, "success", { label: "Undo", onClick: () => undoRemove(song, pos) });
+    }).catch((e: any) => {
       setRemovedUrls(prev => { const n = new Set(prev); n.delete(song.webpage_url); return n; });
       toast(e.message || "Remove failed", "error");
     });
@@ -114,6 +151,7 @@ export default function QueuePanel() {
 
   const handleDragEnd = async (event: DragEndEvent) => {
     setTimeout(() => { dragOccurred.current = false; }, 100);
+    if (filtering) return; // indices would be computed against a filtered list
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     const from = displayed.findIndex(s => s.webpage_url === active.id);
@@ -148,9 +186,11 @@ export default function QueuePanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.08] flex-shrink-0">
+      <div className="flex items-center justify-between px-4 pt-3 pb-2 flex-shrink-0">
         <span className="text-xs text-white/50 font-medium">
-          {displayed.length} song{displayed.length !== 1 ? "s" : ""}
+          {filtering
+            ? `${rows.length} of ${displayed.length}`
+            : `${displayed.length} song${displayed.length !== 1 ? "s" : ""}`}
           {queue_duration > 0 && <span className="text-white/40"> · {formatDuration(queue_duration)}</span>}
         </span>
         <div className="flex items-center gap-1.5">
@@ -167,20 +207,45 @@ export default function QueuePanel() {
         </div>
       </div>
 
+      <div className="px-4 pb-2.5 border-b border-white/[0.08] flex-shrink-0">
+        <div className="flex items-center gap-2 bg-surface-3/60 rounded-xl border border-white/[0.08] focus-within:border-accent/40 transition-[border-color] duration-200 px-3 py-1.5">
+          <SearchIcon className="w-3.5 h-3.5 text-white/40 flex-shrink-0" />
+          <input
+            type="text" value={filter} onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter queue..."
+            enterKeyHint="done" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            aria-label="Filter queue"
+            className="flex-1 bg-transparent text-white text-base sm:text-sm outline-none placeholder:text-white/30 min-w-0"
+          />
+          {filtering && (
+            <IconButton label="Clear filter" size="xs" onClick={() => setFilter("")}>
+              <CloseIcon className="w-3 h-3" />
+            </IconButton>
+          )}
+        </div>
+        {filtering && (
+          <p className="text-[10px] text-muted mt-1.5">Reordering is off while filtering</p>
+        )}
+      </div>
+
       <div className="flex-1 overflow-y-auto px-3 pb-3">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragPending={handleDragPending} onDragAbort={handleDragAbort} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-          <SortableContext items={displayed.map(s => s.webpage_url)} strategy={verticalListSortingStrategy}>
+          <SortableContext items={rows.map(r => r.song.webpage_url)} strategy={verticalListSortingStrategy}>
             <div className="flex flex-col gap-1 mt-1">
-              {displayed.map((song, i) => (
+              {rows.map(({ song, index }) => (
                 <QueueRow
                   key={song.webpage_url}
                   song={song}
-                  index={i}
+                  index={index}
                   arming={armingUrl === song.webpage_url}
+                  draggable={!filtering}
                   onSkipTo={() => handleSkipTo(song)}
                   onRemove={() => handleRemove(song)}
                 />
               ))}
+              {rows.length === 0 && (
+                <p className="text-xs text-muted text-center py-8">No songs match “{filter.trim()}”</p>
+              )}
             </div>
           </SortableContext>
         </DndContext>
@@ -189,11 +254,13 @@ export default function QueuePanel() {
   );
 }
 
-function QueueRow({ song, index, arming, onSkipTo, onRemove }: {
-  song: Song; index: number; arming: boolean; onSkipTo: () => void; onRemove: () => void;
+function QueueRow({ song, index, arming, draggable, onSkipTo, onRemove }: {
+  song: Song; index: number; arming: boolean; draggable: boolean;
+  onSkipTo: () => void; onRemove: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: song.webpage_url,
+    disabled: !draggable,
   });
 
   return (
@@ -201,9 +268,10 @@ function QueueRow({ song, index, arming, onSkipTo, onRemove }: {
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
       {...attributes}
-      {...listeners}
+      {...(draggable ? listeners : {})}
       className={cn(
-        "flex items-center gap-2.5 p-2 rounded-2xl bg-white/[0.02] border group cursor-grab active:cursor-grabbing",
+        "flex items-center gap-2.5 p-2 rounded-2xl bg-white/[0.02] border group",
+        draggable && "cursor-grab active:cursor-grabbing",
         "transition-[background-color,border-color,opacity,transform] duration-150",
         isDragging
           ? "opacity-40 border-accent/40 z-10 relative"

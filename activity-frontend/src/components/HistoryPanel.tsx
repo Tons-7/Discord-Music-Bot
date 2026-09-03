@@ -84,8 +84,12 @@ export default function HistoryPanel() {
             onClick={async () => {
               if (!confirmClear) { setConfirmClear(true); return; }
               setConfirmClear(false);
-              await apiFetch(`/api/guild/${guildId}/history/clear`, { method: "POST" });
-              toast("History cleared", "success");
+              try {
+                await apiFetch(`/api/guild/${guildId}/history/clear`, { method: "POST" });
+                toast("History cleared", "success");
+              } catch (e: any) {
+                toast(e?.message || "Could not clear history", "error");
+              }
             }}
             className={cn(
               "text-[11px] font-medium px-2 py-1 -my-1 rounded-md transition-colors",

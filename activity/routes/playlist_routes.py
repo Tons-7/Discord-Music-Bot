@@ -1,3 +1,5 @@
+import asyncio
+import functools
 import json
 import logging
 from typing import Optional
@@ -21,6 +23,52 @@ def _table(global_mode: bool) -> str:
 
 def _label(global_mode: bool) -> str:
     return "Global playlist" if global_mode else "Playlist"
+
+
+# Every mutation reads the whole songs blob, edits it in Python and writes it
+# back, so two concurrent writes to one playlist lose an update. One lock per
+# playlist covers the read and the write together.
+_playlist_locks: dict[tuple, asyncio.Lock] = {}
+
+
+def _playlist_lock(table: str, user_id: int, guild_id: int, name: str) -> asyncio.Lock:
+    key = (table, user_id, guild_id, name)
+    lock = _playlist_locks.get(key)
+    if lock is None:
+        if len(_playlist_locks) > 500:
+            for k, held in list(_playlist_locks.items()):
+                if not held.locked():
+                    del _playlist_locks[k]
+        lock = _playlist_locks.setdefault(key, asyncio.Lock())
+    return lock
+
+
+def _serialized(fn):
+    """Run a playlist-mutating endpoint under that playlist's lock.
+
+    FastAPI always invokes endpoints with keyword arguments, so the key can be
+    read straight off kwargs.
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        body = kwargs.get("body")
+        global_mode = (
+            getattr(body, "global_mode", False) if body is not None
+            else bool(kwargs.get("global_mode", False))
+        )
+        user = kwargs.get("user") or {}
+        # Global playlists are identified by (user_id, name) alone, so the guild
+        # must not split the lock or two guilds race on the same row.
+        lock = _playlist_lock(
+            _table(global_mode),
+            int(user.get("id", 0) or 0),
+            0 if global_mode else int(kwargs.get("guild_id", 0) or 0),
+            str(kwargs.get("name", "")),
+        )
+        async with lock:
+            return await fn(*args, **kwargs)
+
+    return wrapper
 
 
 async def _get_playlist(bot, user_id: int, name: str, guild_id: int, global_mode: bool) -> tuple[Optional[int], Optional[list]]:
@@ -264,6 +312,7 @@ class AddSongBody(BaseModel):
 
 
 @router.post("/{name}/add")
+@_serialized
 async def add_to_playlist(
     guild_id: int,
     name: str,
@@ -337,6 +386,7 @@ async def add_to_playlist(
 # ── Remove song from playlist ────────────────────────────────────────
 
 @router.delete("/{name}/{position}")
+@_serialized
 async def remove_from_playlist(
     guild_id: int,
     name: str,
@@ -374,6 +424,7 @@ class MoveBody(BaseModel):
 
 
 @router.post("/{name}/move")
+@_serialized
 async def move_in_playlist(
     guild_id: int,
     name: str,
@@ -409,6 +460,7 @@ class AddAllQueueBody(BaseModel):
 
 
 @router.post("/{name}/add-queue")
+@_serialized
 async def add_all_queue_to_playlist(
     guild_id: int,
     name: str,

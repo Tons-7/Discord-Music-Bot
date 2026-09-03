@@ -13,6 +13,8 @@ from .image_proxy import router as image_proxy_router
 from .playlist_routes import router as playlist_router
 from .lyrics_routes import router as lyrics_router
 from .stats_routes import router as stats_router
+from .presence_routes import router as presence_router
+from .settings_routes import router as settings_router
 
 api_router = APIRouter()
 api_router.include_router(config_router)
@@ -28,3 +30,5 @@ api_router.include_router(image_proxy_router)
 api_router.include_router(playlist_router)
 api_router.include_router(lyrics_router)
 api_router.include_router(stats_router)
+api_router.include_router(presence_router)
+api_router.include_router(settings_router)

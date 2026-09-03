@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -26,6 +27,9 @@ from services.playback_service import PlaybackService
 from utils import create_embed
 
 logger = logging.getLogger(__name__)
+
+# One SQLite connection per executor thread; connections must not cross threads.
+_db_local = threading.local()
 
 
 class GuildData(TypedDict):
@@ -72,6 +76,9 @@ class MusicBot(commands.Bot):
         self.guilds_data = {}
         self.ws_manager = None
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+        # Cache downloads hold a worker for the whole download + transcode (minutes),
+        # so they get their own pool instead of starving extraction and DB queries.
+        self.download_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
         self.song_cache = {}
         self.max_cache_size = MAX_CACHE_SIZE
@@ -330,6 +337,10 @@ class MusicBot(commands.Bot):
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique "
                 "ON playlists (user_id, guild_id, name)"
             )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_global_playlists_user_name "
+                "ON global_playlists (user_id, name)"
+            )
 
             # Schema version tracking
             cursor.execute(
@@ -389,9 +400,12 @@ class MusicBot(commands.Bot):
 
     @staticmethod
     def get_db_connection():
-        conn = sqlite3.connect("music_bot.db")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        conn = getattr(_db_local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect("music_bot.db")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            _db_local.conn = conn
         return conn
 
     async def execute_db_query(self, query: str, params: tuple = None):
@@ -556,6 +570,27 @@ class MusicBot(commands.Bot):
         except Exception as e:
             logger.error(f"Failed to remove favorite: {e}")
             return False
+
+    async def remove_favorite_by_url(self, user_id: int, url: str) -> tuple[bool, Optional[str]]:
+        """Remove the favorite matching a song URL. Returns (removed, title).
+
+        Deletes by row id rather than list position: a position resolved from an
+        earlier read can point at a different row by the time the delete runs.
+        """
+        try:
+            rows = await self.fetch_db_query(
+                "SELECT id, song_data FROM favorites WHERE user_id = ? ORDER BY added_at ASC",
+                (user_id,),
+            )
+            for fav_id, song_json in rows:
+                data = json.loads(song_json)
+                if (data.get("webpage_url") or data.get("url")) == url:
+                    await self.execute_db_query("DELETE FROM favorites WHERE id = ?", (fav_id,))
+                    return True, data.get("title")
+            return False, None
+        except Exception as e:
+            logger.error(f"Failed to remove favorite: {e}")
+            return False, None
 
     async def get_favorites(self, user_id: int) -> list[dict]:
         try:
@@ -1181,6 +1216,7 @@ class MusicBot(commands.Bot):
                     logger.debug(f"Error disconnecting voice client: {e}")
 
         self.executor.shutdown(wait=True)
+        self.download_executor.shutdown(wait=False, cancel_futures=True)
 
         await super().close()
         logger.info("Bot shutdown complete")
