@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from activity.dependencies import dj_member, get_bot, get_ws_manager, guild_member
-from activity.helpers import broadcast_state
+from activity.helpers import activity_advance, broadcast_state
 from activity.tasks import spawn
 from models.song import Song
 from utils.helpers import get_existing_urls
@@ -13,12 +13,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/guild/{guild_id}/queue", tags=["queue"])
 
 
-async def _auto_start_if_idle(bot, guild_id: int) -> bool:
-    """Start playback if idle.
+async def _auto_start_if_idle(bot, ws_manager, guild_id: int) -> bool:
+    """Start playback if idle. Always returns False (kept as the response's
+    ``auto_play`` flag for the frontend's idempotent nudge).
 
-    Returns True only when the frontend should call POST /play (Activity-only,
-    no voice). In the voice-connected branch the backend drives playback via
-    play_next, so it returns False to avoid a double advance.
+    Both branches now start server-side, so the state broadcast that follows
+    already shows the song as current. Leaving the advance to a follow-up POST
+    /play made the queue briefly render the song that was about to play.
     """
     guild_data = bot.get_guild_data(guild_id)
 
@@ -30,8 +31,8 @@ async def _auto_start_if_idle(bot, guild_id: int) -> bool:
         spawn(bot._playback_service.play_next(guild_id))
         return False
 
-    # Activity-only: let the frontend handle via POST /play
-    return True
+    await activity_advance(bot, ws_manager, guild_id)
+    return False
 
 
 class AddBody(BaseModel):
@@ -81,7 +82,7 @@ async def add_to_queue(guild_id: int, body: AddBody, user=Depends(guild_member),
         if added == 0 and skipped > 0:
             return {"ok": True, "added": 0, "skipped": skipped, "duplicate": True, "playlist": True}
 
-        should_start = await _auto_start_if_idle(bot, guild_id)
+        should_start = await _auto_start_if_idle(bot, ws, guild_id)
 
         await bot.save_guild_queue(guild_id)
         await broadcast_state(bot, ws, guild_id)
@@ -105,7 +106,7 @@ async def add_to_queue(guild_id: int, body: AddBody, user=Depends(guild_member),
     song = Song(info)
     bot._playback_service.queue_service.add_song_to_queue(guild_id, song)
 
-    should_start = await _auto_start_if_idle(bot, guild_id)
+    should_start = await _auto_start_if_idle(bot, ws, guild_id)
 
     await bot.save_guild_queue(guild_id)
     await broadcast_state(bot, ws, guild_id)

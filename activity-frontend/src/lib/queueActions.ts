@@ -4,10 +4,9 @@ import { apiFetch } from "@/lib/api";
  * Shared "nudge playback" helper for the panels that add songs to the queue
  * (Search/Favorites/History) or load a playlist (Playlist).
  *
- * The queue/add and playlist/load endpoints return `auto_play: true` when the
- * guild is in Activity-only mode and nothing is currently playing. In that case
- * the frontend must kick off playback via POST /play. We skip it when something
- * is already playing (hasCurrent) since the backend keeps advancing on its own.
+ * The backend now starts idle playback itself (`_auto_start_if_idle`), so
+ * `auto_play` is always false and this is a no-op. Kept as an idempotent guard:
+ * POST /play does nothing while something is already playing.
  *
  * Fire-and-forget: failures are swallowed (the WS broadcast is the source of truth).
  */

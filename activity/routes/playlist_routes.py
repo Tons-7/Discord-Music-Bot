@@ -9,6 +9,7 @@ from activity.dependencies import get_bot, get_ws_manager, guild_member
 from activity.helpers import fill_missing_thumbnails, member_avatar_url
 from activity.state_serializer import serialize_guild_state
 from config import MAX_PLAYLIST_SIZE
+from models.song import Song
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/guild/{guild_id}/playlists", tags=["playlists"])
@@ -221,7 +222,6 @@ async def load_playlist(
     if not songs:
         raise HTTPException(status_code=400, detail=f"{label} '{name}' is empty")
 
-    from models.song import Song
     from utils.helpers import get_existing_urls
 
     guild_data = bot.get_guild_data(guild_id)
@@ -239,7 +239,7 @@ async def load_playlist(
     should_start = False
     if not guild_data.get("current") and added > 0:
         from activity.routes.queue_routes import _auto_start_if_idle
-        should_start = await _auto_start_if_idle(bot, guild_id)
+        should_start = await _auto_start_if_idle(bot, ws, guild_id)
 
     await bot.save_guild_queue(guild_id)
 
@@ -253,11 +253,14 @@ async def load_playlist(
     return {"ok": True, "added": added, "total": len(songs), "auto_play": should_start}
 
 
-# ── Add current song to playlist ─────────────────────────────────────
+# ── Add a song to a playlist ─────────────────────────────────────────
 
 class AddSongBody(BaseModel):
     song_url: str
     global_mode: bool = False
+    # Metadata for songs that aren't in the session (search results, favorites,
+    # playlist rows). Falls back to a lookup when absent.
+    song: dict | None = None
 
 
 @router.post("/{name}/add")
@@ -279,6 +282,9 @@ async def add_to_playlist(
     if len(songs) >= MAX_PLAYLIST_SIZE:
         raise HTTPException(status_code=400, detail=f"{label} is full ({MAX_PLAYLIST_SIZE} songs max)")
 
+    if any(s.get("webpage_url") == body.song_url for s in songs):
+        raise HTTPException(status_code=409, detail="Song already in playlist")
+
     # Find the song from current/queue/history
     guild_data = bot.get_guild_data(guild_id)
     song_dict = None
@@ -299,12 +305,25 @@ async def add_to_playlist(
                 song_dict = s.to_dict()
                 break
 
-    if not song_dict:
-        raise HTTPException(status_code=404, detail="Song not found in current session")
+    if not song_dict and body.song:
+        meta = {**body.song, "webpage_url": body.song_url}
+        if meta.get("title"):
+            song_dict = Song(meta).to_dict()
 
-    # Check duplicate
-    if any(s.get("webpage_url") == body.song_url for s in songs):
-        raise HTTPException(status_code=409, detail="Song already in playlist")
+    if not song_dict:
+        # Nothing local to go on (e.g. a pasted URL) — resolve it properly.
+        try:
+            info = await bot._music_service.get_song_info_cached(body.song_url)
+        except Exception:
+            info = None
+        if isinstance(info, list):
+            info = info[0] if info else None
+        if isinstance(info, dict) and info.get("title"):
+            info.setdefault("webpage_url", body.song_url)
+            song_dict = Song(info).to_dict()
+
+    if not song_dict:
+        raise HTTPException(status_code=404, detail="Could not resolve that song")
 
     songs.append(song_dict)
     await bot.execute_db_query(

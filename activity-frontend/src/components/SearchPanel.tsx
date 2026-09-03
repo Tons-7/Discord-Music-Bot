@@ -7,12 +7,16 @@ import { maybeAutoPlay } from "@/lib/queueActions";
 import { formatDuration, cn } from "@/lib/utils";
 import { useToast } from "./Toast";
 import SongRow from "./SongRow";
+import AddToPlaylistButton from "./AddToPlaylistButton";
 import EmptyState from "./EmptyState";
 import { SongRowSkeleton } from "./ui/Skeleton";
 import { SearchIcon } from "./ui/icons";
 import type { SearchResult } from "@/types";
 
 const EMPTY_PENDING: ReadonlySet<string> = new Set();
+
+// Server accepts up to 25 (activity/routes/search_routes.py)
+const SEARCH_LIMIT = 13;
 
 export default function SearchPanel() {
   const { guildId, state } = useGuildState();
@@ -49,7 +53,7 @@ export default function SearchPanel() {
     setError(false);
     try {
       const data = await apiFetch<{ results: SearchResult[] }>(
-        `/api/guild/${guildId}/search?q=${encodeURIComponent(q)}&limit=8`,
+        `/api/guild/${guildId}/search?q=${encodeURIComponent(q)}&limit=${SEARCH_LIMIT}`,
         { signal: ctrl.signal },
       );
       setResults(data.results);
@@ -221,6 +225,7 @@ export default function SearchPanel() {
                 disabled={isAdded || isPending}
                 trailing={
                   <>
+                    <AddToPlaylistButton song={{ webpage_url: key, title: result.title, duration: result.duration, thumbnail: result.thumbnail, uploader: result.uploader, url: result.url }} />
                     <span className="text-[11px] tabular-nums text-muted">
                       {result.duration > 0 ? formatDuration(result.duration) : ""}
                     </span>

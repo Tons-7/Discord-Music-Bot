@@ -44,25 +44,30 @@ class QueueService:
 
     def add_to_history(self, guild_id: int, song: Song):
         guild_data = self.bot.get_guild_data(guild_id)
+        history = guild_data["history"]
 
-        if any(
-                s.webpage_url == song.webpage_url for s in guild_data["history"]
-        ):
+        # Walking back with the previous button: the song that just finished is
+        # the one history_position points at. Leave order and position alone so
+        # the next previous click steps further back instead of repeating it.
+        pos = guild_data.get("history_position", len(history))
+        if 0 <= pos < len(history) and history[pos].webpage_url == song.webpage_url:
             return
 
-        history_song = Song.from_dict(song.to_dict())
-        guild_data["history"].append(history_song)
+        # A song played again moves to the most-recent end rather than being
+        # skipped as a duplicate, so history order — and the previous button,
+        # which reads history[history_position - 1] — reflect real play order.
+        for i, existing in enumerate(history):
+            if existing.webpage_url == song.webpage_url:
+                del history[i]
+                break
 
-        guild_data["history_position"] = len(guild_data["history"])
+        history.append(Song.from_dict(song.to_dict()))
 
-        if len(guild_data["history"]) > MAX_HISTORY_SIZE:
-            guild_data["history"] = guild_data["history"][-MAX_HISTORY_SIZE:]
-            # Clamp position to new length (use len after trim)
-            trimmed_len = len(guild_data["history"])
-            guild_data["history_position"] = min(
-                guild_data.get("history_position", trimmed_len),
-                trimmed_len,
-            )
+        if len(history) > MAX_HISTORY_SIZE:
+            history = history[-MAX_HISTORY_SIZE:]
+            guild_data["history"] = history
+
+        guild_data["history_position"] = len(history)
 
         existing_urls = {s.webpage_url for s in guild_data["loop_backup"]}
         if song.webpage_url not in existing_urls:

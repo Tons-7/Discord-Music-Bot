@@ -25,14 +25,17 @@ export default function IconButton({
   tone = "default",
   className,
   children,
+  ref,
   ...rest
 }: {
   label: string;
   size?: Size;
   tone?: Tone;
+  ref?: React.Ref<HTMLButtonElement>;
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
+      ref={ref}
       type="button"
       aria-label={label}
       title={label}

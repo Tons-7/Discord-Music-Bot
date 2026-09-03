@@ -26,6 +26,7 @@ import { formatDuration, proxyImg, cn } from "@/lib/utils";
 import { apiFetch } from "@/lib/api";
 import MarqueeText from "./MarqueeText";
 import FavHeart from "./FavHeart";
+import AddToPlaylistButton from "./AddToPlaylistButton";
 import EmptyState from "./EmptyState";
 import IconButton from "./ui/IconButton";
 import { CloseIcon, PlayIcon, NoteIcon } from "./ui/icons";
@@ -240,6 +241,7 @@ function QueueRow({ song, index, arming, onSkipTo, onRemove }: {
 
       <div className="flex items-center gap-0.5 flex-shrink-0">
         <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity">
+          <AddToPlaylistButton song={song} />
           <FavHeart webpageUrl={song.webpage_url} title={song.title} url={song.url} duration={song.duration} thumbnail={song.thumbnail} uploader={song.uploader} />
           <IconButton label="Remove" size="xs" tone="danger" onClick={(e) => { e.stopPropagation(); onRemove(); }}>
             <CloseIcon className="w-3 h-3" />

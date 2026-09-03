@@ -7,6 +7,7 @@ import { formatDuration, cn, proxyImg } from "@/lib/utils";
 import { apiFetch } from "@/lib/api";
 import MarqueeText from "./MarqueeText";
 import FavHeart from "./FavHeart";
+import AddToPlaylistButton from "./AddToPlaylistButton";
 import InviteButton from "./InviteButton";
 import Popover from "./ui/Popover";
 import { SeekBar, LiveTime } from "./ui/SeekBar";
@@ -148,7 +149,12 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
                 <p className="text-sm text-white/50 truncate">Nothing playing</p>
               )}
             </div>
-            {hasSong && <FavHeart webpageUrl={current.webpage_url} title={current.title} duration={current.duration} thumbnail={current.thumbnail} uploader={current.uploader} size="md" />}
+            {hasSong && (
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <AddToPlaylistButton song={current} size="md" />
+                <FavHeart webpageUrl={current.webpage_url} title={current.title} duration={current.duration} thumbnail={current.thumbnail} uploader={current.uploader} size="md" />
+              </div>
+            )}
           </div>
 
           {hasSong && !current.is_live && (
