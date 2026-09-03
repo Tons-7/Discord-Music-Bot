@@ -21,7 +21,7 @@ const AUDIO_EFFECTS: readonly [string, string][] = [
 ];
 const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
-export default function NowPlaying({ audio, compact }: { audio: AudioPlayerHandle; compact?: boolean }) {
+export default function NowPlaying({ audio }: { audio: AudioPlayerHandle }) {
   const { state, guildId, sendCommand } = useGuildState();
   const serverPos = useServerPosition();
   const { toast } = useToast();
@@ -89,19 +89,13 @@ export default function NowPlaying({ audio, compact }: { audio: AudioPlayerHandl
       {thumb && <img src={thumb} alt="" className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125 opacity-20" />}
       <div className="absolute inset-0 bg-gradient-to-b from-surface-1/50 via-surface-1/30 to-surface-1/80" />
 
-      {!compact && (
-        <div className="absolute top-3 right-3 z-20">
-          <InviteButton />
-        </div>
-      )}
+      <div className="absolute top-3 right-3 z-20">
+        <InviteButton />
+      </div>
 
-      <div className="relative z-10 flex-1 flex items-center justify-center p-4 max-sm:p-3 min-h-0 min-w-0">
-        <div
-          className={cn(
-            "relative rounded-2xl overflow-hidden shadow-[0_8px_40px_rgba(0,0,0,0.5)]",
-            compact ? "w-[140px] aspect-square" : "aspect-square max-sm:w-full max-sm:max-h-full sm:h-full sm:max-w-full"
-          )}
-        >
+      {/* Size container: art stays square, sized by the smaller available axis */}
+      <div className="relative z-10 flex-1 flex items-center justify-center p-4 max-sm:p-3 min-h-0 min-w-0 [container-type:size]">
+        <div className="relative aspect-square w-[min(100cqw,100cqh)] rounded-2xl overflow-hidden shadow-[0_8px_40px_rgba(0,0,0,0.5)]">
           {thumb ? (
             <img src={thumb} alt="" className="w-full h-full object-cover" />
           ) : (
@@ -129,23 +123,21 @@ export default function NowPlaying({ audio, compact }: { audio: AudioPlayerHandl
         </div>
       </div>
 
-      <div className="relative z-10 flex-shrink-0 p-4 max-sm:p-3">
-        <div className="w-full max-w-4xl mx-auto rounded-2xl bg-surface-3/80 backdrop-blur-lg border border-white/[0.08] px-8 py-6 max-sm:px-4 max-sm:py-3.5 flex flex-col gap-3">
-          {!compact && (
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                {hasSong ? (
-                  <>
-                    <MarqueeText className="text-sm font-semibold text-white select-text">{current.title}</MarqueeText>
-                    <p className="text-[11px] text-white/50 truncate mt-0.5">{current.uploader}</p>
-                  </>
-                ) : (
-                  <p className="text-sm text-white/50 truncate">Nothing playing</p>
-                )}
-              </div>
-              {hasSong && <FavHeart webpageUrl={current.webpage_url} title={current.title} duration={current.duration} thumbnail={current.thumbnail} uploader={current.uploader} size="md" />}
+      <div className="relative z-10 flex-shrink-0 p-4 max-sm:p-3 @container">
+        <div className="w-full max-w-4xl mx-auto rounded-2xl bg-surface-3/80 backdrop-blur-lg border border-white/[0.08] px-8 py-6 @max-[42rem]:px-4 @max-[42rem]:py-3.5 flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              {hasSong ? (
+                <>
+                  <MarqueeText className="text-sm font-semibold text-white select-text">{current.title}</MarqueeText>
+                  <p className="text-[11px] text-white/50 truncate mt-0.5">{current.uploader}</p>
+                </>
+              ) : (
+                <p className="text-sm text-white/50 truncate">Nothing playing</p>
+              )}
             </div>
-          )}
+            {hasSong && <FavHeart webpageUrl={current.webpage_url} title={current.title} duration={current.duration} thumbnail={current.thumbnail} uploader={current.uploader} size="md" />}
+          </div>
 
           {hasSong && !current.is_live && (
             <div className="flex items-center gap-2.5">
@@ -161,13 +153,9 @@ export default function NowPlaying({ audio, compact }: { audio: AudioPlayerHandl
             </div>
           )}
 
-          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 max-sm:grid-cols-1 max-sm:justify-items-center">
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 @max-[42rem]:grid-cols-1 @max-[42rem]:justify-items-center">
             {/* Secondary controls */}
-            <div className={cn(
-              "flex items-center gap-2 min-w-0 max-sm:order-2 max-sm:w-full max-sm:justify-center",
-              "max-sm:overflow-x-auto max-sm:[scrollbar-width:none] max-sm:[&::-webkit-scrollbar]:hidden",
-              compact && "invisible"
-            )}>
+            <div className="flex items-center gap-2 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden @max-[42rem]:order-2 @max-[42rem]:w-full @max-[42rem]:justify-center">
               <Pill ref={speedAnchorRef} active={expanded === "speed" || state.speed !== 1.0} label="Playback speed"
                 onClick={() => setExpanded(expanded === "speed" ? null : "speed")}>
                 {state.speed}x
@@ -197,7 +185,7 @@ export default function NowPlaying({ audio, compact }: { audio: AudioPlayerHandl
             </div>
 
             {/* Transport: shuffle · prev · play · next · loop */}
-            <div className="flex items-center gap-1.5 max-sm:order-1 max-sm:gap-2.5">
+            <div className="flex items-center gap-1.5 @max-[42rem]:order-1 @max-[42rem]:gap-2.5">
               <ToggleBtn
                 active={state.shuffle}
                 label="Shuffle"
@@ -232,7 +220,7 @@ export default function NowPlaying({ audio, compact }: { audio: AudioPlayerHandl
             </div>
 
             {/* Volume */}
-            <div className={cn("flex items-center gap-1.5 justify-end max-sm:hidden", compact && "invisible")}>
+            <div className="flex items-center gap-1.5 justify-end @max-[42rem]:hidden">
               <Btn label={localVol === 0 ? "Unmute" : "Mute"} onClick={() => { const v = state.volume === 0 ? 50 : 0; setLocalVol(v); commitVolume(v); audio.setVolume(v); }}>
                 <VolumeIcon muted={localVol === 0} />
               </Btn>
@@ -243,8 +231,8 @@ export default function NowPlaying({ audio, compact }: { audio: AudioPlayerHandl
                 className="w-16 h-0.5" />
             </div>
 
-            {/* Mobile volume popover trigger lives with the secondary pills */}
-            <div className={cn("hidden max-sm:flex items-center max-sm:order-3", compact && "invisible")}>
+            {/* Narrow layout: volume as a popover */}
+            <div className="hidden @max-[42rem]:flex items-center @max-[42rem]:order-3">
               <button
                 ref={volAnchorRef}
                 onClick={() => setExpanded(expanded === "volume" ? null : "volume")}

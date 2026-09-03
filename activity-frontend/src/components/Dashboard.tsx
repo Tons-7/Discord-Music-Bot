@@ -159,7 +159,7 @@ export default function Dashboard() {
         panelOpen && "max-sm:hidden"
       )}>
         <div className="flex-1 overflow-hidden">
-          <NowPlaying audio={audio} compact={panelOpen} />
+          <NowPlaying audio={audio} />
         </div>
       </div>
 
