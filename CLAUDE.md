@@ -154,8 +154,9 @@ through voice channel), with separate M4A disk cache at `audio_cache/activity/`.
 
 **Activity-only playback:** Works without voice channel. Pause/resume tracked via `pause_position`/`start_time`.
 Autoplay uses Last.fm recommendations. State cleared when last Activity client disconnects. When adding songs with
-nothing playing, the frontend calls `POST /play` (triggered by `auto_play: true` in queue/add response) — backend does
-not pop from queue in `_auto_start_if_idle` for Activity-only mode. User-initiated skips must send `POST /play?force=true`
+nothing playing, `_auto_start_if_idle` advances server-side via `activity_advance`, so the broadcast that follows
+already shows the song as current instead of leaving it in the queue for a frontend round-trip; it always returns
+`auto_play: false` and the frontend's `maybeAutoPlay` is a no-op guard. User-initiated skips must send `POST /play?force=true`
 (plain `/play` is idempotent and no-ops while something is playing). Position is computed as `elapsed * speed +
 seek_offset`, so `/speed` and `/effects` call `_rebase_activity_clock()` before changing the effective speed — otherwise
 already-played time gets rescaled. Playlist songs stored without thumbnails get them derived from the YouTube video ID
