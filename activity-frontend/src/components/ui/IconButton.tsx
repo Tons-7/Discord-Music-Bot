@@ -42,6 +42,7 @@ export default function IconButton({
       {...rest}
       className={cn(
         "relative flex items-center justify-center flex-shrink-0 transition-colors active:scale-90",
+        "disabled:opacity-40 disabled:pointer-events-none",
         "pointer-coarse:after:absolute pointer-coarse:after:-inset-1.5 pointer-coarse:after:content-['']",
         SIZE_CLS[size],
         TONE_CLS[tone],
