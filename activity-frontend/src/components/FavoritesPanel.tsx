@@ -8,6 +8,7 @@ import { apiFetch } from "@/lib/api";
 import { maybeAutoPlay } from "@/lib/queueActions";
 import { formatDuration } from "@/lib/utils";
 import SongRow from "./SongRow";
+import AddToPlaylistButton from "./AddToPlaylistButton";
 import EmptyState from "./EmptyState";
 import IconButton from "./ui/IconButton";
 import { SongRowSkeleton } from "./ui/Skeleton";
@@ -95,6 +96,7 @@ export default function FavoritesPanel() {
                 disabled={isAdding}
                 trailing={
                   <>
+                    <AddToPlaylistButton song={fav} />
                     <IconButton
                       label="Remove from favorites"
                       size="xs"

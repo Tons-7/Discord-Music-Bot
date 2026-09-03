@@ -8,6 +8,7 @@ import { formatDuration, cn } from "@/lib/utils";
 import { useToast } from "./Toast";
 import FavHeart from "./FavHeart";
 import SongRow from "./SongRow";
+import AddToPlaylistButton from "./AddToPlaylistButton";
 import EmptyState from "./EmptyState";
 
 export default function HistoryPanel() {
@@ -113,6 +114,7 @@ export default function HistoryPanel() {
                 disabled={isAdded || isPending}
                 trailing={
                   <>
+                    <AddToPlaylistButton song={song} />
                     <FavHeart webpageUrl={song.webpage_url} title={song.title} duration={song.duration} thumbnail={song.thumbnail} uploader={song.uploader} />
                     <span className="text-[11px] tabular-nums text-muted">
                       {song.duration > 0 ? formatDuration(song.duration) : ""}
