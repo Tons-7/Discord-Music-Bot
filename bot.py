@@ -300,6 +300,7 @@ class MusicBot(commands.Bot):
                     playlist_id INTEGER NOT NULL,
                     user_id     INTEGER NOT NULL,
                     is_global   INTEGER DEFAULT 0,
+                    permission  TEXT    DEFAULT 'edit',
                     added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE (playlist_id, user_id, is_global)
                 )
@@ -383,7 +384,11 @@ class MusicBot(commands.Bot):
     def _run_migrations(cursor, from_version: int, to_version: int):
         """Run sequential schema migrations."""
         migrations = {
-            # Next migration goes here as version 5
+            # Existing collaborators keep full access; the column only lets an
+            # owner narrow it from here on.
+            5: [
+                "ALTER TABLE playlist_collaborators ADD COLUMN permission TEXT DEFAULT 'edit'",
+            ],
         }
 
         for version in range(from_version + 1, to_version + 1):
@@ -619,11 +624,36 @@ class MusicBot(commands.Bot):
             )
         return rows[0][0] if rows else None
 
-    async def add_collaborator(self, playlist_id: int, user_id: int, is_global: bool = False):
+    async def add_collaborator(
+        self, playlist_id: int, user_id: int, is_global: bool = False, permission: str = "edit"
+    ):
         await self.execute_db_query(
-            "INSERT OR IGNORE INTO playlist_collaborators (playlist_id, user_id, is_global) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO playlist_collaborators "
+            "(playlist_id, user_id, is_global, permission) VALUES (?, ?, ?, ?)",
+            (playlist_id, user_id, 1 if is_global else 0, permission),
+        )
+
+    async def set_collaborator_permission(
+        self, playlist_id: int, user_id: int, permission: str, is_global: bool = False
+    ) -> None:
+        await self.execute_db_query(
+            "UPDATE playlist_collaborators SET permission = ? "
+            "WHERE playlist_id = ? AND user_id = ? AND is_global = ?",
+            (permission, playlist_id, user_id, 1 if is_global else 0),
+        )
+
+    async def get_collaborator_permission(
+        self, playlist_id: int, user_id: int, is_global: bool = False
+    ) -> Optional[str]:
+        """Permission level for a collaborator, or None when they are not one."""
+        rows = await self.fetch_db_query(
+            "SELECT permission FROM playlist_collaborators "
+            "WHERE playlist_id = ? AND user_id = ? AND is_global = ?",
             (playlist_id, user_id, 1 if is_global else 0),
         )
+        if not rows:
+            return None
+        return rows[0][0] or "edit"
 
     async def remove_collaborator(self, playlist_id: int, user_id: int, is_global: bool = False):
         await self.execute_db_query(
@@ -631,12 +661,14 @@ class MusicBot(commands.Bot):
             (playlist_id, user_id, 1 if is_global else 0),
         )
 
-    async def get_collaborators(self, playlist_id: int, is_global: bool = False) -> list[int]:
+    async def get_collaborators(self, playlist_id: int, is_global: bool = False) -> list[tuple[int, str]]:
+        """(user_id, permission) for each collaborator."""
         rows = await self.fetch_db_query(
-            "SELECT user_id FROM playlist_collaborators WHERE playlist_id = ? AND is_global = ?",
+            "SELECT user_id, permission FROM playlist_collaborators "
+            "WHERE playlist_id = ? AND is_global = ?",
             (playlist_id, 1 if is_global else 0),
         )
-        return [row[0] for row in rows]
+        return [(row[0], row[1] or "edit") for row in rows]
 
     async def is_collaborator(self, playlist_id: int, user_id: int, is_global: bool = False) -> bool:
         rows = await self.fetch_db_query(

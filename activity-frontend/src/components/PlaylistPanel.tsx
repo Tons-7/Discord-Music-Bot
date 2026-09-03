@@ -31,7 +31,10 @@ import EmptyState from "./EmptyState";
 import IconButton from "./ui/IconButton";
 import { SongRowSkeleton } from "./ui/Skeleton";
 import { Spinner, BackIcon, PlusIcon, PlayIcon, TrashIcon, CloseIcon, CheckIcon, SearchIcon, NoteIcon } from "./ui/icons";
-import type { Playlist, PlaylistSong, Member, Collab } from "@/types";
+import FavHeart from "./FavHeart";
+import AddToPlaylistButton, { CopyPlaylistButton } from "./AddToPlaylistButton";
+import { PLAYLIST_PERMISSIONS, playlistCan } from "@/types";
+import type { Playlist, PlaylistSong, Member, Collab, PlaylistPermission } from "@/types";
 
 type View = "list" | "detail" | "collabs";
 
@@ -43,6 +46,7 @@ export default function PlaylistPanel() {
   const [view, setView] = useState<View>("list");
   const [globalMode, setGlobalMode] = useState(false);
   const [selectedName, setSelectedName] = useState("");
+  const [selectedOwner, setSelectedOwner] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -54,6 +58,7 @@ export default function PlaylistPanel() {
   const dragOccurred = useRef(false);
 
   const [memberSearch, setMemberSearch] = useState("");
+  const [newCollabPermission, setNewCollabPermission] = useState<PlaylistPermission>("edit");
   const [members, setMembers] = useState<Member[]>([]);
   const [memberSearching, setMemberSearching] = useState(false);
   const searchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -67,8 +72,9 @@ export default function PlaylistPanel() {
 
   const gm = `global_mode=${globalMode}`;
   const listKey = `/api/guild/${guildId}/playlists?${gm}`;
+  const ownerParam = selectedOwner ? `&owner_id=${selectedOwner}` : "";
   const detailKey = view === "detail" && selectedName
-    ? `/api/guild/${guildId}/playlists/${encodeURIComponent(selectedName)}?${gm}`
+    ? `/api/guild/${guildId}/playlists/${encodeURIComponent(selectedName)}?${gm}${ownerParam}`
     : null;
   const collabsKey = view === "collabs" && selectedName
     ? `/api/guild/${guildId}/playlists/${encodeURIComponent(selectedName)}/collabs?${gm}`
@@ -76,10 +82,18 @@ export default function PlaylistPanel() {
 
   const { data: listData, isLoading: listLoading } = useSWR<{ playlists: Playlist[] }>(listKey);
   const { data: detailData, isLoading: detailLoading } = useSWR<{ songs: PlaylistSong[] }>(detailKey);
-  const { data: collabsData, isLoading: collabLoading } = useSWR<{ collaborators: Collab[] }>(collabsKey);
+  const { data: collabsData, isLoading: collabLoading } = useSWR<{ collaborators: Collab[]; levels: PlaylistPermission[] }>(collabsKey);
   const playlists = listData?.playlists ?? [];
   const songs = detailData?.songs ?? [];
   const collabs = collabsData?.collaborators ?? [];
+  const levels = collabsData?.levels ?? PLAYLIST_PERMISSIONS;
+
+  // The list carries the grant, so the detail views need no extra fetch.
+  const selected = playlists.find(p => p.name === selectedName && p.owner_id === selectedOwner);
+  const permission = selected?.permission ?? "view";
+  const isOwner = permission === "owner";
+  const canAppend = playlistCan(permission, "append");
+  const canEdit = playlistCan(permission, "edit");
 
   useEffect(() => {
     if (!confirmDelete) return;
@@ -92,7 +106,8 @@ export default function PlaylistPanel() {
     searchAbort.current?.abort();
   }, []);
 
-  const openPlaylist = (name: string) => {
+  const openPlaylist = (name: string, ownerId: string | null) => {
+    setSelectedOwner(ownerId);
     setSelectedName(name);
     setView("detail");
   };
@@ -120,18 +135,18 @@ export default function PlaylistPanel() {
     }
   };
 
-  const handleLoad = async (name: string) => {
+  const handleLoad = async (name: string, ownerId: string | null = null) => {
     try {
-      const r = await apiFetch<{ added: number; total: number; auto_play?: boolean }>(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/load`, { method: "POST", body: JSON.stringify({ global_mode: globalMode }) });
+      const r = await apiFetch<{ added: number; total: number; auto_play?: boolean }>(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/load`, { method: "POST", body: JSON.stringify({ global_mode: globalMode, owner_id: ownerId }) });
       maybeAutoPlay(guildId, r, !!state.current);
       toast(`Loaded ${r.added} of ${r.total} songs`, "success");
     } catch (e: any) { toast(e.message, "error"); }
   };
 
-  const handleAddCurrent = async (name: string) => {
+  const handleAddCurrent = async (name: string, ownerId: string | null = null) => {
     if (!state.current) { toast("Nothing playing", "error"); return; }
     try {
-      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add`, { method: "POST", body: JSON.stringify({ song_url: state.current.webpage_url, global_mode: globalMode }) });
+      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add`, { method: "POST", body: JSON.stringify({ song_url: state.current.webpage_url, global_mode: globalMode, owner_id: ownerId }) });
       toast(`Saved to "${name}"`, "success");
       mutate(listKey);
       if (detailKey && selectedName === name) mutate(detailKey);
@@ -141,15 +156,16 @@ export default function PlaylistPanel() {
   // The add endpoint appends, so restoring the original slot takes a follow-up
   // move. Keys are rebuilt from the captured playlist: the user may have
   // navigated elsewhere while the undo toast was up.
-  const undoRemoveSong = async (song: PlaylistSong, pos: number, name: string, isGlobal: boolean) => {
+  const undoRemoveSong = async (song: PlaylistSong, pos: number, name: string, isGlobal: boolean, ownerId: string | null) => {
     const base = `/api/guild/${guildId}/playlists/${encodeURIComponent(name)}`;
-    const suffix = `global_mode=${isGlobal}`;
+    const suffix = `global_mode=${isGlobal}${ownerId ? `&owner_id=${ownerId}` : ""}`;
     try {
       const res = await apiFetch<{ song_count: number }>(`${base}/add`, {
         method: "POST",
         body: JSON.stringify({
           song_url: song.webpage_url,
           global_mode: isGlobal,
+          owner_id: ownerId,
           song: { title: song.title, uploader: song.uploader, duration: song.duration, thumbnail: song.thumbnail || "" },
         }),
       });
@@ -157,7 +173,7 @@ export default function PlaylistPanel() {
       if (from > pos) {
         await apiFetch(`${base}/move`, {
           method: "POST",
-          body: JSON.stringify({ from_pos: from, to_pos: pos, global_mode: isGlobal }),
+          body: JSON.stringify({ from_pos: from, to_pos: pos, global_mode: isGlobal, owner_id: ownerId }),
         });
       }
     } catch (e: any) {
@@ -172,10 +188,11 @@ export default function PlaylistPanel() {
     if (!detailKey) return;
     const name = selectedName;
     const isGlobal = globalMode;
+    const ownerId = selectedOwner;
     mutate(detailKey, { songs: songs.filter((_, i) => i !== pos) }, { revalidate: false });
     try {
-      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/${pos}?${gm}`, { method: "DELETE" });
-      toast("Removed", "success", { label: "Undo", onClick: () => undoRemoveSong(song, pos, name, isGlobal) });
+      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/${pos}?${gm}${ownerId ? `&owner_id=${ownerId}` : ""}`, { method: "DELETE" });
+      toast("Removed", "success", { label: "Undo", onClick: () => undoRemoveSong(song, pos, name, isGlobal, ownerId) });
     } catch (e: any) { toast(e.message, "error"); }
     finally { mutate(detailKey); mutate(listKey); }
   };
@@ -219,7 +236,7 @@ export default function PlaylistPanel() {
     if (from < 0 || to < 0) return;
     mutate(detailKey, { songs: arrayMove(songs, from, to) }, { revalidate: false });
     try {
-      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(selectedName)}/move`, { method: "POST", body: JSON.stringify({ from_pos: from, to_pos: to, global_mode: globalMode }) });
+      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(selectedName)}/move`, { method: "POST", body: JSON.stringify({ from_pos: from, to_pos: to, global_mode: globalMode, owner_id: selectedOwner }) });
       mutate(listKey); // first song may have changed -> playlist cover updates
     } catch (e: any) {
       toast(e.message, "error");
@@ -227,7 +244,8 @@ export default function PlaylistPanel() {
     }
   };
 
-  const openCollabs = (name: string) => {
+  const openCollabs = (name: string, ownerId: string | null) => {
+    setSelectedOwner(ownerId);
     setSelectedName(name);
     setView("collabs");
     setMemberSearch("");
@@ -266,18 +284,28 @@ export default function PlaylistPanel() {
 
   const handleAddCollab = async (member: Member) => {
     if (!collabsKey) return;
+    const level = newCollabPermission;
     try {
-      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(selectedName)}/collabs`, { method: "POST", body: JSON.stringify({ user_id: member.id, global_mode: globalMode }) });
+      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(selectedName)}/collabs`, { method: "POST", body: JSON.stringify({ user_id: member.id, global_mode: globalMode, permission: level }) });
       toast(`Added ${member.display_name}`, "success");
-      mutate(collabsKey, { collaborators: [...collabs, { id: member.id, display_name: member.display_name, avatar: member.avatar }] }, { revalidate: false });
+      mutate(collabsKey, { collaborators: [...collabs, { id: member.id, display_name: member.display_name, avatar: member.avatar, permission: level }], levels }, { revalidate: false });
       setMembers(prev => prev.filter(m => m.id !== member.id));
       setMemberSearch("");
     } catch (e: any) { toast(e.message, "error"); }
   };
 
+  const handleSetCollabPermission = async (collab: Collab, level: PlaylistPermission) => {
+    if (!collabsKey || collab.permission === level) return;
+    mutate(collabsKey, { collaborators: collabs.map(c => c.id === collab.id ? { ...c, permission: level } : c), levels }, { revalidate: false });
+    try {
+      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(selectedName)}/collabs/${collab.id}`, { method: "POST", body: JSON.stringify({ permission: level, global_mode: globalMode }) });
+    } catch (e: any) { toast(e.message, "error"); }
+    finally { mutate(collabsKey); }
+  };
+
   const handleRemoveCollab = async (collab: Collab) => {
     if (!collabsKey) return;
-    mutate(collabsKey, { collaborators: collabs.filter(c => c.id !== collab.id) }, { revalidate: false });
+    mutate(collabsKey, { collaborators: collabs.filter(c => c.id !== collab.id), levels }, { revalidate: false });
     try {
       await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(selectedName)}/collabs/${collab.id}?${gm}`, { method: "DELETE" });
       toast(`Removed ${collab.display_name}`, "success");
@@ -292,7 +320,7 @@ export default function PlaylistPanel() {
     return (
       <div className="flex flex-col h-full">
         <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.06] flex-shrink-0">
-          <IconButton label="Back" onClick={() => openPlaylist(selectedName)}>
+          <IconButton label="Back" onClick={() => openPlaylist(selectedName, selectedOwner)}>
             <BackIcon />
           </IconButton>
           <h3 className="text-sm font-semibold text-white truncate flex-1">{selectedName}</h3>
@@ -314,6 +342,10 @@ export default function PlaylistPanel() {
         <div className="flex-1 overflow-y-auto px-3 pb-3">
           {memberSearch && (
             <div className="mb-3">
+              <div className="flex items-center gap-2 mt-2 px-1">
+                <span className="text-[10px] text-muted">Add as</span>
+                <LevelPicker levels={levels} value={newCollabPermission} onChange={setNewCollabPermission} />
+              </div>
               {memberSearching ? (
                 <div className="flex justify-center py-4"><Spinner /></div>
               ) : members.length > 0 ? (
@@ -353,13 +385,14 @@ export default function PlaylistPanel() {
             <div className="flex flex-col gap-1 mt-1">
               <p className="text-[10px] text-muted px-1 mb-1">{collabs.length} collaborator{collabs.length !== 1 ? "s" : ""}</p>
               {collabs.map(c => (
-                <div key={c.id} className="flex items-center gap-2.5 p-2 rounded-xl bg-white/[0.02] border border-white/[0.04] group">
+                <div key={c.id} className="flex items-center gap-2 p-2 rounded-xl bg-white/[0.02] border border-white/[0.04] group">
                   <div className="w-8 h-8 rounded-full bg-surface-3 overflow-hidden flex-shrink-0">
                     {c.avatar ? <img src={proxyImg(c.avatar)} alt="" className="w-full h-full object-cover" /> : (
                       <div className="w-full h-full flex items-center justify-center text-muted text-[10px] font-bold">{c.display_name[0]}</div>
                     )}
                   </div>
-                  <p className="text-xs font-medium text-white truncate flex-1">{c.display_name}</p>
+                  <p className="text-xs font-medium text-white truncate flex-1 min-w-0">{c.display_name}</p>
+                  <LevelPicker levels={levels} value={c.permission} onChange={lv => handleSetCollabPermission(c, lv)} />
                   <IconButton
                     label={`Remove ${c.display_name}`}
                     size="xs"
@@ -387,9 +420,10 @@ export default function PlaylistPanel() {
             <BackIcon />
           </IconButton>
           <h3 className="text-sm font-semibold text-white truncate flex-1 pl-1">{selectedName}</h3>
-          <HeaderBtn onClick={() => openCollabs(selectedName)} title="Manage collaborators">Collabs</HeaderBtn>
-          <HeaderBtn onClick={() => handleAddCurrent(selectedName)} title="Save current song" className="text-accent hover:text-accent/80">+ Save</HeaderBtn>
-          <HeaderBtn onClick={() => handleLoad(selectedName)} title="Load into queue" className="text-success/80 hover:text-success">Load</HeaderBtn>
+          <CopyPlaylistButton sourceName={selectedName} sourceGlobal={globalMode} sourceOwnerId={selectedOwner} />
+          {isOwner && <HeaderBtn onClick={() => openCollabs(selectedName, selectedOwner)} title="Manage collaborators">Collabs</HeaderBtn>}
+          {canAppend && <HeaderBtn onClick={() => handleAddCurrent(selectedName, selectedOwner)} title="Save current song" className="text-accent hover:text-accent/80">+ Save</HeaderBtn>}
+          <HeaderBtn onClick={() => handleLoad(selectedName, selectedOwner)} title="Load into queue" className="text-success/80 hover:text-success">Load</HeaderBtn>
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 pb-3">
@@ -409,6 +443,7 @@ export default function PlaylistPanel() {
                       arming={armingUrl === song.webpage_url}
                       queueing={queueingUrl === song.webpage_url}
                       added={addedUrls.has(song.webpage_url)}
+                      canEdit={canEdit}
                       onQueue={() => handleQueueSong(song)}
                       onRemove={() => handleRemoveSong(song, i)}
                     />
@@ -462,8 +497,8 @@ export default function PlaylistPanel() {
         ) : (
           <div className="flex flex-col gap-1.5 mt-2">
             {playlists.map(pl => (
-              <div key={pl.name} className="flex items-center gap-3 p-2.5 rounded-2xl bg-white/[0.02] border border-white/[0.04] hover:bg-white/[0.06] hover:border-white/[0.08] transition-[background-color,border-color] duration-150 group">
-                <button onClick={() => openPlaylist(pl.name)} className="flex-1 flex items-center gap-3 min-w-0 text-left">
+              <div key={`${pl.name}:${pl.owner_id}`} className="flex items-center gap-3 p-2.5 rounded-2xl bg-white/[0.02] border border-white/[0.04] hover:bg-white/[0.06] hover:border-white/[0.08] transition-[background-color,border-color] duration-150 group">
+                <button onClick={() => openPlaylist(pl.name, pl.owner_id)} className="flex-1 flex items-center gap-3 min-w-0 text-left">
                   <div className="w-10 h-10 rounded-xl bg-surface-3 overflow-hidden flex items-center justify-center flex-shrink-0">
                     {pl.thumbnail ? (
                       <img src={proxyImg(pl.thumbnail)} alt="" className="w-full h-full object-cover" loading="lazy" />
@@ -474,26 +509,37 @@ export default function PlaylistPanel() {
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-white truncate">{pl.name}</p>
                     <p className="text-[10px] text-white/40">{pl.song_count} song{pl.song_count !== 1 ? "s" : ""}</p>
+                    {pl.owner && (
+                      <span className="inline-block max-w-full truncate mt-0.5 px-1.5 py-px rounded-md bg-white/[0.05] text-[9px] text-white/40">
+                        shared by {pl.owner} · {pl.permission}
+                      </span>
+                    )}
                   </div>
                 </button>
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity flex-shrink-0">
-                  <IconButton label="Save current song" tone="accent" onClick={() => handleAddCurrent(pl.name)}>
-                    <PlusIcon className="w-3.5 h-3.5" />
-                  </IconButton>
-                  <IconButton label="Load into queue" tone="accent" onClick={() => handleLoad(pl.name)}>
+                  {playlistCan(pl.permission, "append") && (
+                    <IconButton label="Save current song" tone="accent" onClick={() => handleAddCurrent(pl.name, pl.owner_id)}>
+                      <PlusIcon className="w-3.5 h-3.5" />
+                    </IconButton>
+                  )}
+                  <IconButton label="Load into queue" tone="accent" onClick={() => handleLoad(pl.name, pl.owner_id)}>
                     <PlayIcon className="w-3.5 h-3.5" />
                   </IconButton>
-                  <IconButton label="Collaborators" onClick={() => openCollabs(pl.name)}>
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" /></svg>
-                  </IconButton>
-                  <IconButton
-                    label={confirmDelete === pl.name ? "Tap to confirm delete" : "Delete"}
-                    tone="danger"
-                    className={cn(confirmDelete === pl.name && "bg-danger! text-white! animate-pulse")}
-                    onClick={() => handleDelete(pl.name)}
-                  >
-                    <TrashIcon className="w-3.5 h-3.5" />
-                  </IconButton>
+                  {pl.permission === "owner" && (
+                    <>
+                      <IconButton label="Collaborators" onClick={() => openCollabs(pl.name, pl.owner_id)}>
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" /></svg>
+                      </IconButton>
+                      <IconButton
+                        label={confirmDelete === pl.name ? "Tap to confirm delete" : "Delete"}
+                        tone="danger"
+                        className={cn(confirmDelete === pl.name && "bg-danger! text-white! animate-pulse")}
+                        onClick={() => handleDelete(pl.name)}
+                      >
+                        <TrashIcon className="w-3.5 h-3.5" />
+                      </IconButton>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
@@ -518,13 +564,36 @@ function HeaderBtn({ children, onClick, title, className }: {
   );
 }
 
+function LevelPicker({ levels, value, onChange }: {
+  levels: PlaylistPermission[]; value: PlaylistPermission; onChange: (level: PlaylistPermission) => void;
+}) {
+  return (
+    <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-white/[0.04] flex-shrink-0">
+      {levels.map(lv => (
+        <button
+          key={lv}
+          onClick={() => onChange(lv)}
+          title={`Set to ${lv}`}
+          className={cn(
+            "px-1.5 h-5 rounded-md text-[9px] font-semibold capitalize transition-colors",
+            value === lv ? "bg-accent text-white" : "text-white/40 hover:text-white/70",
+          )}
+        >
+          {lv}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // Click adds to queue (same as Search/History/Favorites rows); drag reorders.
-function SortableSongRow({ song, index, arming, queueing, added, onQueue, onRemove }: {
-  song: PlaylistSong; index: number; arming: boolean; queueing: boolean; added: boolean;
+function SortableSongRow({ song, index, arming, queueing, added, canEdit, onQueue, onRemove }: {
+  song: PlaylistSong; index: number; arming: boolean; queueing: boolean; added: boolean; canEdit: boolean;
   onQueue: () => void; onRemove: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: song.webpage_url,
+    disabled: !canEdit,
   });
 
   return (
@@ -559,15 +628,30 @@ function SortableSongRow({ song, index, arming, queueing, added, onQueue, onRemo
         <p className="text-[10px] text-white/40 truncate">{song.uploader}</p>
       </div>
       <div className="flex items-center gap-1 flex-shrink-0">
-        <IconButton
-          label="Remove from playlist"
-          size="xs"
-          tone="danger"
-          className="opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity"
-          onClick={(e) => { e.stopPropagation(); onRemove(); }}
+        <div
+          className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity"
+          onClick={(e) => e.stopPropagation()}
         >
-          <CloseIcon className="w-3 h-3" />
-        </IconButton>
+          <AddToPlaylistButton song={song} />
+          <FavHeart
+            webpageUrl={song.webpage_url}
+            title={song.title}
+            duration={song.duration}
+            thumbnail={song.thumbnail}
+            uploader={song.uploader}
+          />
+        </div>
+        {canEdit && (
+          <IconButton
+            label="Remove from playlist"
+            size="xs"
+            tone="danger"
+            className="opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity"
+            onClick={(e) => { e.stopPropagation(); onRemove(); }}
+          >
+            <CloseIcon className="w-3 h-3" />
+          </IconButton>
+        )}
         {queueing && <Spinner className="w-3.5 h-3.5" />}
         {added && <CheckIcon className="w-3.5 h-3.5 text-success" />}
         {!queueing && !added && (

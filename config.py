@@ -49,7 +49,11 @@ LRCLIB_USER_AGENT = os.getenv(
 AUDIO_CACHE_DIR = "audio_cache"
 
 # Database
-DB_VERSION = 4  # bump when adding migrations
+DB_VERSION = 5  # bump when adding migrations
+
+# Playlist collaborator access, weakest first. "owner" is implicit.
+PLAYLIST_PERMISSIONS = ("view", "append", "edit")
+PLAYLIST_PERMISSION_RANK = {"view": 1, "append": 2, "edit": 3, "owner": 4}
 
 # Activity (Discord Embedded App)
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "")
