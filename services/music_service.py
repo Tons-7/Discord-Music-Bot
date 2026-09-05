@@ -2,6 +2,7 @@ import asyncio
 import logging
 import random
 import re
+from html import unescape as html_unescape
 import time
 from typing import Optional, Dict, List, Set
 
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 MIN_AUTOPLAY_DURATION = 60
 MAX_AUTOPLAY_DURATION = 720
 YOUTUBE_MATCH_CANDIDATES = 5
+
+_SPOTIFY_PAGE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 JUNK_TITLE_PATTERNS = {
     "mix": r"\bmix(es)?\b",
@@ -304,24 +307,65 @@ class MusicService:
         logger.info(f"Collected {len(tracks)} Spotify tracks across pages")
         return tracks
 
-    async def handle_spotify_url(self, url: str) -> Optional[Dict]:
-        if not self.bot.spotify:
+    async def _spotify_public_query(self, url: str) -> Optional[str]:
+        """Track name + artists scraped from the public Spotify page.
+
+        The Web API now refuses metadata unless the app owner holds Premium, so
+        this keeps single-track links working without credentials.
+        """
+        try:
+            timeout = aiohttp.ClientTimeout(total=8)
+            headers = {"User-Agent": _SPOTIFY_PAGE_UA}
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                async with session.get(url.split("?")[0]) as resp:
+                    if resp.status != 200:
+                        return None
+                    html = await resp.text()
+        except Exception as e:
+            logger.debug(f"Spotify page fetch failed: {e}")
             return None
 
+        def meta(prop: str) -> str:
+            m = re.search(
+                rf'<meta[^>]+(?:property|name)="{re.escape(prop)}"[^>]+content="([^"]*)"', html
+            )
+            return html_unescape(m.group(1)).strip() if m else ""
+
+        title = meta("og:title")
+        if not title:
+            return None
+        artists = meta("music:musician_description")
+        if not artists:
+            artists = meta("og:description").split("·")[0].strip()
+        artist = artists.split(",")[0].strip()
+        return f"{title} {artist}".strip() if artist else title
+
+    async def handle_spotify_url(self, url: str) -> Optional[Dict]:
         loop = asyncio.get_running_loop()
 
         try:
             if "track/" in url:
-                track_id = url.split("track/")[-1].split("?")[0]
-                track = await loop.run_in_executor(
-                    self.bot.executor, lambda: self.bot.spotify.track(track_id)
-                )
-                search_query = self._spotify_search_query(track)
+                search_query = None
+                if self.bot.spotify:
+                    try:
+                        track_id = url.split("track/")[-1].split("?")[0]
+                        track = await loop.run_in_executor(
+                            self.bot.executor, lambda: self.bot.spotify.track(track_id)
+                        )
+                        search_query = self._spotify_search_query(track)
+                    except Exception as e:
+                        logger.warning(f"Spotify API unavailable, using the public page: {e}")
+                if not search_query:
+                    search_query = await self._spotify_public_query(url)
                 if not search_query:
                     return None
                 return await self.search_youtube(search_query)
 
-            elif "playlist/" in url:
+            # Albums and playlists need the API: the public page has no track list.
+            if not self.bot.spotify:
+                return None
+
+            if "playlist/" in url:
                 playlist_id = url.split("playlist/")[-1].split("?")[0]
                 first_page = await loop.run_in_executor(
                     self.bot.executor, lambda: self.bot.spotify.playlist_tracks(playlist_id)
