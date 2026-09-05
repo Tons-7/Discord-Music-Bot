@@ -27,6 +27,8 @@ const EFFECT_SPEED_MULT: Record<string, number> = {
   none: 1.0, bass_boost: 1.0, nightcore: 1.25, vaporwave: 0.8, treble_boost: 1.0, "8d": 1.0,
 };
 const PITCH_EFFECTS = new Set(["nightcore", "vaporwave"]);
+// Server ticks advance ~1s; more than this between two of them is a seek.
+const SEEK_TICK_JUMP = 3;
 // Effects needing a Web Audio chain (browser equivalents of the FFmpeg filters
 // in config.py: bass=g=10:f=110, treble=g=5:f=3000, apulsator=hz=0.09)
 const WEBAUDIO_EFFECTS = new Set(["bass_boost", "treble_boost", "8d"]);
@@ -55,6 +57,7 @@ export function useAudioPlayer(
   });
   const positionRef = useRef(0);
   const hasSyncedRef = useRef(false);
+  const prevServerPosRef = useRef<number | null>(null);
   const stoppingRef = useRef(false);
   const recoveringRef = useRef(false);
   // When the local user seeks, suppress remote-position correction briefly so
@@ -121,6 +124,7 @@ export function useAudioPlayer(
         audio.load();
         audio.dataset.songUrl = "";
         hasSyncedRef.current = false;
+        prevServerPosRef.current = null;
         positionRef.current = 0;
         setState({ playing: false, paused: false, ready: false, duration: 0, blocked: false });
         setTimeout(() => { stoppingRef.current = false; }, 0);
@@ -131,6 +135,7 @@ export function useAudioPlayer(
     if (audio.dataset.songUrl !== currentWebpageUrl) {
       audio.dataset.songUrl = currentWebpageUrl;
       hasSyncedRef.current = false;
+      prevServerPosRef.current = null;
       stoppingRef.current = false;
 
       audio.src = buildStreamUrl();
@@ -176,10 +181,16 @@ export function useAudioPlayer(
       }
     }
 
-    // Drift correction
     if (!currentWebpageUrl || recoveringRef.current || bufferingRef.current) return;
     if (Date.now() - lastLocalSeekAtRef.current < 3000) return;
-    if (Math.abs(audio.currentTime - position) > 2.5) {
+
+    // The server clock is wall-clock from start_time and knows nothing about
+    // buffering, so a steady gap is our own drift and snapping to it would skip
+    // audio. Only a jump between consecutive ticks is a real remote seek.
+    const prev = prevServerPosRef.current;
+    prevServerPosRef.current = position;
+    const remoteSeek = prev !== null && Math.abs(position - prev) > SEEK_TICK_JUMP;
+    if (remoteSeek && Math.abs(audio.currentTime - position) > 2.5) {
       audio.currentTime = position;
     }
   });
