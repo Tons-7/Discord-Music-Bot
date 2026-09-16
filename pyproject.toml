@@ -1,0 +1,47 @@
+[project]
+name = "discord-music-bot"
+version = "0.1.0"
+description = "Discord music bot with YouTube/Spotify/SoundCloud playback and a Discord Activity frontend"
+readme = "README.md"
+authors = [
+    { name = "Tons", email = "tonyboutros123987@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "aiohttp>=3.14.3",
+    "davey>=0.1.6",
+    "discord>=2.3.2",
+    "discord-py>=2.7.1",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "pylast>=7.1.0",
+    "pynacl>=1.6.2",
+    "python-dotenv>=1.2.3",
+    "spotipy>=2.26.0",
+    "uvicorn[standard]>=0.52.0",
+    "yt-dlp>=2026.8.27.231323.dev0",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pyrefly>=1.2.0",
+    "ruff>=0.16.6",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
