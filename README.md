@@ -23,16 +23,16 @@ autoplay, and an optional **Discord Activity** (in-Discord web UI) for browser-b
 
 ## Requirements
 
-- Python 3.11+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) (manages Python 3.12+ and dependencies)
 - [FFmpeg](https://www.ffmpeg.org/download.html) installed and on PATH
 - Node.js 20+ (only if you want to build the Discord Activity frontend)
 
 ## Setup
 
 1. Clone the repository
-2. Install Python dependencies:
+2. Install Python dependencies (creates `.venv` from `uv.lock`):
    ```
-   pip install -r requirements.txt
+   uv sync
    ```
 3. Copy `.env.example` to `.env` and fill in your tokens:
    ```
@@ -48,8 +48,23 @@ autoplay, and an optional **Discord Activity** (in-Discord web UI) for browser-b
    ```
 5. Run the bot:
    ```
-   python main.py
+   uv run python main.py
    ```
+
+### Managing dependencies
+
+Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`; both are committed.
+
+```
+uv add <package>      # add a dependency (updates pyproject.toml + uv.lock)
+uv remove <package>   # remove one
+uv lock --upgrade     # refresh pinned versions
+uv sync               # match .venv to the lockfile
+```
+
+`requirements.txt` is kept only for hosts that have `pip` but not uv. It mirrors `[project.dependencies]` with
+the same loose bounds — update it alongside any `uv add`/`uv remove`, and don't replace it with a pinned
+`uv export` (see the note in `CLAUDE.md`).
 
 ## Docker
 
@@ -89,7 +104,7 @@ To enable it:
    enable **Activities**.
 2. Configure **URL Mappings** to route the Activity to the host running this bot on `ACTIVITY_PORT`.
 3. Set `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET` in `.env`.
-4. Build the frontend (step 4 of Setup above) and run `python main.py`. The Activity is served by the same process.
+4. Build the frontend (step 4 of Setup above) and run `uv run python main.py`. The Activity is served by the same process.
 
 Architecture notes live in `activity-frontend/README.md` and in `CLAUDE.md`.
 

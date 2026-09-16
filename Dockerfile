@@ -17,14 +17,24 @@ RUN apt-get update && \
 # JS runtime for yt-dlp's YouTube signature solving
 COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
+# uv manages the Python environment (pyproject.toml + uv.lock)
+COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /uvx /bin/
+
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Never fetch a standalone interpreter; use this image's python3.14.
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
+
+# Dependency layer: cached until pyproject.toml/uv.lock change.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev
 
 COPY . .
 
 # Copy built frontend from stage 1
 COPY --from=frontend /frontend/out ./activity-frontend/out
 
-CMD ["python", "main.py"]
+CMD ["uv", "run", "--no-sync", "python", "main.py"]

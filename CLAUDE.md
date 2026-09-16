@@ -11,12 +11,26 @@ for lyrics.
 ## Running the Bot
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Create/refresh the virtualenv from uv.lock
+uv sync
 
 # Run the bot (requires .env with BOT_TOKEN, optionally SPOTIFY_CLIENT_ID/SECRET, LASTFM_API_KEY/SECRET)
-python main.py
+uv run python main.py
 ```
+
+Dependencies live in `pyproject.toml` and are pinned by `uv.lock`. Add with `uv add <pkg>`, remove with
+`uv remove <pkg>`, upgrade with `uv lock --upgrade`. Docker builds with `uv sync --locked`, so commit the
+refreshed lockfile with any dependency change or the image build fails.
+
+`requirements.txt` is **not edited by hand** — it mirrors `[project.dependencies]` and exists only for the
+Wispbyte/Pterodactyl host, which has no uv and installs with plain `pip`. Keep the two in sync after any
+`uv add`/`uv remove`. Do **not** replace it with a `uv export` of the full lock: the host's egg installs this file
+and game-tracker's together through `all-requirements.txt`, and pinned transitive versions can deadlock that
+shared resolve (`google-genai` shares httpx/pydantic/websockets/requests with this bot). `uv.lock` remains the
+real lock for local dev and Docker.
+
+Python version window is narrow: the code uses PEP 701 f-strings (3.12+), and `davey` ships manylinux wheels only
+through cp313, so the pip host must run **3.12 or 3.13**. Docker pins 3.14.
 
 FFmpeg must be installed and on PATH. `davey` is required by discord.py for voice encryption. No test suite exists.
 Docker installs `deno` as yt-dlp's JS runtime (signature solving); optional locally but avoids missing formats.
