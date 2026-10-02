@@ -12,14 +12,14 @@ dependencies = [
     "davey>=0.1.6",
     "discord>=2.3.2",
     "discord-py>=2.7.1",
-    "fastapi>=0.141.1",
+    "fastapi>=0.142.2",
     "httpx>=0.28.1",
-    "pylast>=7.1.0",
+    "pylast>=7.2.0",
     "pynacl>=1.6.2",
-    "python-dotenv>=1.2.3",
+    "python-dotenv>=1.2.4",
     "spotipy>=2.26.0",
     "uvicorn[standard]>=0.52.0",
-    "yt-dlp>=2026.8.27.231323.dev0",
+    "yt-dlp>=2026.9.27.232945.dev0",
 ]
 
 [tool.uv]
@@ -40,8 +40,19 @@ extend-select = ["I", "UP", "B", "C4", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 
-[tool.pyrefly]
-project-includes = [
-    "**/*.py*",
-    "**/*.ipynb",
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI parameter markers are evaluated once by design (B008).
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Security",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.Form",
+    "fastapi.File",
 ]
+
+[tool.pyrefly]
+project-includes = ["**/*.py*"]

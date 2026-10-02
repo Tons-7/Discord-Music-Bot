@@ -22,15 +22,16 @@ Dependencies live in `pyproject.toml` and are pinned by `uv.lock`. Add with `uv 
 `uv remove <pkg>`, upgrade with `uv lock --upgrade`. Docker builds with `uv sync --locked`, so commit the
 refreshed lockfile with any dependency change or the image build fails.
 
-`requirements.txt` is **not edited by hand** — it mirrors `[project.dependencies]` and exists only for the
-Wispbyte/Pterodactyl host, which has no uv and installs with plain `pip`. Keep the two in sync after any
-`uv add`/`uv remove`. Do **not** replace it with a `uv export` of the full lock: the host's egg installs this file
-and game-tracker's together through `all-requirements.txt`, and pinned transitive versions can deadlock that
-shared resolve (`google-genai` shares httpx/pydantic/websockets/requests with this bot). `uv.lock` remains the
+`requirements.txt` is what the Wispbyte/Pterodactyl host installs (it has no uv, just `pip`), so it must list the
+same packages and bounds as `[project.dependencies]`. Either file may be edited first; after any change, update
+the other and run `uv lock`. Runtime deps only — dev tools (ruff, pyrefly) stay in the `dev` dependency group and
+never go in `requirements.txt`. Do **not** replace it with a `uv export` of the full lock: the host's egg installs
+this file and game-tracker's together through `all-requirements.txt`, and pinned transitive versions can deadlock
+that shared resolve (`google-genai` shares httpx/pydantic/websockets/requests with this bot). `uv.lock` remains the
 real lock for local dev and Docker.
 
-Python version window is narrow: the code uses PEP 701 f-strings (3.12+), and `davey` ships manylinux wheels only
-through cp313, so the pip host must run **3.12 or 3.13**. Docker pins 3.14.
+Python **3.14** everywhere (`requires-python`, `.python-version`, Docker, and the Wispbyte host). Ruff and pyrefly
+infer 3.14 from `requires-python`, so lint fixes may assume 3.14 semantics (e.g. lazy PEP 649 annotations).
 
 FFmpeg must be installed and on PATH. `davey` is required by discord.py for voice encryption. No test suite exists.
 Docker installs `deno` as yt-dlp's JS runtime (signature solving); optional locally but avoids missing formats.
