@@ -2,16 +2,15 @@ import asyncio
 import logging
 import re
 from datetime import datetime
-from typing import Optional
 
 import aiohttp
 import discord
 
-from config import COLOR, NOW_PLAYING_RESEND_SECONDS, AUDIO_EFFECTS
+from config import AUDIO_EFFECTS, COLOR, NOW_PLAYING_RESEND_SECONDS
 from models.song import Song
 from services.music_service import MusicService
 from services.queue_service import QueueService
-from utils.helpers import format_duration, build_progress_bar, create_embed, extract_youtube_id
+from utils.helpers import build_progress_bar, create_embed, extract_youtube_id, format_duration
 
 logger = logging.getLogger(__name__)
 
@@ -470,7 +469,10 @@ class PlaybackService:
                             logger.warning(f"Connection error detected in guild {guild_id}")
                     else:
                         if guild_data["current"] and not guild_data.get("seeking", False):
-                            queue_service.add_to_history(guild_id, guild_data["current"])
+                            # Audio thread: mutate on the loop.
+                            self.bot.loop.call_soon_threadsafe(
+                                queue_service.add_to_history, guild_id, guild_data["current"]
+                            )
 
                             # Record listening stats for all voice listeners
                             self._record_stat_from_callback(guild_id, guild_data)
@@ -659,7 +661,7 @@ class PlaybackService:
         backup = guild_data.get("loop_backup", [])
         return {self._normalize_title(s.title) for s in backup[-AUTOPLAY_REPEAT_WINDOW:]}
 
-    async def pick_autoplay_song(self, guild_id: int, current_song: Song) -> Optional[Song]:
+    async def pick_autoplay_song(self, guild_id: int, current_song: Song) -> Song | None:
         """Pick the next autoplay song with no side effects.
 
         Single source of the autoplay dedup logic, shared by the voice and

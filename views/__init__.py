@@ -1,3 +1,3 @@
-from .song_select import SongSelectView, SongSelect
+from .song_select import SongSelect, SongSelectView
 
-__all__ = ['SongSelectView', 'SongSelect']
+__all__ = ['SongSelect', 'SongSelectView']

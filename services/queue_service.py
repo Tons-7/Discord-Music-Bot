@@ -1,6 +1,5 @@
 import logging
 import random
-from typing import List, Optional
 
 from config import MAX_HISTORY_SIZE
 from models.song import Song
@@ -32,7 +31,7 @@ class QueueService:
                 f"Deduplicated loop backup to {len(guild_data['loop_backup'])} songs"
             )
 
-    def get_visible_queue(self, guild_id: int) -> List[Song]:
+    def get_visible_queue(self, guild_id: int) -> list[Song]:
         guild_data = self.bot.get_guild_data(guild_id)
 
         all_songs = guild_data["queue"][:]
@@ -74,7 +73,7 @@ class QueueService:
             guild_data["loop_backup"].append(Song.from_dict(song.to_dict()))
             logger.info(f"Added finished song to loop backup: {song.title}")
 
-    def add_songs_to_history(self, guild_id: int, songs: List[Song]):
+    def add_songs_to_history(self, guild_id: int, songs: list[Song]):
         """Bulk add_to_history: same move-to-most-recent semantics, deduped once (O(n+m))."""
         if not songs:
             return
@@ -107,7 +106,7 @@ class QueueService:
         if added_backup:
             logger.info(f"Added {added_backup} skipped song(s) to loop backup")
 
-    async def get_next_song(self, guild_id: int) -> Optional[Song]:
+    async def get_next_song(self, guild_id: int) -> Song | None:
         guild_data = self.bot.get_guild_data(guild_id)
 
         if guild_data["loop_mode"] == "song" and guild_data["current"]:
@@ -144,7 +143,7 @@ class QueueService:
         guild_data["loop_backup"].clear()
         self._bump_queue_version(guild_data)
 
-    def remove_song_from_queue(self, guild_id: int, position: int) -> Optional[Song]:
+    def remove_song_from_queue(self, guild_id: int, position: int) -> Song | None:
         guild_data = self.bot.get_guild_data(guild_id)
 
         if position < 0 or position >= len(guild_data["queue"]):
@@ -243,7 +242,7 @@ class QueueService:
 
         return wait
 
-    def search_queue(self, guild_id: int, query: str) -> List[tuple[int, Song]]:
+    def search_queue(self, guild_id: int, query: str) -> list[tuple[int, Song]]:
         """Search the queue for songs matching a query. Returns (1-based position, Song) pairs."""
         guild_data = self.bot.get_guild_data(guild_id)
         query_lower = query.lower()

@@ -6,7 +6,7 @@ import os
 import sqlite3
 import threading
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import TypedDict
 
 import discord
 import pylast
@@ -17,8 +17,12 @@ from discord.ext import commands, tasks
 from spotipy.oauth2 import SpotifyClientCredentials
 
 from config import (
-    get_intents, COLOR, MAX_CACHE_SIZE, CACHE_TTL,
-    INACTIVE_TIMEOUT_MINUTES, DB_VERSION,
+    CACHE_TTL,
+    COLOR,
+    DB_VERSION,
+    INACTIVE_TIMEOUT_MINUTES,
+    MAX_CACHE_SIZE,
+    get_intents,
 )
 from models.song import Song
 from services.audio_cache import AudioCacheService
@@ -34,34 +38,34 @@ _db_local = threading.local()
 
 class GuildData(TypedDict):
     guild_id: int
-    queue: List[Song]
-    loop_backup: List[Song]
-    history: List[Song]
+    queue: list[Song]
+    loop_backup: list[Song]
+    history: list[Song]
     history_position: int
-    current: Optional[Song]
+    current: Song | None
     position: float
     seek_offset: float
     loop_mode: str
     shuffle: bool
     volume: int
     autoplay: bool
-    autoplay_prefetch: Optional[Song]
-    autoplay_prefetch_task: Optional[asyncio.Task]
-    voice_client: Optional[discord.VoiceClient]
+    autoplay_prefetch: Song | None
+    autoplay_prefetch_task: asyncio.Task | None
+    voice_client: discord.VoiceClient | None
     intentional_disconnect: bool
     last_activity: datetime
-    now_playing_message: Optional[discord.Message]
-    music_channel_id: Optional[int]
-    start_time: Optional[float]
+    now_playing_message: discord.Message | None
+    music_channel_id: int | None
+    start_time: float | None
     message_ready_for_timestamps: bool
     message_last_validated: float
     seeking: bool
-    pause_position: Optional[float]
-    now_playing_message_sent_time: Optional[datetime]
+    pause_position: float | None
+    now_playing_message_sent_time: datetime | None
     play_lock: asyncio.Lock
     speed: float
     audio_effect: str
-    dj_role_id: Optional[int]
+    dj_role_id: int | None
 
 
 class MusicBot(commands.Bot):
@@ -477,7 +481,7 @@ class MusicBot(commands.Bot):
             }
         return self.guilds_data[guild_id]
 
-    def cancel_autoplay(self, guild_data: Dict):
+    def cancel_autoplay(self, guild_data: dict):
         guild_data["autoplay"] = False
         prefetch_task = guild_data.get("autoplay_prefetch_task")
         if prefetch_task and not prefetch_task.done():
@@ -519,7 +523,7 @@ class MusicBot(commands.Bot):
             self,
             user_id: int,
             guild_id: int,
-            song: 'Song',
+            song: Song,
             duration_listened: int,
     ):
         """Record that a user listened to a song."""
@@ -539,7 +543,7 @@ class MusicBot(commands.Bot):
 
     # Favorites
 
-    async def add_favorite(self, user_id: int, song: 'Song') -> bool:
+    async def add_favorite(self, user_id: int, song: Song) -> bool:
         """Add a song to the user's favorites. Returns False if already exists."""
         try:
             # Check if this song URL is already favorited
@@ -576,7 +580,7 @@ class MusicBot(commands.Bot):
             logger.error(f"Failed to remove favorite: {e}")
             return False
 
-    async def remove_favorite_by_url(self, user_id: int, url: str) -> tuple[bool, Optional[str]]:
+    async def remove_favorite_by_url(self, user_id: int, url: str) -> tuple[bool, str | None]:
         """Remove the favorite matching a song URL. Returns (removed, title).
 
         Deletes by row id rather than list position: a position resolved from an
@@ -644,7 +648,7 @@ class MusicBot(commands.Bot):
 
     async def get_collaborator_permission(
         self, playlist_id: int, user_id: int, is_global: bool = False
-    ) -> Optional[str]:
+    ) -> str | None:
         """Permission level for a collaborator, or None when they are not one."""
         rows = await self.fetch_db_query(
             "SELECT permission FROM playlist_collaborators "
@@ -844,7 +848,7 @@ class MusicBot(commands.Bot):
             else:
                 logger.error(f"Client exception during reconnect for guild {guild_id}: {e}")
                 await self._cleanup_after_failed_reconnect(guild_id)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(f"Voice reconnection timeout for guild {guild_id}")
             await self._cleanup_after_failed_reconnect(guild_id)
         except Exception as e:
@@ -874,7 +878,7 @@ class MusicBot(commands.Bot):
 
                 await playback_service.play_next(guild_id)
             elif guild_data.get("queue"):
-                logger.info(f"Starting queue playback after reconnect")
+                logger.info("Starting queue playback after reconnect")
                 await playback_service.play_next(guild_id)
         except Exception as e:
             logger.error(f"Error resuming playback after reconnect: {e}")
@@ -1092,7 +1096,7 @@ class MusicBot(commands.Bot):
             self._delayed_save_guild_queue(guild_id)
         )
 
-    def _serialize_guild_queue(self, guild_data: Dict) -> str:
+    def _serialize_guild_queue(self, guild_data: dict) -> str:
         queue_data = {
             "queue": [song.to_dict() for song in guild_data["queue"]],
             "loop_backup": [song.to_dict() for song in guild_data["loop_backup"]],
@@ -1177,10 +1181,10 @@ class MusicBot(commands.Bot):
         except Exception as e:
             logger.error(f"Failed to clear guild queue from database: {e}")
 
-    async def get_song_info_cached(self, url_or_query: str) -> Optional[Dict]:
+    async def get_song_info_cached(self, url_or_query: str) -> dict | None:
         return await self._music_service.get_song_info_cached(url_or_query)
 
-    async def get_song_info(self, url_or_query: str) -> Optional[Dict]:
+    async def get_song_info(self, url_or_query: str) -> dict | None:
         return await self._music_service.get_song_info(url_or_query)
 
     # Graceful shutdown

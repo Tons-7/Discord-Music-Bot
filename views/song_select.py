@@ -113,7 +113,7 @@ class SongSelectView(ui.LayoutView):
                 dur_str = "LIVE"
             lines.append(f"`{i}.` **{title}** by {uploader} `[{dur_str}]`")
 
-        container.add_item(ui.TextDisplay(f"### \U0001f50e Search Results\n" + "\n".join(lines)))
+        container.add_item(ui.TextDisplay("### \U0001f50e Search Results\n" + "\n".join(lines)))
         container.add_item(ui.Separator())
 
         # Select menu inside container

@@ -2,9 +2,8 @@ import asyncio
 import logging
 import random
 import re
-from html import unescape as html_unescape
 import time
-from typing import Optional, Dict, List, Set
+from html import unescape as html_unescape
 
 import aiohttp
 import yt_dlp
@@ -79,7 +78,7 @@ class MusicService:
             return ydl.extract_info(target, **kwargs)
 
     @staticmethod
-    def _normalize_youtube_entry(entry: Dict) -> Optional[Dict]:
+    def _normalize_youtube_entry(entry: dict) -> dict | None:
         if not entry:
             return None
 
@@ -119,7 +118,7 @@ class MusicService:
 
     # Cache
 
-    async def get_song_info_cached(self, url_or_query: str) -> Optional[Dict]:
+    async def get_song_info_cached(self, url_or_query: str) -> dict | None:
         cache_key = url_or_query.lower().strip()
 
         if cache_key in self.bot.song_cache:
@@ -151,9 +150,8 @@ class MusicService:
 
     # Main info router
 
-    async def get_song_info(self, url_or_query: str) -> Optional[Dict]:
+    async def get_song_info(self, url_or_query: str) -> dict | None:
         try:
-            loop = asyncio.get_running_loop()
             lower = url_or_query.lower()
 
             # Platform-specific handling
@@ -178,7 +176,7 @@ class MusicService:
 
     async def _extract_with_retries(
             self, url: str, max_retries: int = 3
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Extract info with exponential backoff."""
         loop = asyncio.get_running_loop()
         for attempt in range(max_retries):
@@ -197,7 +195,7 @@ class MusicService:
 
     # YouTube search
 
-    async def search_youtube(self, query: str, limit: int = 1) -> Optional[Dict]:
+    async def search_youtube(self, query: str, limit: int = 1) -> dict | None:
         try:
             loop = asyncio.get_running_loop()
             search_prefix = f"ytsearch{limit}:" if limit > 1 else "ytsearch:"
@@ -226,7 +224,7 @@ class MusicService:
 
     # Playlist handling
 
-    async def handle_youtube_playlist(self, url: str) -> List[Dict]:
+    async def handle_youtube_playlist(self, url: str) -> list[dict]:
         try:
             loop = asyncio.get_running_loop()
 
@@ -270,7 +268,7 @@ class MusicService:
     # Spotify
 
     @staticmethod
-    def _spotify_search_query(track: Dict) -> Optional[str]:
+    def _spotify_search_query(track: dict) -> str | None:
         """Build a YouTube search query from a Spotify track dict."""
         track_name = track.get("name", "").strip()
         if not track_name:
@@ -283,7 +281,7 @@ class MusicService:
         logger.warning(f"Spotify track has no artists: {track_name}")
         return track_name
 
-    def _collect_spotify_tracks(self, first_page: Dict, is_playlist: bool) -> List[Dict]:
+    def _collect_spotify_tracks(self, first_page: dict, is_playlist: bool) -> list[dict]:
         """Walk all Spotify pages and return a flat list of track dicts."""
         tracks = []
         page = first_page
@@ -307,7 +305,7 @@ class MusicService:
         logger.info(f"Collected {len(tracks)} Spotify tracks across pages")
         return tracks
 
-    async def _spotify_public_query(self, url: str) -> Optional[str]:
+    async def _spotify_public_query(self, url: str) -> str | None:
         """Track name + artists scraped from the public Spotify page.
 
         The Web API now refuses metadata unless the app owner holds Premium, so
@@ -340,7 +338,7 @@ class MusicService:
         artist = artists.split(",")[0].strip()
         return f"{title} {artist}".strip() if artist else title
 
-    async def handle_spotify_url(self, url: str) -> Optional[Dict]:
+    async def handle_spotify_url(self, url: str) -> dict | None:
         loop = asyncio.get_running_loop()
 
         try:
@@ -409,7 +407,7 @@ class MusicService:
 
     # Apple Music (free via iTunes Lookup API)
 
-    async def _handle_apple_music_url(self, url: str) -> Optional[Dict]:
+    async def _handle_apple_music_url(self, url: str) -> dict | None:
         """Extract song info from Apple Music URL via the free iTunes Lookup API."""
         try:
             # Extract track ID from URL
@@ -444,7 +442,7 @@ class MusicService:
 
     # Tidal
 
-    async def _handle_tidal_url(self, url: str) -> Optional[Dict]:
+    async def _handle_tidal_url(self, url: str) -> dict | None:
         """Extract song info from Tidal URL by scraping page title."""
         try:
             return await self._search_from_url_path(url)
@@ -454,7 +452,7 @@ class MusicService:
 
     # Generic URL → search fallback
 
-    async def _search_from_url_path(self, url: str) -> Optional[Dict]:
+    async def _search_from_url_path(self, url: str) -> dict | None:
         """Try to extract a useful search query from any music URL's HTML title."""
         try:
             timeout = aiohttp.ClientTimeout(total=10)
@@ -482,7 +480,7 @@ class MusicService:
     # Livestream detection
 
     @staticmethod
-    def is_livestream(song_data: Dict) -> bool:
+    def is_livestream(song_data: dict) -> bool:
         """Check if extracted data represents a livestream/radio."""
         if song_data.get("is_live"):
             return True
@@ -593,7 +591,7 @@ class MusicService:
         return song
 
     @staticmethod
-    def _extract_content_name(title: str) -> Optional[str]:
+    def _extract_content_name(title: str) -> str | None:
         """For OST-style titles extract the franchise/game name."""
         # Title starts with OST/soundtrack keyword
         match = re.match(
@@ -628,9 +626,9 @@ class MusicService:
     # Autoplay YouTube match verification
 
     def _pick_best_youtube_match(
-            self, entries: List[Dict], track_name: str, track_artist: str,
-            candidate_duration: Optional[int] = None, relaxed: bool = False
-    ) -> Optional[Dict]:
+            self, entries: list[dict], track_name: str, track_artist: str,
+            candidate_duration: int | None = None, relaxed: bool = False
+    ) -> dict | None:
         """Pick the YouTube result that actually is the Last.fm candidate.
 
         Returns None when every entry looks like a mix/karaoke/reaction/etc.
@@ -716,7 +714,7 @@ class MusicService:
 
     # Related songs (Last.fm autoplay)
 
-    async def _resolve_candidate_duration(self, candidate: Dict) -> Optional[int]:
+    async def _resolve_candidate_duration(self, candidate: dict) -> int | None:
         """Last.fm runtime (seconds) for a candidate, resolved only when it is actually searched.
 
         pylast drops the <duration> node from getSimilar/getTopTracks responses, so the
@@ -741,7 +739,7 @@ class MusicService:
 
         return candidate['duration']
 
-    async def get_related_songs(self, song: 'Song', limit: int = 1) -> List[Dict]:
+    async def get_related_songs(self, song: Song, limit: int = 1) -> list[dict]:
         try:
             if not self.bot.lastfm:
                 logger.warning("Last.fm not configured, cannot get recommendations")
@@ -756,8 +754,8 @@ class MusicService:
                 f"(uploader: '{song.uploader}')"
             )
 
-            seen_track_names: Set[str] = {self._normalize_track_name(clean_title)}
-            seen_artists: Set[str] = {original_artist.lower()}
+            seen_track_names: set[str] = {self._normalize_track_name(clean_title)}
+            seen_artists: set[str] = {original_artist.lower()}
             candidate_tracks = []
 
             loop = asyncio.get_running_loop()

@@ -2,6 +2,7 @@ import asyncio
 import functools
 import logging
 
+from activity.helpers import broadcast_state
 from activity.state_serializer import serialize_guild_state
 from activity.tasks import spawn
 
@@ -21,11 +22,10 @@ def _wrap_sync(original, bot, ws_manager, event_type):
         guild_id = _get_guild_id_from_args(args)
         if guild_id and ws_manager.has_connections(guild_id):
             try:
-                loop = bot.loop or asyncio.get_event_loop()
                 data = serialize_guild_state(bot, guild_id)
                 asyncio.run_coroutine_threadsafe(
                     ws_manager.broadcast(guild_id, event_type, data),
-                    loop,
+                    bot.loop,
                 )
             except Exception as e:
                 logger.debug(f"Broadcast failed for {event_type}: {e}")
@@ -54,6 +54,18 @@ def _wrap_async(original, bot, ws_manager, event_type):
     return wrapper
 
 
+def _wrap_async_coalesced(original, bot, ws_manager):
+    """Wrap an async method to schedule a coalesced STATE_UPDATE after it returns."""
+    @functools.wraps(original)
+    async def wrapper(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        guild_id = _get_guild_id_from_args(args)
+        if guild_id:
+            await broadcast_state(bot, ws_manager, guild_id)
+        return result
+    return wrapper
+
+
 def install_broadcast_hooks(bot, ws_manager):
     """Wrap key service methods to broadcast state changes to Activity clients."""
     playback = bot._playback_service
@@ -71,7 +83,22 @@ def install_broadcast_hooks(bot, ws_manager):
         playback.handle_resume, bot, ws_manager, "PLAYBACK_STATE"
     )
 
-    # QueueService is intentionally not hooked — routes broadcast after
-    # each operation; hooking caused double-broadcasts with race conditions.
+    # Persistence calls end nearly every mutation, including commands and buttons.
+    bot.save_guild_queue = _wrap_async_coalesced(bot.save_guild_queue, bot, ws_manager)
+    bot.clear_guild_queue_from_db = _wrap_async_coalesced(bot.clear_guild_queue_from_db, bot, ws_manager)
+    bot._cleanup_after_failed_reconnect = _wrap_async_coalesced(
+        bot._cleanup_after_failed_reconnect, bot, ws_manager
+    )
+
+    async def _on_app_command_completion(interaction, _command):
+        if interaction.guild_id:
+            await broadcast_state(bot, ws_manager, interaction.guild_id)
+
+    async def _on_voice_state_update(member, before, after):
+        if bot.user and member.id == bot.user.id and before.channel != after.channel:
+            await broadcast_state(bot, ws_manager, member.guild.id)
+
+    bot.add_listener(_on_app_command_completion, "on_app_command_completion")
+    bot.add_listener(_on_voice_state_update, "on_voice_state_update")
 
     logger.info("Activity broadcast hooks installed")

@@ -4,6 +4,7 @@ from urllib.parse import parse_qs, urlparse
 import discord
 
 from config import COLOR
+
 from .ban_system import is_banned
 
 
@@ -123,7 +124,7 @@ def extract_youtube_id(webpage_url: str) -> str:
 
     # youtube.com/watch?v=<id> or &v=<id>
     query = parse_qs(parsed.query)
-    if "v" in query and query["v"]:
+    if query.get("v"):
         return query["v"][0]
 
     # youtube.com/shorts/<id>, /embed/<id>, /v/<id>

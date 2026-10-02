@@ -399,7 +399,8 @@ async def seek(guild_id: int, body: SeekBody, user=Depends(dj_member), bot=Depen
                 logger.error(f"Seek player error: {error}")
             else:
                 if guild_data["current"] and not guild_data.get("seeking", False):
-                    queue_service.add_to_history(guild_id, guild_data["current"])
+                    # Audio thread: mutate on the loop.
+                    bot.loop.call_soon_threadsafe(queue_service.add_to_history, guild_id, guild_data["current"])
             if not guild_data.get("seeking", False):
                 coro = playback.play_next(guild_id)
                 fut = asyncio.run_coroutine_threadsafe(coro, bot.loop)

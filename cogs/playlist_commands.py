@@ -1,14 +1,13 @@
 import json
 import logging
 from datetime import datetime
-from typing import List
 
 import discord
 from discord.ext import commands
 
 from config import COLOR, MAX_PLAYLIST_SIZE, PLAYLIST_PERMISSION_RANK, SONGS_PER_PAGE
 from models.song import Song
-from utils.helpers import get_existing_urls, interaction_check, create_embed, create_v2_embed
+from utils.helpers import create_embed, create_v2_embed, get_existing_urls, interaction_check
 from views.pagination import PaginationView
 
 logger = logging.getLogger(__name__)
@@ -204,7 +203,7 @@ class PlaylistCommands(commands.Cog):
             use_followup: bool,
             ephemeral_not_found: bool = True,
             global_mode: bool = False,
-    ) -> List[dict] | None:
+    ) -> list[dict] | None:
 
         send = interaction.followup.send if use_followup else interaction.response.send_message
         label = "Global playlist" if global_mode else "Playlist"
@@ -241,7 +240,7 @@ class PlaylistCommands(commands.Cog):
 
     async def queue_autocomplete(
             self, interaction: discord.Interaction, current: str
-    ) -> List[discord.app_commands.Choice]:
+    ) -> list[discord.app_commands.Choice]:
         guild_data = self.bot.get_guild_data(interaction.guild.id)
         choices = []
 
@@ -306,12 +305,11 @@ class PlaylistCommands(commands.Cog):
     async def _handle_add(self, interaction: discord.Interaction, name: str, song: str, global_mode: bool = False,
                           collaborative: bool = False):
         label = "Global playlist" if global_mode else "Playlist"
-        guild_id = None if global_mode else interaction.guild.id
         await interaction.response.defer()
 
         try:
             # Check owner or collaborator access
-            existing_songs, owner_id, pid = await self._get_collab_playlist_songs(
+            existing_songs, _owner_id, pid = await self._get_collab_playlist_songs(
                 interaction, name, use_followup=True, global_mode=global_mode, need="append", collab_only=collaborative
             )
             if existing_songs is None:
@@ -486,11 +484,10 @@ class PlaylistCommands(commands.Cog):
             collaborative: bool = False
     ):
         label = "Global playlist" if global_mode else "Playlist"
-        guild_id = None if global_mode else interaction.guild.id
         await interaction.response.defer()
 
         try:
-            existing_songs, owner_id, pid = await self._get_collab_playlist_songs(
+            existing_songs, _owner_id, pid = await self._get_collab_playlist_songs(
                 interaction, name, use_followup=True, global_mode=global_mode, need="append", collab_only=collaborative
             )
             if existing_songs is None:
@@ -555,11 +552,10 @@ class PlaylistCommands(commands.Cog):
     async def _handle_add_session(self, interaction: discord.Interaction, name: str, global_mode: bool = False,
                                   collaborative: bool = False):
         label = "Global playlist" if global_mode else "Playlist"
-        guild_id = None if global_mode else interaction.guild.id
         await interaction.response.defer()
 
         try:
-            existing_songs, owner_id, pid = await self._get_collab_playlist_songs(
+            existing_songs, _owner_id, pid = await self._get_collab_playlist_songs(
                 interaction, name, use_followup=True, global_mode=global_mode, need="append", collab_only=collaborative
             )
             if existing_songs is None:
@@ -648,10 +644,9 @@ class PlaylistCommands(commands.Cog):
             collaborative: bool = False
     ):
         label = "Global playlist" if global_mode else "Playlist"
-        guild_id = None if global_mode else interaction.guild.id
 
         try:
-            playlist_items, owner_id, pid = await self._get_collab_playlist_songs(
+            playlist_items, _owner_id, pid = await self._get_collab_playlist_songs(
                 interaction, name, use_followup=False, global_mode=global_mode, need="edit", collab_only=collaborative
             )
             if playlist_items is None:
@@ -701,10 +696,9 @@ class PlaylistCommands(commands.Cog):
             collaborative: bool = False,
     ):
         label = "Global playlist" if global_mode else "Playlist"
-        guild_id = None if global_mode else interaction.guild.id
 
         try:
-            playlist_items, owner_id, pid = await self._get_collab_playlist_songs(
+            playlist_items, _owner_id, pid = await self._get_collab_playlist_songs(
                 interaction, name, use_followup=False, global_mode=global_mode, need="edit", collab_only=collaborative
             )
             if playlist_items is None:

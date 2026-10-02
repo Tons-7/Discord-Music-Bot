@@ -1,23 +1,22 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from config import COLOR, SONGS_PER_PAGE, AUDIO_EFFECTS, COMMAND_COOLDOWN, PLAY_COOLDOWN
+from config import AUDIO_EFFECTS, COLOR, COMMAND_COOLDOWN, PLAY_COOLDOWN, SONGS_PER_PAGE
 from models.song import Song
 from services.music_service import MusicService
 from utils.ban_system import ban_user_id, unban_user_id
 from utils.helpers import (
-    format_duration,
-    get_existing_urls,
-    parse_time_to_seconds,
-    interaction_check,
     create_embed,
     create_v2_embed,
+    format_duration,
+    get_existing_urls,
+    interaction_check,
+    parse_time_to_seconds,
 )
 from views.now_playing_controls import NowPlayingControls
 from views.pagination import PaginationView
@@ -157,7 +156,7 @@ class MusicCommands(commands.Cog):
 
         return True
 
-    async def get_music_channel(self, guild_id: int) -> Optional[discord.TextChannel]:
+    async def get_music_channel(self, guild_id: int) -> discord.TextChannel | None:
         guild_data = self.bot.get_guild_data(guild_id)
         guild = self.bot.get_guild(guild_id)
 
@@ -180,13 +179,13 @@ class MusicCommands(commands.Cog):
     async def create_now_playing_message(
             self, guild_id: int,
             *, current_position: int = 0, is_paused: bool = False,
-    ) -> Optional[discord.Message]:
+    ) -> discord.Message | None:
+        guild_data = self.bot.get_guild_data(guild_id)
         try:
             channel = await self.get_music_channel(guild_id)
             if not channel:
                 return None
 
-            guild_data = self.bot.get_guild_data(guild_id)
             guild_data["message_ready_for_timestamps"] = False
 
             if guild_data.get("now_playing_message"):
@@ -585,7 +584,7 @@ class MusicCommands(commands.Cog):
         except Exception as e:
             logger.error(f"Error in play command: {e}")
             embed = create_embed(
-                "Error", f"An error occurred: {str(e)}", COLOR, self.bot.user
+                "Error", f"An error occurred: {e!s}", COLOR, self.bot.user
             )
             try:
                 await interaction.edit_original_response(embed=embed)
@@ -851,7 +850,7 @@ class MusicCommands(commands.Cog):
                 description += f"**\U0001f3b5 Now Playing:**\n{current} `[{dur}]` \u2014 {current.requested_by}\n\n"
 
             if all_visible_songs:
-                description += f"**\U0001f4cb Up Next:**\n"
+                description += "**\U0001f4cb Up Next:**\n"
                 for i, song in enumerate(
                         all_visible_songs[start_idx:end_idx], start_idx + 1
                 ):
@@ -1006,7 +1005,7 @@ class MusicCommands(commands.Cog):
         else:
             self.queue_service.clear_queue(interaction.guild.id)
             embed = create_embed(
-                "Queue Cleared", f"Removed all songs from queue.", COLOR, self.bot.user
+                "Queue Cleared", "Removed all songs from queue.", COLOR, self.bot.user
             )
             await self.bot.save_guild_queue(interaction.guild.id)
             await interaction.response.send_message(embed=embed, silent=True)
@@ -1557,7 +1556,7 @@ class MusicCommands(commands.Cog):
                         if i < len(seek_strategies) - 1:
                             continue
                         else:
-                            raise e
+                            raise
 
                 if not source:
                     embed = create_embed(
@@ -1577,8 +1576,9 @@ class MusicCommands(commands.Cog):
                     logger.error(f"Seek player error: {error}")
                 else:
                     if guild_data["current"] and not guild_data.get("seeking", False):
-                        self.queue_service.add_to_history(
-                            interaction.guild.id, guild_data["current"]
+                        # Audio thread: mutate on the loop.
+                        self.bot.loop.call_soon_threadsafe(
+                            self.queue_service.add_to_history, interaction.guild.id, guild_data["current"]
                         )
 
                 if not guild_data.get("seeking", False):

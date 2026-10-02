@@ -1,8 +1,6 @@
-from typing import List
 
 import discord
 from discord import ui
-
 
 from config import COLOR
 
@@ -38,7 +36,7 @@ class _NextButton(ui.Button):
 
 
 class PaginationView(ui.LayoutView):
-    def __init__(self, pages: List[str], user: discord.User, timeout: int = 240):
+    def __init__(self, pages: list[str], user: discord.User, timeout: int = 240):
         super().__init__(timeout=timeout)
         self.pages = pages
         self.user = user
@@ -62,7 +60,7 @@ class PaginationView(ui.LayoutView):
 
         self.add_item(container)
 
-    def _build_view(self) -> 'PaginationView':
+    def _build_view(self) -> PaginationView:
         """Rebuild and return self for message edits."""
         self._rebuild()
         return self

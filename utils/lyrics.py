@@ -1,9 +1,7 @@
 """Free lyrics fetching via lrclib.net (no API key required)."""
 
-import asyncio
 import logging
 import re
-from typing import Optional, Dict
 
 import aiohttp
 
@@ -221,7 +219,7 @@ def _best_match(
     want_artist: str = "",
     want_duration: float = 0,
     artist_confident: bool = True,
-) -> Optional[dict]:
+) -> dict | None:
     """Return the highest-scoring usable result, or None if none clears the floor."""
     best, best_score = None, float("-inf")
     for r in results:
@@ -248,7 +246,7 @@ def _best_match(
 
 async def _get_json(
     session: aiohttp.ClientSession, endpoint: str, params: dict
-) -> Optional[dict | list]:
+) -> dict | list | None:
     """Request LRCLIB JSON while preserving unavailable-service failures."""
     try:
         async with session.get(f"{LYRICS_API_BASE}{endpoint}", params=params) as resp:
@@ -258,7 +256,7 @@ async def _get_json(
                 raise _TransientStatusError(f"LRCLIB returned HTTP {resp.status}")
             logger.debug("LRCLIB %s returned HTTP %s", endpoint, resp.status)
             return None
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise LyricsServiceUnavailable("LRCLIB request timed out") from exc
     except aiohttp.ClientError as exc:
         raise LyricsServiceUnavailable("LRCLIB connection failed") from exc
@@ -270,9 +268,9 @@ async def _search(
     artist: str = "",
     album: str = "",
     duration: float = 0,
-    want_artist: Optional[str] = None,
+    want_artist: str | None = None,
     artist_confident: bool = True,
-) -> Optional[dict]:
+) -> dict | None:
     """Search LRCLIB with its structured title, artist, and album fields.
 
     ``want_artist`` scores results against a known artist even when the query
@@ -298,7 +296,7 @@ async def fetch_lyrics(
     uploader: str = "",
     duration: float = 0,
     album: str = "",
-) -> Optional[Dict]:
+) -> dict | None:
     """Fetch lyrics from lrclib.net.
 
     Uses LRCLIB's required client identifier and tries progressively looser searches:
@@ -419,7 +417,7 @@ def strip_lrc_timestamps(synced: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _format(data: dict, fallback_title: str, fallback_artist: str) -> Dict:
+def _format(data: dict, fallback_title: str, fallback_artist: str) -> dict:
     return {
         "lyrics": data.get("plainLyrics", ""),
         "synced": data.get("syncedLyrics", ""),
