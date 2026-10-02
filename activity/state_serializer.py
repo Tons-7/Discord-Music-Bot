@@ -19,7 +19,7 @@ import re
 _MENTION_RE = re.compile(r"<@!?(\d+)>")
 
 
-def serialize_song(song, bot=None) -> dict[str, Any]:
+def serialize_song(song, bot=None) -> dict[str, Any] | None:
     if song is None:
         return None
     d = song.to_dict()

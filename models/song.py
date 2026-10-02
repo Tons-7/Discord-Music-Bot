@@ -1,8 +1,7 @@
-from typing import Dict
 
 
 class Song:
-    def __init__(self, data: Dict):
+    def __init__(self, data: dict):
         self.url = data.get("url", "")
         self.title = data.get("title", "Unknown Title")
         self.duration = data.get("duration", 0)
@@ -37,5 +36,5 @@ class Song:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict):
+    def from_dict(cls, data: dict):
         return cls(data)

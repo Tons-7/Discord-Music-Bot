@@ -101,7 +101,7 @@ async def proxy_image(url: str = Query(...)):
         return Response(status_code=400)
 
     # Defense in depth: reject hosts resolving to private/loopback/etc. IPs.
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     if await loop.run_in_executor(None, _resolves_to_private, host):
         return Response(status_code=400)
 
@@ -120,7 +120,7 @@ async def proxy_image(url: str = Query(...)):
                     media_type=content_type,
                     headers={"Cache-Control": "public, max-age=86400"},
                 )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return Response(status_code=504)
         except Exception as e:
             logger.debug(f"Image proxy error: {e}")

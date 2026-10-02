@@ -2,7 +2,6 @@ import asyncio
 import functools
 import json
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -10,7 +9,7 @@ from pydantic import BaseModel
 from activity.dependencies import get_bot, get_ws_manager, guild_member
 from activity.helpers import fill_missing_thumbnails, member_avatar_url
 from activity.state_serializer import serialize_guild_state
-from config import MAX_PLAYLIST_SIZE, PLAYLIST_PERMISSIONS, PLAYLIST_PERMISSION_RANK
+from config import MAX_PLAYLIST_SIZE, PLAYLIST_PERMISSION_RANK, PLAYLIST_PERMISSIONS
 from models.song import Song
 
 logger = logging.getLogger(__name__)
@@ -56,7 +55,6 @@ def _serialized(fn):
             getattr(body, "global_mode", False) if body is not None
             else bool(kwargs.get("global_mode", False))
         )
-        user = kwargs.get("user") or {}
         # Keyed by playlist identity, not caller: a collaborator mutates the
         # owner's row, and global playlists are not scoped to a guild.
         lock = _playlist_lock(
@@ -76,8 +74,8 @@ _RANK = PLAYLIST_PERMISSION_RANK
 
 async def _resolve_playlist(
     bot, user_id: int, name: str, guild_id: int, global_mode: bool,
-    owner_id: Optional[int] = None,
-) -> tuple[Optional[int], Optional[list], Optional[str]]:
+    owner_id: int | None = None,
+) -> tuple[int | None, list | None, str | None]:
     """Find a playlist the user owns or collaborates on.
 
     Names are only unique per owner, so a shared playlist must be addressed with
@@ -113,7 +111,7 @@ async def _resolve_playlist(
     return rows[0][0], json.loads(rows[0][1]), (rows[0][2] or "edit")
 
 
-def _require(level: Optional[str], needed: str, name: str, label: str):
+def _require(level: str | None, needed: str, name: str, label: str):
     """404 when there is no access at all, 403 when the grant is too weak."""
     if level is None:
         raise HTTPException(status_code=404, detail=f"{label} '{name}' not found")
@@ -124,7 +122,7 @@ def _require(level: Optional[str], needed: str, name: str, label: str):
         )
 
 
-async def _get_playlist(bot, user_id: int, name: str, guild_id: int, global_mode: bool) -> tuple[Optional[int], Optional[list]]:
+async def _get_playlist(bot, user_id: int, name: str, guild_id: int, global_mode: bool) -> tuple[int | None, list | None]:
     """Get playlist id and songs. Returns (id, songs_list) or (None, None)."""
     table = _table(global_mode)
     if global_mode:
@@ -254,13 +252,13 @@ async def show_playlist(
     guild_id: int,
     name: str,
     global_mode: bool = Query(False),
-    owner_id: Optional[int] = Query(None),
+    owner_id: int | None = Query(None),
     user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
     uid = int(user["id"])
 
-    pid, songs, level = await _resolve_playlist(bot, uid, name, guild_id, global_mode, owner_id)
+    _pid, songs, level = await _resolve_playlist(bot, uid, name, guild_id, global_mode, owner_id)
     _require(level, "view", name, _label(global_mode))
 
     return {"name": name, "songs": fill_missing_thumbnails(songs)}
@@ -335,7 +333,7 @@ async def delete_playlist(
 
 class LoadBody(BaseModel):
     global_mode: bool = False
-    owner_id: Optional[int] = None
+    owner_id: int | None = None
 
 
 @router.post("/{name}/load")
@@ -350,7 +348,7 @@ async def load_playlist(
     uid = int(user["id"])
     label = _label(body.global_mode)
 
-    pid, songs, level = await _resolve_playlist(bot, uid, name, guild_id, body.global_mode, body.owner_id)
+    _pid, songs, level = await _resolve_playlist(bot, uid, name, guild_id, body.global_mode, body.owner_id)
     _require(level, "view", name, label)
 
     if not songs:
@@ -392,7 +390,7 @@ async def load_playlist(
 class AddSongBody(BaseModel):
     song_url: str
     global_mode: bool = False
-    owner_id: Optional[int] = None
+    owner_id: int | None = None
     # Metadata for songs that aren't in the session (search results, favorites,
     # playlist rows). Falls back to a lookup when absent.
     song: dict | None = None
@@ -478,7 +476,7 @@ async def remove_from_playlist(
     name: str,
     position: int,
     global_mode: bool = Query(False),
-    owner_id: Optional[int] = Query(None),
+    owner_id: int | None = Query(None),
     user=Depends(guild_member),
     bot=Depends(get_bot),
 ):
@@ -507,7 +505,7 @@ class MoveBody(BaseModel):
     from_pos: int
     to_pos: int
     global_mode: bool = False
-    owner_id: Optional[int] = None
+    owner_id: int | None = None
 
 
 @router.post("/{name}/move")
@@ -543,7 +541,7 @@ async def move_in_playlist(
 
 class AddAllQueueBody(BaseModel):
     global_mode: bool = False
-    owner_id: Optional[int] = None
+    owner_id: int | None = None
 
 
 @router.post("/{name}/add-queue")
@@ -620,8 +618,8 @@ class CopyBody(BaseModel):
     target: str
     global_mode: bool = False          # scope of the source playlist
     target_global_mode: bool = False   # scope of the destination
-    owner_id: Optional[int] = None         # source owner, when it is a share
-    target_owner_id: Optional[int] = None  # destination owner, when it is a share
+    owner_id: int | None = None         # source owner, when it is a share
+    target_owner_id: int | None = None  # destination owner, when it is a share
 
 
 # Not @_serialized: the source is only read, and taking both locks would

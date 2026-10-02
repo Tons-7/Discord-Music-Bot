@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING
 import discord
 from discord import ui
 
-from utils.ban_system import is_banned
 from config import COLOR
-from utils.helpers import create_embed, format_duration, build_progress_bar
+from utils.ban_system import is_banned
+from utils.helpers import build_progress_bar, create_embed, format_duration
 
 if TYPE_CHECKING:
     from cogs.music_commands import MusicCommands
@@ -159,7 +159,7 @@ class NowPlayingControls(ui.LayoutView):
 
     def __init__(
         self,
-        music_commands_cog: 'MusicCommands',
+        music_commands_cog: MusicCommands,
         guild_id: int,
         *,
         current_position: int = 0,

@@ -1,7 +1,6 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
 
 from activity.state_serializer import serialize_guild_state
 from activity.tasks import spawn
@@ -20,7 +19,7 @@ def fill_missing_thumbnails(songs: list[dict]) -> list[dict]:
     return songs
 
 
-def member_avatar_url(member, size: int = 128) -> Optional[str]:
+def member_avatar_url(member, size: int = 128) -> str | None:
     """Return a member's avatar URL, preserving animation for animated avatars."""
     if not member or not member.display_avatar:
         return None
@@ -99,17 +98,27 @@ def clear_activity_playback(guild_data: dict, cancel_prefetch: bool = True) -> N
         guild_data["autoplay_prefetch_task"] = None
 
 
+_pending_broadcasts: set[int] = set()
+
+
 async def broadcast_state(bot, ws_manager, guild_id: int):
     """Broadcast guild state to connected Activity clients (non-blocking).
 
     Schedules the 0.1s ordering yield + serialize + broadcast off the request
     path so mutating POSTs return immediately, while preserving send ordering.
+    Calls made while one is pending coalesce into it.
     """
     if not ws_manager or not ws_manager.has_connections(guild_id):
         return
+    if guild_id in _pending_broadcasts:
+        return
+    _pending_broadcasts.add(guild_id)
 
     async def _broadcast():
-        await asyncio.sleep(0.1)
+        try:
+            await asyncio.sleep(0.1)
+        finally:
+            _pending_broadcasts.discard(guild_id)
         data = serialize_guild_state(bot, guild_id)
         await ws_manager.broadcast(guild_id, "STATE_UPDATE", data)
 
@@ -124,7 +133,7 @@ def set_current_for_activity(guild_data: dict, song):
     guild_data["pause_position"] = None
 
 
-async def activity_advance(bot, ws_manager, guild_id: int, *, ended_url: str | None = None, force: bool = False) -> Optional[Song]:
+async def activity_advance(bot, ws_manager, guild_id: int, *, ended_url: str | None = None, force: bool = False) -> Song | None:
     """Unified Activity-only advance-to-next-song.
 
     Acquires the per-guild play_lock internally. No-op when a voice client is

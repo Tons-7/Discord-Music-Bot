@@ -10,10 +10,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from activity.ws_manager import ConnectionManager
 from bot import MusicBot
 from cogs.music_commands import MusicCommands
 from cogs.playlist_commands import PlaylistCommands
-from activity.ws_manager import ConnectionManager
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -178,6 +178,7 @@ app.add_middleware(
 
 # Mount API routes
 from activity.routes import api_router
+
 app.include_router(api_router)
 
 class FrontendStaticFiles(StaticFiles):

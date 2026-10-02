@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from fastapi import WebSocket
 
@@ -13,6 +14,8 @@ logger = logging.getLogger(__name__)
 # forever. Clients ping every 25s; allow several misses before reaping.
 STALE_AFTER = 600.0
 REAP_INTERVAL = 30.0
+# A stuck client would otherwise stall every broadcast until uvicorn's ping timeout.
+SEND_TIMEOUT = 5.0
 
 
 class ConnectionManager:
@@ -79,7 +82,7 @@ class ConnectionManager:
         for guild_id, ws in stale:
             logger.info(f"Reaping stale Activity WS for guild {guild_id}")
             try:
-                await ws.close(code=1001)
+                await asyncio.wait_for(ws.close(code=1001), SEND_TIMEOUT)
             except Exception as e:
                 logger.debug(f"Stale WS close failed: {e}")
             self.disconnect(ws, guild_id)
@@ -105,10 +108,19 @@ class ConnectionManager:
             return
 
         results = await asyncio.gather(
-            *(ws.send_json(message) for ws in connections),
+            *(asyncio.wait_for(ws.send_json(message), SEND_TIMEOUT) for ws in connections),
             return_exceptions=True,
         )
-        for ws, result in zip(connections, results):
+        for ws, result in zip(connections, results, strict=True):
             if isinstance(result, Exception):
-                logger.debug(f"WS send failed, disconnecting: {result}")
+                logger.debug(f"WS send failed, disconnecting: {result!r}")
                 self.disconnect(ws, guild_id)
+                # Close so a live client reconnects for a fresh snapshot.
+                spawn(self._close_quietly(ws))
+
+    @staticmethod
+    async def _close_quietly(ws: WebSocket):
+        try:
+            await asyncio.wait_for(ws.close(code=1011), SEND_TIMEOUT)
+        except Exception as e:
+            logger.debug(f"WS close after failed send: {e!r}")

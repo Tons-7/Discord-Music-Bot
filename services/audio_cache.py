@@ -3,7 +3,6 @@ import hashlib
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 import yt_dlp
 
@@ -18,7 +17,7 @@ class AudioCacheService:
         self.cache_dir = Path(AUDIO_CACHE_DIR).resolve()
         self.cache_dir.mkdir(exist_ok=True)
         self._download_tasks: dict[str, asyncio.Task] = {}
-        self._lock: Optional[asyncio.Lock] = None
+        self._lock: asyncio.Lock | None = None
 
     def _get_lock(self) -> asyncio.Lock:
         if self._lock is None:
@@ -29,7 +28,7 @@ class AudioCacheService:
         url_hash = hashlib.sha256(webpage_url.encode()).hexdigest()[:16]
         return str(self.cache_dir / f"{url_hash}.opus")
 
-    def get_cached_file(self, webpage_url: str) -> Optional[str]:
+    def get_cached_file(self, webpage_url: str) -> str | None:
         path = self.get_cache_path(webpage_url)
         if os.path.exists(path) and os.path.getsize(path) > 0:
             return path
@@ -128,7 +127,7 @@ class AudioCacheService:
 
     async def cancel_all_downloads(self):
         async with self._get_lock():
-            for url, task in self._download_tasks.items():
+            for task in self._download_tasks.values():
                 if not task.done():
                     task.cancel()
             self._download_tasks.clear()

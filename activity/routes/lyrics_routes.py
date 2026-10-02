@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import time
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -13,7 +12,7 @@ router = APIRouter(prefix="/api/guild/{guild_id}", tags=["lyrics"])
 
 # webpage_url -> (payload or None, timestamp). Lyrics never change for a song,
 # so a hit is cached long; a miss is retried sooner in case LRCLIB gains it.
-_lyrics_cache: dict[str, tuple[Optional[dict], float]] = {}
+_lyrics_cache: dict[str, tuple[dict | None, float]] = {}
 _CACHE_MAX = 200
 _HIT_TTL = 6 * 3600
 _MISS_TTL = 600
@@ -49,7 +48,7 @@ def _cache_get(url: str):
     return entry
 
 
-def _cache_put(url: str, payload: Optional[dict]) -> None:
+def _cache_put(url: str, payload: dict | None) -> None:
     _lyrics_cache[url] = (payload, time.time())
 
     if len(_lyrics_cache) > _CACHE_MAX:
@@ -62,7 +61,7 @@ def _cache_put(url: str, payload: Optional[dict]) -> None:
             del _lyrics_cache[k]
 
 
-async def _resolve_lyrics(song, cache_key: Optional[str]) -> dict:
+async def _resolve_lyrics(song, cache_key: str | None) -> dict:
     cached = _cache_get(cache_key) if cache_key else None
     if cached:
         payload, _ = cached
@@ -107,7 +106,7 @@ def _find_song(guild_data: dict, url: str):
 @router.get("/lyrics")
 async def get_lyrics(
     guild_id: int,
-    url: Optional[str] = None,
+    url: str | None = None,
     user=Depends(guild_member),
     bot=Depends(get_bot),
 ):

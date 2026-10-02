@@ -6,7 +6,7 @@ def _load_cache():
     """Load banned user IDs from file into memory."""
     global _banned_cache
     try:
-        with open('banned_users.txt', 'r') as f:
+        with open('banned_users.txt') as f:
             _banned_cache = {int(line.strip()) for line in f if line.strip()}
     except FileNotFoundError:
         _banned_cache = set()
@@ -21,7 +21,6 @@ def is_banned(user_id: int) -> bool:
 
 
 def ban_user_id(user_id: int) -> bool:
-    global _banned_cache
     if _banned_cache is None:
         _load_cache()
 
@@ -35,7 +34,6 @@ def ban_user_id(user_id: int) -> bool:
 
 
 def unban_user_id(user_id: int) -> bool:
-    global _banned_cache
     if _banned_cache is None:
         _load_cache()
 
@@ -45,7 +43,7 @@ def unban_user_id(user_id: int) -> bool:
     _banned_cache.discard(user_id)
 
     try:
-        with open('banned_users.txt', 'r') as f:
+        with open('banned_users.txt') as f:
             lines = f.readlines()
     except FileNotFoundError:
         return False

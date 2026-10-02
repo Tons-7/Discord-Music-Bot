@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 
 import discord
 from fastapi import APIRouter, Depends, HTTPException
@@ -54,7 +53,7 @@ async def get_settings(guild_id: int, user=Depends(guild_member), bot=Depends(ge
 
 
 class DJRoleBody(BaseModel):
-    role_id: Optional[str] = None
+    role_id: str | None = None
 
 
 @router.post("/dj-role")
@@ -77,7 +76,7 @@ async def set_dj_role(guild_id: int, body: DJRoleBody, user=Depends(guild_member
 
 
 class MusicChannelBody(BaseModel):
-    channel_id: Optional[str] = None
+    channel_id: str | None = None
 
 
 @router.post("/music-channel")

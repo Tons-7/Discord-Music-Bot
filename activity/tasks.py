@@ -11,7 +11,7 @@ _BG: set = set()
 
 def spawn(coro) -> asyncio.Task:
     """Schedule a fire-and-forget coroutine, keeping a strong reference until done."""
-    task = asyncio.ensure_future(coro)
+    task = asyncio.create_task(coro)
     _BG.add(task)
     task.add_done_callback(_BG.discard)
     return task
