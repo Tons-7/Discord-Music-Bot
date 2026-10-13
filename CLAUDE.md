@@ -33,8 +33,11 @@ real lock for local dev and Docker.
 Python **3.14** everywhere (`requires-python`, `.python-version`, Docker, and the Wispbyte host). Ruff and pyrefly
 infer 3.14 from `requires-python`, so lint fixes may assume 3.14 semantics (e.g. lazy PEP 649 annotations).
 
-FFmpeg must be installed and on PATH. `davey` is required by discord.py for voice encryption. No test suite exists.
+FFmpeg must be installed and on PATH. `davey` is required by discord.py for voice encryption.
 Docker installs `deno` as yt-dlp's JS runtime (signature solving); optional locally but avoids missing formats.
+
+Tests live in `tests/` and run with `uv run pytest`. CI (`.github/workflows/ci.yml`) runs them plus
+`ruff check --select F,E9` on every push.
 
 ## Architecture
 
@@ -101,6 +104,9 @@ Queue state persisted on changes and restored on startup.
 - `save_guild_queue()` debounces DB writes with a 1-second delay via `_delayed_save_guild_queue`.
 - Now-playing embeds update every 1 second; message validation is cached for 10 seconds to reduce API calls.
 - Voice reconnection: bot auto-reconnects and resumes playback when disconnected non-intentionally.
+- Elapsed time (`start_time`, `last_activity`, `now_playing_message_sent_time`) uses `time.monotonic()`, never
+  wall-clock time, so clock adjustments can't move playback position.
+- Slash commands are guild-only (`allowed_contexts` on the bot); they all read `interaction.guild`.
 - yt-dlp: never pin `player_client` in extractor_args — pinned client lists go stale as YouTube gates clients
   (PO tokens/SABR) and break extraction; yt-dlp's per-release defaults track this.
 
@@ -137,7 +143,10 @@ through voice channel), with separate M4A disk cache at `audio_cache/activity/`.
 - `routes/` — REST API: auth (token exchange), state, playback controls, queue management, search, playlists (server +
   global), favorites, lyrics (with synced LRC), stream proxy + disk cache, image proxy, config.
 - `ws_manager.py` — WebSocket connection manager with `on_last_disconnect` callback.
-- `cog_hooks.py` — Non-invasive wrappers on service methods to broadcast state changes via WebSocket.
+- `cog_hooks.py` — Non-invasive wrappers that broadcast state changes via WebSocket: playback start/pause, queue
+  saves and clears, completed slash commands and voice disconnects. `broadcast_state` coalesces them.
+- `known_songs.py` — Metadata of songs already listed to clients (search, favorites, playlists). `/queue/add` uses
+  it (and history) to enqueue without a yt-dlp extraction; unknown URLs and live streams still extract.
 - `state_serializer.py` — Converts `guilds_data` to JSON, handles Activity-only position calculation.
 
 **Frontend (`activity-frontend/`):**

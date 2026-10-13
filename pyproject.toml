@@ -10,7 +10,6 @@ requires-python = ">=3.14"
 dependencies = [
     "aiohttp>=3.14.3",
     "davey>=0.1.6",
-    "discord>=2.3.2",
     "discord-py>=2.7.1",
     "fastapi>=0.142.2",
     "httpx>=0.28.1",
@@ -28,6 +27,8 @@ package = false
 [dependency-groups]
 dev = [
     "pyrefly>=1.2.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.16.6",
 ]
 
@@ -56,3 +57,10 @@ extend-immutable-calls = [
 
 [tool.pyrefly]
 project-includes = ["**/*.py*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+# Raised inside discord.py on Python 3.14.
+filterwarnings = ["ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning"]
