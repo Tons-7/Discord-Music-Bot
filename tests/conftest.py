@@ -62,6 +62,7 @@ async def bot(tmp_path, monkeypatch, ws):
 
     await tasks.cancel_all()
     bot.executor.shutdown(wait=False)
+    bot.db_executor.shutdown(wait=False)
     bot.download_executor.shutdown(wait=False)
     known_songs._songs.clear()
     helpers._pending_broadcasts.clear()

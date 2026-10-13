@@ -41,3 +41,19 @@ async def test_audio_thread_records_history_on_the_loop_before_play_next(bot, gu
 
     assert events == [("history", True), ("play_next", True)]
     assert guild_data["history"][-1].webpage_url.endswith("finished")
+
+
+async def test_database_queries_do_not_wait_for_extractions(bot):
+    release = threading.Event()
+    extractions = [
+        bot.loop.run_in_executor(bot.executor, release.wait)
+        for _ in range(bot.executor._max_workers)
+    ]
+
+    try:
+        rows = await asyncio.wait_for(bot.fetch_db_query("SELECT 1"), timeout=1)
+    finally:
+        release.set()
+        await asyncio.gather(*extractions)
+
+    assert rows == [(1,)]

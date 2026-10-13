@@ -89,6 +89,8 @@ class MusicBot(commands.Bot):
         # Cache downloads hold a worker for the whole download + transcode (minutes),
         # so they get their own pool instead of starving extraction and DB queries.
         self.download_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        # Queries take milliseconds and must not queue behind multi-second extractions.
+        self.db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
         self.song_cache = {}
         self.max_cache_size = MAX_CACHE_SIZE
@@ -435,7 +437,7 @@ class MusicBot(commands.Bot):
                 return cursor.fetchall()
 
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self.executor, _execute)
+        return await loop.run_in_executor(self.db_executor, _execute)
 
     async def fetch_db_query(self, query: str, params: tuple = None):
         def _fetch():
@@ -448,7 +450,7 @@ class MusicBot(commands.Bot):
                 return cursor.fetchall()
 
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self.executor, _fetch)
+        return await loop.run_in_executor(self.db_executor, _fetch)
 
     # Guild state
 
@@ -1258,6 +1260,7 @@ class MusicBot(commands.Bot):
                     logger.debug(f"Error disconnecting voice client: {e}")
 
         self.executor.shutdown(wait=True)
+        self.db_executor.shutdown(wait=True)
         self.download_executor.shutdown(wait=False, cancel_futures=True)
 
         await super().close()

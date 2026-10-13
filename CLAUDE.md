@@ -99,7 +99,8 @@ Queue state persisted on changes and restored on startup.
 ## Key Patterns
 
 - All blocking I/O (yt-dlp, Spotify, Last.fm) runs in `bot.executor` (ThreadPoolExecutor, 3 workers) via
-  `run_in_executor`.
+  `run_in_executor`. SQLite queries use their own `bot.db_executor` so they never queue behind extractions, and
+  cache downloads use `bot.download_executor`.
 - Guild state uses a `play_lock` (asyncio.Lock) to prevent concurrent `play_next` calls.
 - `save_guild_queue()` debounces DB writes with a 1-second delay via `_delayed_save_guild_queue`.
 - Now-playing embeds update every 1 second; message validation is cached for 10 seconds to reduce API calls.
