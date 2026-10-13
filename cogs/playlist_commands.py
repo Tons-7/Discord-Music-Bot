@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime
+import time
 
 import discord
 from discord.ext import commands
@@ -838,7 +838,7 @@ class PlaylistCommands(commands.Cog):
             ):
                 await playback_service.play_next(interaction.guild.id)
 
-            guild_data["last_activity"] = datetime.now()
+            guild_data["last_activity"] = time.monotonic()
             await self.bot.save_guild_queue(interaction.guild.id)
 
         except Exception as e:
@@ -1439,7 +1439,7 @@ class PlaylistCommands(commands.Cog):
             embed.set_thumbnail(url=song_copy.thumbnail)
 
         await interaction.response.send_message(embed=embed, silent=True)
-        guild_data["last_activity"] = datetime.now()
+        guild_data["last_activity"] = time.monotonic()
         await self.bot.save_guild_queue(interaction.guild.id)
 
     @history_group.command(
@@ -1510,7 +1510,7 @@ class PlaylistCommands(commands.Cog):
         if guild_data["voice_client"] and not guild_data["voice_client"].is_playing() and not guild_data["current"]:
             await playback_service.play_next(interaction.guild.id)
 
-        guild_data["last_activity"] = datetime.now()
+        guild_data["last_activity"] = time.monotonic()
         await self.bot.save_guild_queue(interaction.guild.id)
 
     @history_group.command(

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+import time
 
 from activity.state_serializer import serialize_guild_state
 from activity.tasks import spawn
@@ -51,7 +51,7 @@ async def record_activity_listening(bot, ws_manager, guild_id: int, user_ids: se
             return
         duration = int(pause_pos)
     else:
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = time.monotonic() - start_time
         duration = int(elapsed * bot._playback_service.get_effective_speed(guild_data))
 
     if duration <= 0:
@@ -129,7 +129,7 @@ def set_current_for_activity(guild_data: dict, song):
     """Set a song as current for Activity-only playback (no voice client)."""
     guild_data["current"] = song
     guild_data["seek_offset"] = 0
-    guild_data["start_time"] = datetime.now()
+    guild_data["start_time"] = time.monotonic()
     guild_data["pause_position"] = None
 
 

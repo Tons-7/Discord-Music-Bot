@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+import time
 
 import discord
 from discord import app_commands
@@ -206,7 +206,7 @@ class MusicCommands(commands.Cog):
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             guild_data["now_playing_message"] = msg
-            guild_data["now_playing_message_sent_time"] = datetime.now()
+            guild_data["now_playing_message_sent_time"] = time.monotonic()
 
             await asyncio.sleep(0.2)
             guild_data["message_ready_for_timestamps"] = True
@@ -356,7 +356,7 @@ class MusicCommands(commands.Cog):
         await interaction.response.defer()
         try:
             guild_data["voice_client"] = await voice_channel.connect()
-            guild_data["last_activity"] = datetime.now()
+            guild_data["last_activity"] = time.monotonic()
 
             embed = create_embed(
                 "Connected", f"Joined {voice_channel.name}!", COLOR, self.bot.user
@@ -579,7 +579,7 @@ class MusicCommands(commands.Cog):
                     self.playback_service.play_next(interaction.guild.id)
                 )
 
-            guild_data["last_activity"] = datetime.now()
+            guild_data["last_activity"] = time.monotonic()
 
         except Exception as e:
             logger.error(f"Error in play command: {e}")
@@ -1310,7 +1310,7 @@ class MusicCommands(commands.Cog):
                 )
 
             await interaction.edit_original_response(view=result_view)
-            guild_data["last_activity"] = datetime.now()
+            guild_data["last_activity"] = time.monotonic()
             await self.bot.save_guild_queue(interaction.guild.id)
 
         except Exception as e:
@@ -1569,7 +1569,7 @@ class MusicCommands(commands.Cog):
                     return
 
             guild_data["seek_offset"] = seek_seconds if strategy_used <= 1 else 0
-            guild_data["start_time"] = datetime.now()
+            guild_data["start_time"] = time.monotonic()
 
             def after_seeking(error):
                 if error:
@@ -1618,7 +1618,7 @@ class MusicCommands(commands.Cog):
         except Exception as e:
             logger.error(f"Seek error: {e}")
             guild_data["seek_offset"] = 0
-            guild_data["start_time"] = datetime.now()
+            guild_data["start_time"] = time.monotonic()
             embed = create_embed(
                 "Seek Failed",
                 "Could not seek, restarted song from beginning",

@@ -5,14 +5,14 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import datetime, timedelta
+import time
 from typing import TypedDict
 
 import discord
 import pylast
 import spotipy
 import yt_dlp
-from discord.app_commands import AppCommand, CommandSyncFailure
+from discord.app_commands import AppCommand, AppCommandContext, CommandSyncFailure
 from discord.ext import commands, tasks
 from spotipy.oauth2 import SpotifyClientCredentials
 
@@ -53,7 +53,7 @@ class GuildData(TypedDict):
     autoplay_prefetch_task: asyncio.Task | None
     voice_client: discord.VoiceClient | None
     intentional_disconnect: bool
-    last_activity: datetime
+    last_activity: float
     now_playing_message: discord.Message | None
     music_channel_id: int | None
     start_time: float | None
@@ -61,7 +61,7 @@ class GuildData(TypedDict):
     message_last_validated: float
     seeking: bool
     pause_position: float | None
-    now_playing_message_sent_time: datetime | None
+    now_playing_message_sent_time: float | None
     play_lock: asyncio.Lock
     speed: float
     audio_effect: str
@@ -70,7 +70,13 @@ class GuildData(TypedDict):
 
 class MusicBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix="!", intents=get_intents(), help_command=None)
+        super().__init__(
+            command_prefix="!",
+            intents=get_intents(),
+            help_command=None,
+            # Every command reads interaction.guild, so keep them out of DMs.
+            allowed_contexts=AppCommandContext(guild=True, dm_channel=False, private_channel=False),
+        )
 
         self.message_update_locks = {}
         self.message_validation_cache = {}
@@ -465,7 +471,7 @@ class MusicBot(commands.Bot):
                 "autoplay_prefetch_task": None,
                 "voice_client": None,
                 "intentional_disconnect": False,
-                "last_activity": datetime.now(),
+                "last_activity": time.monotonic(),
                 "now_playing_message": None,
                 "music_channel_id": None,
                 "start_time": None,
@@ -914,7 +920,7 @@ class MusicBot(commands.Bot):
         try:
             for guild_id, data in list(self.guilds_data.items()):
                 if data["voice_client"] and data["voice_client"].is_connected():
-                    inactive_time = datetime.now() - data["last_activity"]
+                    inactive_seconds = time.monotonic() - data["last_activity"]
 
                     is_truly_inactive = (
                             not data["voice_client"].is_playing()
@@ -922,7 +928,7 @@ class MusicBot(commands.Bot):
                             and not data.get("current")
                     )
 
-                    if inactive_time > timedelta(minutes=INACTIVE_TIMEOUT_MINUTES) and is_truly_inactive:
+                    if inactive_seconds > INACTIVE_TIMEOUT_MINUTES * 60 and is_truly_inactive:
                         guild = self.get_guild(guild_id)
                         guild_name = guild.name if guild else "unknown"
                         await data["voice_client"].disconnect()

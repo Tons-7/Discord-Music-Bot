@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime
+import time
 
 import aiohttp
 import discord
@@ -80,7 +80,7 @@ class PlaybackService:
         if guild_data["voice_client"] and guild_data["voice_client"].is_paused():
             if guild_data.get("pause_position") is not None:
                 guild_data["seek_offset"] = guild_data["pause_position"]
-                guild_data["start_time"] = datetime.now()
+                guild_data["start_time"] = time.monotonic()
                 guild_data["pause_position"] = None
             guild_data["voice_client"].resume()
             return True
@@ -104,11 +104,11 @@ class PlaybackService:
         if voice_client.is_paused():
             if guild_data.get("pause_position") is not None:
                 return guild_data["pause_position"]
-            elapsed = (datetime.now() - guild_data["start_time"]).total_seconds()
+            elapsed = time.monotonic() - guild_data["start_time"]
             return int(elapsed * effective_speed) + guild_data["seek_offset"]
 
         if voice_client.is_playing():
-            elapsed = (datetime.now() - guild_data["start_time"]).total_seconds()
+            elapsed = time.monotonic() - guild_data["start_time"]
             return int(elapsed * effective_speed) + guild_data["seek_offset"]
 
         return guild_data["seek_offset"]
@@ -172,7 +172,7 @@ class PlaybackService:
         if not message_sent_time:
             return False
 
-        elapsed_since_send = (datetime.now() - message_sent_time).total_seconds()
+        elapsed_since_send = time.monotonic() - message_sent_time
         return elapsed_since_send >= NOW_PLAYING_RESEND_SECONDS
 
     async def _update_single_timestamp(self, guild_id: int, current_time: float):
@@ -341,7 +341,7 @@ class PlaybackService:
                 guild_data["position"] = 0
                 guild_data["start_time"] = None
                 guild_data["seeking"] = False
-                guild_data["last_activity"] = datetime.now()
+                guild_data["last_activity"] = time.monotonic()
                 return
 
             max_skip_attempts = 10
@@ -384,7 +384,6 @@ class PlaybackService:
         return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
     async def _extract_and_play_song(self, guild_id: int, song: Song, skip_count: int) -> bool:
-        guild_data = self.bot.get_guild_data(guild_id)
         max_retries = 3
 
         # Check local audio cache first
@@ -495,8 +494,8 @@ class PlaybackService:
             guild_data["current"] = song
             guild_data["seek_offset"] = 0
             guild_data["position"] = 0
-            guild_data["start_time"] = datetime.now()
-            guild_data["last_activity"] = datetime.now()
+            guild_data["start_time"] = time.monotonic()
+            guild_data["last_activity"] = time.monotonic()
 
             # Prevent timestamp loop from editing the old message during transition
             guild_data["message_ready_for_timestamps"] = False
@@ -553,7 +552,7 @@ class PlaybackService:
         # Calculate actual listening time instead of full song duration
         start_time = guild_data.get("start_time")
         if start_time:
-            elapsed = (datetime.now() - start_time).total_seconds()
+            elapsed = time.monotonic() - start_time
             effective_speed = self.get_effective_speed(guild_data)
             duration = int(elapsed * effective_speed)
         else:
@@ -622,7 +621,7 @@ class PlaybackService:
         guild_data["current"] = None
         guild_data["position"] = 0
         guild_data["start_time"] = None
-        guild_data["last_activity"] = datetime.now()
+        guild_data["last_activity"] = time.monotonic()
 
         if guild_data.get("now_playing_message"):
             try:

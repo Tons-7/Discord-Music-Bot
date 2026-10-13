@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -59,7 +59,7 @@ async def resume(guild_id: int, user=Depends(dj_member), bot=Depends(get_bot), w
             raise HTTPException(status_code=400, detail="Nothing is playing")
         pause_pos = guild_data.get("pause_position", 0) or 0
         guild_data["seek_offset"] = pause_pos
-        guild_data["start_time"] = datetime.now()
+        guild_data["start_time"] = time.monotonic()
         guild_data["pause_position"] = None
 
     await broadcast_state(bot, ws, guild_id)
@@ -220,7 +220,7 @@ def _rebase_activity_clock(bot, guild_id: int, guild_data: dict) -> None:
     if guild_data.get("pause_position") is not None or not guild_data.get("start_time"):
         return
     guild_data["seek_offset"] = _get_activity_position(bot, guild_id, guild_data)
-    guild_data["start_time"] = datetime.now()
+    guild_data["start_time"] = time.monotonic()
 
 
 @router.post("/speed")
@@ -303,7 +303,7 @@ async def seek(guild_id: int, body: SeekBody, user=Depends(dj_member), bot=Depen
             guild_data["pause_position"] = seek_seconds
             guild_data["start_time"] = None
         else:
-            guild_data["start_time"] = datetime.now()
+            guild_data["start_time"] = time.monotonic()
             guild_data["pause_position"] = None
         await broadcast_state(bot, ws, guild_id)
         return {"ok": True, "position": seek_seconds}
@@ -389,7 +389,7 @@ async def seek(guild_id: int, body: SeekBody, user=Depends(dj_member), bot=Depen
                         raise HTTPException(status_code=500, detail="All seek strategies failed")
 
         guild_data["seek_offset"] = seek_seconds if strategy_used <= 1 else 0
-        guild_data["start_time"] = datetime.now()
+        guild_data["start_time"] = time.monotonic()
 
         playback = bot._playback_service
         queue_service = playback.queue_service
@@ -420,7 +420,7 @@ async def seek(guild_id: int, body: SeekBody, user=Depends(dj_member), bot=Depen
     except Exception as e:
         logger.error(f"Seek error: {e}")
         guild_data["seek_offset"] = 0
-        guild_data["start_time"] = datetime.now()
+        guild_data["start_time"] = time.monotonic()
         asyncio.create_task(bot._playback_service.play_next(guild_id))
         raise HTTPException(status_code=500, detail="Seek failed, restarted from beginning")
     finally:

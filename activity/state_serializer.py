@@ -1,4 +1,4 @@
-from datetime import datetime
+import time
 from typing import Any
 
 from utils.helpers import youtube_thumbnail
@@ -50,15 +50,15 @@ def _get_activity_position(bot, guild_id: int, guild_data: dict) -> int:
     if vc:
         return playback.get_current_position(guild_id)
 
-    start_time = guild_data.get("start_time")
-    if not start_time:
-        return guild_data.get("seek_offset", 0)
-
     pause_pos = guild_data.get("pause_position")
     if pause_pos is not None:
         return pause_pos
 
-    elapsed = (datetime.now() - start_time).total_seconds()
+    start_time = guild_data.get("start_time")
+    if not start_time:
+        return guild_data.get("seek_offset", 0)
+
+    elapsed = time.monotonic() - start_time
     speed = playback.get_effective_speed(guild_data)
     return int(elapsed * speed) + guild_data.get("seek_offset", 0)
 
