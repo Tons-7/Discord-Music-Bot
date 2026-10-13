@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from activity import known_songs
 from activity.dependencies import get_bot, get_ws_manager, guild_member
 from activity.helpers import fill_missing_thumbnails, member_avatar_url
 from activity.state_serializer import serialize_guild_state
@@ -261,7 +262,9 @@ async def show_playlist(
     _pid, songs, level = await _resolve_playlist(bot, uid, name, guild_id, global_mode, owner_id)
     _require(level, "view", name, _label(global_mode))
 
-    return {"name": name, "songs": fill_missing_thumbnails(songs)}
+    songs = fill_missing_thumbnails(songs)
+    known_songs.remember(songs)
+    return {"name": name, "songs": songs}
 
 
 # ── Create playlist ──────────────────────────────────────────────────

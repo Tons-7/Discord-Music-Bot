@@ -2,6 +2,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from activity import known_songs
 from activity.dependencies import get_bot, guild_member
 from activity.state_serializer import _ensure_thumbnail
 
@@ -60,4 +61,5 @@ async def search_songs(
         }
         normalized.append(_ensure_thumbnail(result))
 
+    known_songs.remember(normalized)
     return {"results": normalized}

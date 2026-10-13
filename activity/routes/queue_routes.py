@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from activity import known_songs
 from activity.dependencies import dj_member, get_bot, get_ws_manager, guild_member
 from activity.helpers import activity_advance, broadcast_state
 from activity.tasks import spawn
@@ -35,6 +36,17 @@ async def _auto_start_if_idle(bot, ws_manager, guild_id: int) -> bool:
     return False
 
 
+def _known_song_info(guild_data: dict, url: str) -> dict | None:
+    known = known_songs.lookup(url)
+    if known:
+        return known
+
+    played = next((s for s in guild_data.get("history", []) if s.webpage_url == url), None)
+    if played and played.duration and not played.is_live:
+        return {**played.to_dict(), "url": url}
+    return None
+
+
 class AddBody(BaseModel):
     query: str
 
@@ -45,11 +57,13 @@ async def add_to_queue(guild_id: int, body: AddBody, user=Depends(guild_member),
 
     guild_data = bot.get_guild_data(guild_id)
 
-    try:
-        info = await bot._music_service.get_song_info_cached(body.query)
-    except Exception as e:
-        logger.error(f"Song search error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to search for song")
+    info = _known_song_info(guild_data, body.query)
+    if info is None:
+        try:
+            info = await bot._music_service.get_song_info_cached(body.query)
+        except Exception as e:
+            logger.error(f"Song search error: {e}")
+            raise HTTPException(status_code=500, detail="Failed to search for song")
 
     if not info:
         raise HTTPException(status_code=404, detail="No results found")

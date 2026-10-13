@@ -50,7 +50,7 @@ export default function PlaylistPanel() {
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [queueingUrl, setQueueingUrl] = useState<string | null>(null);
+  const [queueingUrls, setQueueingUrls] = useState<Set<string>>(new Set());
   const [addedUrls, setAddedUrls] = useState<Set<string>>(new Set());
   // Row whose long-press drag is arming (touch delay constraint) — visual cue
   const [armingUrl, setArmingUrl] = useState<string | null>(null);
@@ -199,8 +199,8 @@ export default function PlaylistPanel() {
 
   const handleQueueSong = async (song: PlaylistSong) => {
     if (dragOccurred.current) return;
-    if (queueingUrl || addedUrls.has(song.webpage_url)) return;
-    setQueueingUrl(song.webpage_url);
+    if (queueingUrls.has(song.webpage_url) || addedUrls.has(song.webpage_url)) return;
+    setQueueingUrls(prev => new Set(prev).add(song.webpage_url));
     try {
       const res = await apiFetch<{ ok: boolean; duplicate?: boolean; auto_play?: boolean }>(
         `/api/guild/${guildId}/queue/add`,
@@ -215,7 +215,7 @@ export default function PlaylistPanel() {
       setAddedUrls(prev => new Set(prev).add(song.webpage_url));
       setTimeout(() => setAddedUrls(prev => { const n = new Set(prev); n.delete(song.webpage_url); return n; }), 2000);
     } catch (e: any) { toast(e.message, "error"); }
-    finally { setQueueingUrl(null); }
+    finally { setQueueingUrls(prev => { const n = new Set(prev); n.delete(song.webpage_url); return n; }); }
   };
 
   // Only cue delay-based (long-press) arming — the MouseSensor's distance
@@ -441,7 +441,7 @@ export default function PlaylistPanel() {
                       song={song}
                       index={i}
                       arming={armingUrl === song.webpage_url}
-                      queueing={queueingUrl === song.webpage_url}
+                      queueing={queueingUrls.has(song.webpage_url)}
                       added={addedUrls.has(song.webpage_url)}
                       canEdit={canEdit}
                       onQueue={() => handleQueueSong(song)}

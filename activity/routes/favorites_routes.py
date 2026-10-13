@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from activity import known_songs
 from activity.dependencies import get_bot, get_current_user
 from models.song import Song
 
@@ -14,6 +15,7 @@ router = APIRouter(prefix="/api/favorites", tags=["favorites"])
 async def get_favorites(user=Depends(get_current_user), bot=Depends(get_bot)):
     uid = int(user["id"])
     favorites = await bot.get_favorites(uid)
+    known_songs.remember(favorites)
     return {"favorites": favorites}
 
 
