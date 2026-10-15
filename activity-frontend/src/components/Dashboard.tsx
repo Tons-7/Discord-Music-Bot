@@ -280,7 +280,7 @@ function SidebarBtn({ children, active, label, onClick }: {
       aria-pressed={active}
     >
       {children}
-      <span className="absolute right-full mr-2 px-2 py-1 rounded-lg bg-surface-3 text-xs text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-lg">
+      <span className="absolute right-full mr-2 z-50 px-2 py-1 rounded-lg bg-surface-3 text-xs text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-lg">
         {label}
       </span>
     </button>

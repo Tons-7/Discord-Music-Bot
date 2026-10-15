@@ -11,7 +11,7 @@ import InviteButton from "./InviteButton";
 import ListenersBar from "./ListenersBar";
 import Popover from "./ui/Popover";
 import { SeekBar, LiveTime } from "./ui/SeekBar";
-import { PlayIcon, PauseIcon, NoteIcon } from "./ui/icons";
+import { PlayIcon, PauseIcon, NoteIcon, InfinityIcon } from "./ui/icons";
 import type { AudioPlayerHandle } from "@/hooks/useAudioPlayer";
 import { useTransportControls } from "@/hooks/useTransportControls";
 import type { LoopMode } from "@/types";
@@ -190,7 +190,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
                     {l}</button>))}
               </Popover>
               <Pill active={state.autoplay} label="Autoplay" onClick={() => { sendCommand("autoplay"); toast(state.autoplay ? "Autoplay off" : "Autoplay on"); }}>
-                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" /></svg>
+                <InfinityIcon className="w-4 h-4" />
               </Pill>
               <Pill active={false} label="Stop" onClick={handleStop}>
                 <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
