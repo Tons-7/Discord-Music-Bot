@@ -8,10 +8,11 @@ from pydantic import BaseModel
 
 from activity import known_songs
 from activity.dependencies import get_bot, get_ws_manager, guild_member
-from activity.helpers import fill_missing_thumbnails, member_avatar_url
+from activity.helpers import collection_entries, fill_missing_thumbnails, member_avatar_url
 from activity.state_serializer import serialize_guild_state
 from config import MAX_PLAYLIST_SIZE, PLAYLIST_PERMISSION_RANK, PLAYLIST_PERMISSIONS
 from models.song import Song
+from services.music_service import SPOTIFY_TRACK_LIMIT, spotify_collection
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/guild/{guild_id}/playlists", tags=["playlists"])
@@ -441,7 +442,8 @@ async def add_to_playlist(
                 song_dict = s.to_dict()
                 break
 
-    if not song_dict and body.song:
+    # A Spotify link can't be played directly, so it is always looked up below.
+    if not song_dict and body.song and "spotify.com" not in body.song_url:
         meta = {**body.song, "webpage_url": body.song_url}
         if meta.get("title"):
             song_dict = Song(meta).to_dict()
@@ -460,6 +462,8 @@ async def add_to_playlist(
 
     if not song_dict:
         raise HTTPException(status_code=404, detail="Could not resolve that song")
+    if any(s.get("webpage_url") == song_dict["webpage_url"] for s in songs):
+        raise HTTPException(status_code=409, detail="Song already in playlist")
 
     songs.append(song_dict)
     await bot.execute_db_query(
@@ -540,6 +544,29 @@ async def move_in_playlist(
     return {"ok": True}
 
 
+async def _append_songs(bot, table: str, pid: int, songs: list[dict], to_add: list[dict], skipped: int, label: str) -> dict:
+    """Append as many of to_add as fit, save the playlist, and report what happened."""
+    room = max(0, MAX_PLAYLIST_SIZE - len(songs))
+    if room == 0:
+        raise HTTPException(status_code=400, detail=f"{label} is full ({MAX_PLAYLIST_SIZE} songs max)")
+    dropped = max(0, len(to_add) - room)
+
+    songs.extend(to_add[:room])
+    await bot.execute_db_query(
+        f"UPDATE {table} SET songs = ? WHERE id = ?",
+        (json.dumps(songs), pid),
+    )
+
+    return {
+        "ok": True,
+        "added": len(to_add) - dropped,
+        "skipped": skipped,
+        "dropped": dropped,
+        "truncated": dropped > 0,
+        "song_count": len(songs),
+    }
+
+
 # ── Add all queue songs to playlist ──────────────────────────────────
 
 class AddAllQueueBody(BaseModel):
@@ -586,33 +613,79 @@ async def add_all_queue_to_playlist(
     if not to_add:
         raise HTTPException(status_code=400, detail="No new songs to add (all duplicates or queue empty)")
 
-    dropped = 0
-    truncated = False
-    if len(songs) + len(to_add) > MAX_PLAYLIST_SIZE:
-        room = max(0, MAX_PLAYLIST_SIZE - len(songs))
-        dropped = len(to_add) - room
-        to_add = to_add[:room]
-        truncated = True
-        if not to_add:
-            raise HTTPException(status_code=400, detail=f"{label} is full ({MAX_PLAYLIST_SIZE} songs max)")
-
     for song_dict in to_add:
         song_dict["requested_by"] = f"<@{uid}>"
 
-    songs.extend(to_add)
-    await bot.execute_db_query(
-        f"UPDATE {table} SET songs = ? WHERE id = ?",
-        (json.dumps(songs), pid),
-    )
+    return await _append_songs(bot, table, pid, songs, to_add, skipped, label)
 
-    return {
-        "ok": True,
-        "added": len(to_add),
-        "skipped": skipped,
-        "dropped": dropped,
-        "truncated": truncated,
-        "song_count": len(songs),
-    }
+
+# ── Add every song from a playlist or album link ─────────────────────
+
+class AddUrlBody(BaseModel):
+    url: str
+    global_mode: bool = False
+    owner_id: int | None = None
+
+
+async def _link_entries(bot, url: str) -> tuple[list[dict], bool]:
+    """Songs of a playlist or album link, and whether Spotify cut the list short."""
+    music = bot._music_service
+    if spotify_collection(url):
+        tracks = await music.spotify_tracks(url)
+        return [song async for song in music.iter_youtube_matches(tracks)], len(tracks) >= SPOTIFY_TRACK_LIMIT
+    try:
+        info = await music.get_song_info_cached(url)
+    except Exception:
+        info = None
+    return collection_entries(info) or [], False
+
+
+# Not @_serialized: finding the songs can take a while, so only the final write holds the lock.
+@router.post("/{name}/add-url")
+async def add_url_to_playlist(
+    guild_id: int,
+    name: str,
+    body: AddUrlBody,
+    user=Depends(guild_member),
+    bot=Depends(get_bot),
+):
+    uid = int(user["id"])
+    table = _table(body.global_mode)
+    label = _label(body.global_mode)
+
+    _pid, songs, level = await _resolve_playlist(bot, uid, name, guild_id, body.global_mode, body.owner_id)
+    _require(level, "append", name, label)
+    if len(songs) >= MAX_PLAYLIST_SIZE:
+        raise HTTPException(status_code=400, detail=f"{label} is full ({MAX_PLAYLIST_SIZE} songs max)")
+
+    entries, capped = await _link_entries(bot, body.url)
+    if not entries:
+        raise HTTPException(status_code=400, detail="That link is not a playlist or album")
+
+    async with _playlist_lock(table, 0 if body.global_mode else guild_id, name):
+        # Re-read: the playlist may have changed while the songs were being found.
+        pid, songs, level = await _resolve_playlist(bot, uid, name, guild_id, body.global_mode, body.owner_id)
+        _require(level, "append", name, label)
+
+        existing_urls = {s.get("webpage_url") for s in songs}
+        to_add: list[dict] = []
+        skipped = 0
+        for entry in entries:
+            url = entry.get("webpage_url") or entry.get("url")
+            if not entry.get("title") or not url:
+                continue
+            if url in existing_urls:
+                skipped += 1
+                continue
+            to_add.append(Song({**entry, "webpage_url": url, "requested_by": f"<@{uid}>"}).to_dict())
+            existing_urls.add(url)
+
+        if not to_add:
+            detail = f"Every song from that link is already in {name}" if skipped else "That link has no playable songs"
+            raise HTTPException(status_code=400, detail=detail)
+
+        result = await _append_songs(bot, table, pid, songs, to_add, skipped, label)
+    return {**result, "capped": capped}
 
 
 # ── Copy one playlist's songs into another ───────────────────────────

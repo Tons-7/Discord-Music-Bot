@@ -22,6 +22,22 @@ export interface PlaylistCandidate {
 // Returns true when the popover should close (i.e. the add succeeded).
 type PickHandler = (name: string, globalMode: boolean, ownerId: string | null) => Promise<boolean>;
 
+interface BulkSaveResult {
+  added: number;
+  skipped: number;
+  dropped?: number;
+  capped?: boolean;
+}
+
+function bulkSavedMessage(res: BulkSaveResult, name: string): string {
+  const parts = [];
+  if (res.skipped > 0) parts.push(`${res.skipped} already there`);
+  if (res.dropped) parts.push(`${res.dropped} dropped, playlist full`);
+  if (res.capped) parts.push("Spotify only shares the first 100");
+  const note = parts.length ? ` (${parts.join(", ")})` : "";
+  return `Added ${res.added} song${res.added === 1 ? "" : "s"} to "${name}"${note}`;
+}
+
 function PlaylistAddIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -190,15 +206,11 @@ export function AddQueueToPlaylistButton({ disabled, size = "sm", className }: {
 
   const onPick: PickHandler = async (name, globalMode, ownerId) => {
     try {
-      const res = await apiFetch<{ added: number; skipped: number; dropped?: number; truncated?: boolean }>(
+      const res = await apiFetch<BulkSaveResult>(
         `/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add-queue`,
         { method: "POST", body: JSON.stringify({ global_mode: globalMode, owner_id: ownerId }) },
       );
-      const parts = [];
-      if (res.skipped > 0) parts.push(`${res.skipped} already there`);
-      if (res.dropped) parts.push(`${res.dropped} dropped, playlist full`);
-      const note = parts.length ? ` (${parts.join(", ")})` : "";
-      toast(`Added ${res.added} song${res.added === 1 ? "" : "s"} to "${name}"${note}`, "success");
+      toast(bulkSavedMessage(res, name), "success");
       return true;
     } catch (e: any) {
       toast(e?.message || "Could not save the queue", "error");
@@ -214,6 +226,36 @@ export function AddQueueToPlaylistButton({ disabled, size = "sm", className }: {
       disabled={disabled}
       onPick={onPick}
     >
+      <PlaylistAddIcon className="w-4 h-4" />
+    </PickerButton>
+  );
+}
+
+/** Save every song from a playlist or album link (e.g. a search result) to a playlist. */
+export function AddLinkToPlaylistButton({ url, size = "md", className }: {
+  url: string;
+  size?: "xs" | "sm" | "md";
+  className?: string;
+}) {
+  const { guildId } = useGuildState();
+  const { toast } = useToast();
+
+  const onPick: PickHandler = async (name, globalMode, ownerId) => {
+    try {
+      const res = await apiFetch<BulkSaveResult>(
+        `/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add-url`,
+        { method: "POST", body: JSON.stringify({ url, global_mode: globalMode, owner_id: ownerId }) },
+      );
+      toast(bulkSavedMessage(res, name), "success");
+      return true;
+    } catch (e: any) {
+      toast(e?.message || "Could not save these songs", "error");
+      return false;
+    }
+  };
+
+  return (
+    <PickerButton label="Save all to playlist" size={size} className={className} onPick={onPick}>
       <PlaylistAddIcon className="w-4 h-4" />
     </PickerButton>
   );

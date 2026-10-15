@@ -19,6 +19,15 @@ def fill_missing_thumbnails(songs: list[dict]) -> list[dict]:
     return songs
 
 
+def collection_entries(info) -> list[dict] | None:
+    """Entries of a playlist or album lookup result, or None for a single song."""
+    if isinstance(info, list):
+        return info
+    if isinstance(info, dict) and "entries" in info:
+        return info["entries"]
+    return None
+
+
 def member_avatar_url(member, size: int = 128) -> str | None:
     """Return a member's avatar URL, preserving animation for animated avatars."""
     if not member or not member.display_avatar:

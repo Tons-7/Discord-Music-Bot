@@ -28,6 +28,7 @@ from models.song import Song
 from services.audio_cache import AudioCacheService
 from services.music_service import MusicService
 from services.playback_service import PlaybackService
+from services.queue_service import cancel_imports
 from utils import create_embed
 
 logger = logging.getLogger(__name__)
@@ -91,8 +92,12 @@ class MusicBot(commands.Bot):
         self.download_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         # Queries take milliseconds and must not queue behind multi-second extractions.
         self.db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        # Bulk lookups (a Spotify playlist's tracks) run four at a time without taking playback's workers.
+        self.import_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
         self.song_cache = {}
+        # Spotify's Web API is skipped until this monotonic time after it refuses us (no Premium).
+        self.spotify_api_paused_until = 0.0
         self.max_cache_size = MAX_CACHE_SIZE
         self.cache_ttl = CACHE_TTL
 
@@ -798,6 +803,7 @@ class MusicBot(commands.Bot):
                 guild_data["current"] = None
                 guild_data["start_time"] = None
                 guild_data["history_position"] = len(guild_data["history"])
+                cancel_imports(guild_data)
                 guild_data["queue"].clear()
                 guild_data["loop_backup"].clear()
                 await self.clear_guild_queue_from_db(guild_id)
@@ -814,6 +820,7 @@ class MusicBot(commands.Bot):
                 guild_data["current"] = None
                 guild_data["start_time"] = None
                 guild_data["history_position"] = len(guild_data["history"])
+                cancel_imports(guild_data)
                 guild_data["queue"].clear()
                 guild_data["loop_backup"].clear()
                 await self.clear_guild_queue_from_db(guild_id)
@@ -895,6 +902,7 @@ class MusicBot(commands.Bot):
         guild_data = self.get_guild_data(guild_id)
 
         logger.info(f"Cleaning up after failed reconnect for guild {guild_id}")
+        cancel_imports(guild_data)
 
         guild_data["current"] = None
         guild_data["start_time"] = None
@@ -1261,6 +1269,7 @@ class MusicBot(commands.Bot):
 
         self.executor.shutdown(wait=True)
         self.db_executor.shutdown(wait=True)
+        self.import_executor.shutdown(wait=False, cancel_futures=True)
         self.download_executor.shutdown(wait=False, cancel_futures=True)
 
         await super().close()

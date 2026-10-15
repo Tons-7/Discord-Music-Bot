@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from activity import known_songs
 from activity.dependencies import get_bot, guild_member
 from activity.state_serializer import _ensure_thumbnail
+from services.music_service import spotify_collection
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/guild/{guild_id}", tags=["search"])
@@ -23,8 +24,12 @@ async def search_songs(
     try:
         # If input looks like a URL, resolve it directly (Spotify, YouTube, SoundCloud, etc.)
         is_url = q.startswith("http://") or q.startswith("https://")
-        if is_url:
-            results = await music_service.get_song_info(q)
+        # Listed without YouTube lookups, so they show at once; each is looked up when added.
+        is_spotify_list = is_url and spotify_collection(q) is not None
+        if is_spotify_list:
+            results = await music_service.spotify_tracks(q)
+        elif is_url:
+            results = await music_service.get_song_info_cached(q)
         else:
             results = await music_service.search_youtube(q, limit=limit)
     except Exception as e:
@@ -61,5 +66,6 @@ async def search_songs(
         }
         normalized.append(_ensure_thumbnail(result))
 
-    known_songs.remember(normalized)
+    if not is_spotify_list:
+        known_songs.remember(normalized)
     return {"results": normalized}

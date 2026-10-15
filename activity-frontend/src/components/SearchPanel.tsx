@@ -7,7 +7,7 @@ import { maybeAutoPlay } from "@/lib/queueActions";
 import { formatDuration, cn } from "@/lib/utils";
 import { useToast } from "./Toast";
 import SongRow from "./SongRow";
-import AddToPlaylistButton from "./AddToPlaylistButton";
+import AddToPlaylistButton, { AddLinkToPlaylistButton } from "./AddToPlaylistButton";
 import EmptyState from "./EmptyState";
 import { SongRowSkeleton } from "./ui/Skeleton";
 import { SearchIcon } from "./ui/icons";
@@ -76,7 +76,7 @@ export default function SearchPanel() {
     if (!playlistUrl || addingAll) return;
     setAddingAll(true);
     try {
-      const res = await apiFetch<{ ok: boolean; added: number; skipped?: number; duplicate?: boolean; auto_play?: boolean }>(
+      const res = await apiFetch<{ ok: boolean; added: number; skipped?: number; duplicate?: boolean; auto_play?: boolean; in_background?: boolean; total?: number; capped?: boolean }>(
         `/api/guild/${guildId}/queue/add`,
         { method: "POST", body: JSON.stringify({ query: playlistUrl }) },
       );
@@ -89,7 +89,11 @@ export default function SearchPanel() {
       maybeAutoPlay(guildId, res, !!state.current);
 
       const skipped = res.skipped ?? 0;
-      toast(skipped > 0 ? `Added ${res.added} songs (${skipped} duplicates skipped)` : `Added ${res.added} songs`, "success");
+      if (res.in_background) {
+        const cap = res.capped ? " (Spotify only shares the first 100)" : "";
+        toast(`Adding ${res.total ?? results.length} songs${cap}, they'll join the queue as they're found`, "success");
+      }
+      else toast(skipped > 0 ? `Added ${res.added} songs (${skipped} duplicates skipped)` : `Added ${res.added} songs`, "success");
 
       // Mark every visible result as added
       setAddedSet(new Set(results.map(r => r.webpage_url || r.url)));
@@ -180,12 +184,12 @@ export default function SearchPanel() {
         )}
 
         {!loading && playlistUrl && results.length > 1 && (
-          <div className="sticky top-0 z-10 -mx-3 px-3 pt-3 pb-2 bg-gradient-to-b from-surface-1 via-surface-1 to-transparent">
+          <div className="sticky top-0 z-10 -mx-3 px-3 pt-3 pb-2 bg-gradient-to-b from-surface-1 via-surface-1 to-transparent flex items-center gap-2">
             <button
               onClick={handleAddAll}
               disabled={addingAll}
               className={cn(
-                "w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-2xl text-sm font-medium",
+                "flex-1 min-w-0 flex items-center justify-center gap-2 py-2.5 px-4 rounded-2xl text-sm font-medium",
                 "bg-accent/15 text-accent border border-accent/30",
                 "transition-[background-color,opacity] duration-200",
                 "hover:bg-accent/25 disabled:opacity-60 disabled:cursor-not-allowed"
@@ -205,6 +209,7 @@ export default function SearchPanel() {
                 </>
               )}
             </button>
+            <AddLinkToPlaylistButton url={playlistUrl} />
           </div>
         )}
 

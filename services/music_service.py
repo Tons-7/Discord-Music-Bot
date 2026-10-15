@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import random
 import re
@@ -19,6 +20,20 @@ MAX_AUTOPLAY_DURATION = 720
 YOUTUBE_MATCH_CANDIDATES = 5
 
 _SPOTIFY_PAGE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+_SPOTIFY_EMBED_DATA = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>', re.S)
+# The embed player page lists at most this many tracks and has no pagination.
+SPOTIFY_TRACK_LIMIT = 100
+_SPOTIFY_API_PAUSE = 6 * 3600
+
+
+def spotify_collection(url: str) -> tuple[str, str] | None:
+    """(kind, id) for a Spotify playlist or album link, otherwise None."""
+    if "spotify.com" not in url or "track/" in url:
+        return None
+    for kind in ("playlist", "album"):
+        if f"{kind}/" in url:
+            return kind, url.split(f"{kind}/")[-1].split("?")[0]
+    return None
 
 JUNK_TITLE_PATTERNS = {
     "mix": r"\bmix(es)?\b",
@@ -155,7 +170,7 @@ class MusicService:
             lower = url_or_query.lower()
 
             # Platform-specific handling
-            if "spotify.com" in lower and self.bot.spotify:
+            if "spotify.com" in lower:
                 return await self.handle_spotify_url(url_or_query)
 
             if "music.apple.com" in lower:
@@ -195,12 +210,12 @@ class MusicService:
 
     # YouTube search
 
-    async def search_youtube(self, query: str, limit: int = 1) -> dict | None:
+    async def search_youtube(self, query: str, limit: int = 1, executor=None) -> dict | None:
         try:
             loop = asyncio.get_running_loop()
             search_prefix = f"ytsearch{limit}:" if limit > 1 else "ytsearch:"
             data = await loop.run_in_executor(
-                self.bot.executor,
+                executor or self.bot.executor,
                 lambda: self._extract(f"{search_prefix}{query}", download=False),
             )
 
@@ -281,36 +296,7 @@ class MusicService:
         logger.warning(f"Spotify track has no artists: {track_name}")
         return track_name
 
-    def _collect_spotify_tracks(self, first_page: dict, is_playlist: bool) -> list[dict]:
-        """Walk all Spotify pages and return a flat list of track dicts."""
-        tracks = []
-        page = first_page
-
-        while page and len(tracks) < MAX_PLAYLIST_SIZE:
-            for item in page.get("items", []):
-                if len(tracks) >= MAX_PLAYLIST_SIZE:
-                    break
-                track = item.get("track") if is_playlist else item
-                if track and track.get("name"):
-                    tracks.append(track)
-
-            if not page.get("next"):
-                break
-            try:
-                page = self.bot.spotify.next(page)
-            except Exception as e:
-                logger.warning(f"Spotify pagination error after {len(tracks)} tracks: {e}")
-                break
-
-        logger.info(f"Collected {len(tracks)} Spotify tracks across pages")
-        return tracks
-
-    async def _spotify_public_query(self, url: str) -> str | None:
-        """Track name + artists scraped from the public Spotify page.
-
-        The Web API now refuses metadata unless the app owner holds Premium, so
-        this keeps single-track links working without credentials.
-        """
+    async def _fetch_spotify_page(self, url: str) -> str | None:
         try:
             timeout = aiohttp.ClientTimeout(total=8)
             headers = {"User-Agent": _SPOTIFY_PAGE_UA}
@@ -318,9 +304,33 @@ class MusicService:
                 async with session.get(url.split("?")[0]) as resp:
                     if resp.status != 200:
                         return None
-                    html = await resp.text()
+                    return await resp.text()
         except Exception as e:
             logger.debug(f"Spotify page fetch failed: {e}")
+            return None
+
+    async def _spotify_api_query(self, url: str) -> str | None:
+        """Track name + artist from the Web API, which is skipped for 6h after a 403 (no Premium)."""
+        if not self.bot.spotify or time.monotonic() < self.bot.spotify_api_paused_until:
+            return None
+
+        track_id = url.split("track/")[-1].split("?")[0]
+        loop = asyncio.get_running_loop()
+        try:
+            track = await loop.run_in_executor(self.bot.executor, lambda: self.bot.spotify.track(track_id))
+        except Exception as e:
+            if getattr(e, "http_status", None) == 403:
+                self.bot.spotify_api_paused_until = time.monotonic() + _SPOTIFY_API_PAUSE
+                logger.warning(f"Spotify API refused, using public pages for {_SPOTIFY_API_PAUSE // 3600}h: {e}")
+            else:
+                logger.warning(f"Spotify API lookup failed, using the public page: {e}")
+            return None
+        return self._spotify_search_query(track)
+
+    async def _spotify_public_query(self, url: str) -> str | None:
+        """Track name + artists scraped from the public Spotify page."""
+        html = await self._fetch_spotify_page(url)
+        if not html:
             return None
 
         def meta(prop: str) -> str:
@@ -338,68 +348,65 @@ class MusicService:
         artist = artists.split(",")[0].strip()
         return f"{title} {artist}".strip() if artist else title
 
-    async def handle_spotify_url(self, url: str) -> dict | None:
-        loop = asyncio.get_running_loop()
+    async def spotify_tracks(self, url: str) -> list[dict]:
+        """Title, artists, duration and link of each track, read from the public embed player page."""
+        collection = spotify_collection(url)
+        if not collection:
+            return []
+        kind, spotify_id = collection
 
+        html = await self._fetch_spotify_page(f"https://open.spotify.com/embed/{kind}/{spotify_id}")
+        match = _SPOTIFY_EMBED_DATA.search(html or "")
+        if not match:
+            return []
+        try:
+            tracks = json.loads(match.group(1))["props"]["pageProps"]["state"]["data"]["entity"]["trackList"]
+        except (ValueError, KeyError, TypeError):
+            logger.warning(f"Unexpected Spotify embed page for {kind} {spotify_id}")
+            return []
+        if len(tracks) >= SPOTIFY_TRACK_LIMIT:
+            logger.info(f"Spotify {kind} {spotify_id}: only the first {SPOTIFY_TRACK_LIMIT} tracks are available")
+
+        result = []
+        for track in tracks[:MAX_PLAYLIST_SIZE]:
+            title = (track.get("title") or "").strip()
+            if not title:
+                continue
+            track_id = (track.get("uri") or "").rsplit(":", 1)[-1]
+            result.append({
+                "title": title,
+                "uploader": (track.get("subtitle") or "").strip(),
+                "duration": (track.get("duration") or 0) // 1000,
+                "webpage_url": f"https://open.spotify.com/track/{track_id}" if track_id else "",
+            })
+        return result
+
+    async def iter_youtube_matches(self, tracks: list[dict]):
+        """Yield the YouTube match of each spotify_tracks() entry in order, each as soon as it is found."""
+        lookups = [
+            asyncio.ensure_future(self.search_youtube(
+                f"{track['title']} {track['uploader'].split(',')[0].strip()}".strip(),
+                executor=self.bot.import_executor,
+            ))
+            for track in tracks
+        ]
+        try:
+            for lookup in lookups:
+                if song := await lookup:
+                    yield song
+        finally:
+            for lookup in lookups:
+                lookup.cancel()
+
+    async def handle_spotify_url(self, url: str) -> dict | list[dict] | None:
         try:
             if "track/" in url:
-                search_query = None
-                if self.bot.spotify:
-                    try:
-                        track_id = url.split("track/")[-1].split("?")[0]
-                        track = await loop.run_in_executor(
-                            self.bot.executor, lambda: self.bot.spotify.track(track_id)
-                        )
-                        search_query = self._spotify_search_query(track)
-                    except Exception as e:
-                        logger.warning(f"Spotify API unavailable, using the public page: {e}")
-                if not search_query:
-                    search_query = await self._spotify_public_query(url)
-                if not search_query:
-                    return None
-                return await self.search_youtube(search_query)
+                query = await self._spotify_api_query(url) or await self._spotify_public_query(url)
+                return await self.search_youtube(query) if query else None
 
-            # Albums and playlists need the API: the public page has no track list.
-            if not self.bot.spotify:
-                return None
-
-            if "playlist/" in url:
-                playlist_id = url.split("playlist/")[-1].split("?")[0]
-                first_page = await loop.run_in_executor(
-                    self.bot.executor, lambda: self.bot.spotify.playlist_tracks(playlist_id)
-                )
-                all_tracks = await loop.run_in_executor(
-                    self.bot.executor, lambda: self._collect_spotify_tracks(first_page, is_playlist=True)
-                )
-                songs = []
-                for track in all_tracks:
-                    search_query = self._spotify_search_query(track)
-                    if not search_query:
-                        continue
-                    song_data = await self.search_youtube(search_query)
-                    if song_data:
-                        songs.append(song_data)
-                    await asyncio.sleep(0.1)
-                return songs if songs else None
-
-            elif "album/" in url:
-                album_id = url.split("album/")[-1].split("?")[0]
-                first_page = await loop.run_in_executor(
-                    self.bot.executor, lambda: self.bot.spotify.album_tracks(album_id)
-                )
-                all_tracks = await loop.run_in_executor(
-                    self.bot.executor, lambda: self._collect_spotify_tracks(first_page, is_playlist=False)
-                )
-                songs = []
-                for track in all_tracks:
-                    search_query = self._spotify_search_query(track)
-                    if not search_query:
-                        continue
-                    song_data = await self.search_youtube(search_query)
-                    if song_data:
-                        songs.append(song_data)
-                    await asyncio.sleep(0.1)
-                return songs if songs else None
+            if spotify_collection(url):
+                tracks = await self.spotify_tracks(url)
+                return [song async for song in self.iter_youtube_matches(tracks)] or None
 
         except Exception as e:
             logger.error(f"Spotify error: {e}")

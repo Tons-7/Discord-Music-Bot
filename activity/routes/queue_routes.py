@@ -5,9 +5,10 @@ from pydantic import BaseModel
 
 from activity import known_songs
 from activity.dependencies import dj_member, get_bot, get_ws_manager, guild_member
-from activity.helpers import activity_advance, broadcast_state
+from activity.helpers import activity_advance, broadcast_state, collection_entries
 from activity.tasks import spawn
 from models.song import Song
+from services.music_service import SPOTIFY_TRACK_LIMIT, spotify_collection
 from utils.helpers import get_existing_urls
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,19 @@ async def add_to_queue(guild_id: int, body: AddBody, user=Depends(guild_member),
 
     guild_data = bot.get_guild_data(guild_id)
 
+    if spotify_collection(body.query):
+        tracks = await bot._music_service.spotify_tracks(body.query)
+        if not tracks:
+            raise HTTPException(status_code=404, detail="Couldn't read that Spotify playlist or album")
+        bot._playback_service.import_songs(
+            guild_id, bot._music_service.iter_youtube_matches(tracks), user.get("username", f"<@{uid}>"),
+            on_first=lambda: _auto_start_if_idle(bot, ws, guild_id),
+        )
+        return {
+            "ok": True, "added": 0, "playlist": True, "in_background": True,
+            "total": len(tracks), "capped": len(tracks) >= SPOTIFY_TRACK_LIMIT,
+        }
+
     info = _known_song_info(guild_data, body.query)
     if info is None:
         try:
@@ -68,12 +82,7 @@ async def add_to_queue(guild_id: int, body: AddBody, user=Depends(guild_member),
     if not info:
         raise HTTPException(status_code=404, detail="No results found")
 
-    # Handle playlists (list from Spotify, or dict with "entries" from yt-dlp)
-    entries = None
-    if isinstance(info, list):
-        entries = info
-    elif isinstance(info, dict) and "entries" in info:
-        entries = info["entries"]
+    entries = collection_entries(info)
 
     existing_urls = get_existing_urls(guild_data)
 

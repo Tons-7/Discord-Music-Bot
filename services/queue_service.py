@@ -7,6 +7,12 @@ from models.song import Song
 logger = logging.getLogger(__name__)
 
 
+def cancel_imports(guild_data: dict) -> None:
+    """Stop background playlist imports, so a cleared queue stays cleared."""
+    for task in guild_data.pop("import_tasks", set()):
+        task.cancel()
+
+
 class QueueService:
     def __init__(self, bot):
         self.bot = bot
@@ -139,6 +145,7 @@ class QueueService:
 
     def clear_queue(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
+        cancel_imports(guild_data)
         guild_data["queue"].clear()
         guild_data["loop_backup"].clear()
         self._bump_queue_version(guild_data)

@@ -99,8 +99,8 @@ Queue state persisted on changes and restored on startup.
 ## Key Patterns
 
 - All blocking I/O (yt-dlp, Spotify, Last.fm) runs in `bot.executor` (ThreadPoolExecutor, 3 workers) via
-  `run_in_executor`. SQLite queries use their own `bot.db_executor` so they never queue behind extractions, and
-  cache downloads use `bot.download_executor`.
+  `run_in_executor`. SQLite queries use their own `bot.db_executor` so they never queue behind extractions, cache
+  downloads use `bot.download_executor`, and bulk track lookups (Spotify imports) use `bot.import_executor` (4 workers).
 - Guild state uses a `play_lock` (asyncio.Lock) to prevent concurrent `play_next` calls.
 - `save_guild_queue()` debounces DB writes with a 1-second delay via `_delayed_save_guild_queue`.
 - Now-playing embeds update every 1 second; message validation is cached for 10 seconds to reduce API calls.
@@ -108,6 +108,13 @@ Queue state persisted on changes and restored on startup.
 - Elapsed time (`start_time`, `last_activity`, `now_playing_message_sent_time`) uses `time.monotonic()`, never
   wall-clock time, so clock adjustments can't move playback position.
 - Slash commands are guild-only (`allowed_contexts` on the bot); they all read `interaction.guild`.
+- Spotify: since March 2026 the Web API returns 403 unless the app owner has Premium, and it never lists other users'
+  playlists. Track links try the API (skipped for 6h after a refusal), then the public track page. Playlists and albums
+  never call the API: `spotify_tracks` reads the embed player page (max 100 tracks, no pagination) and
+  `iter_youtube_matches` yields each track's YouTube match in order as soon as it is found. `/play` and the
+  Activity's "Add all" queue them through `PlaybackService.import_songs`, so playback starts with the first; the
+  import is cancelled (`cancel_imports`) whenever the queue is cleared or the last Activity viewer leaves. API keys
+  are optional.
 - yt-dlp: never pin `player_client` in extractor_args — pinned client lists go stale as YouTube gates clients
   (PO tokens/SABR) and break extraction; yt-dlp's per-release defaults track this.
 
@@ -166,6 +173,10 @@ through voice channel), with separate M4A disk cache at `audio_cache/activity/`.
 - PiP/minimized view: `useLayoutMode` subscribes to `ACTIVITY_LAYOUT_MODE_UPDATE`, renders `PiPView` (fullscreen
   thumbnail, tap-to-play/pause, always-visible bottom progress strip; text only when the tile is ≥150px tall).
 - Click/tap a row to add in Search/History/Favorites/Playlist detail, duplicate detection, toast notifications.
+- Searching a playlist/album link offers "Add all" (queue) and "Save all to playlist" (`/playlists/{name}/add-url`).
+  URL searches go through `get_song_info_cached`, so both reuse the search's resolution. Spotify links are the
+  exception: search lists their tracks straight from the embed page, and rows carry Spotify track links, which are
+  only looked up on YouTube when added (never stored in playlists or `known_songs` as-is).
 
 **Audio streaming (`stream_routes.py`):**
 

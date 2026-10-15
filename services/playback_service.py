@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import aiohttp
 import discord
@@ -10,9 +11,14 @@ from config import AUDIO_EFFECTS, COLOR, NOW_PLAYING_RESEND_SECONDS
 from models.song import Song
 from services.music_service import MusicService
 from services.queue_service import QueueService
-from utils.helpers import build_progress_bar, create_embed, extract_youtube_id, format_duration
+from utils.helpers import build_progress_bar, create_embed, extract_youtube_id, format_duration, get_existing_urls
 
 logger = logging.getLogger(__name__)
+
+
+def _log_import_failure(task: asyncio.Task) -> None:
+    if not task.cancelled() and task.exception():
+        logger.error("Background import failed", exc_info=task.exception())
 
 # How many recent history entries autoplay treats as "already played"
 AUTOPLAY_REPEAT_WINDOW = 30
@@ -311,6 +317,34 @@ class PlaybackService:
                 logger.warning(f"Message edit failed: {e}")
         except Exception as e:
             logger.warning(f"Unexpected message edit error: {e}")
+
+    # ── Background imports ─────────────────────────────────────────────
+
+    def import_songs(
+            self, guild_id: int, songs: AsyncIterator[dict], requested_by: str,
+            on_first: Callable[[], Awaitable[object]],
+    ) -> asyncio.Task:
+        """Queue songs in the background as they are found; clear_queue cancels it. Result: (added, skipped)."""
+        task = asyncio.create_task(self._queue_as_found(guild_id, songs, requested_by, on_first))
+        tasks = self.bot.get_guild_data(guild_id).setdefault("import_tasks", set())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        task.add_done_callback(_log_import_failure)
+        return task
+
+    async def _queue_as_found(self, guild_id, songs, requested_by, on_first) -> tuple[int, int]:
+        guild_data = self.bot.get_guild_data(guild_id)
+        added = skipped = 0
+        async for info in songs:
+            if info["webpage_url"] in get_existing_urls(guild_data):
+                skipped += 1
+                continue
+            self.queue_service.add_song_to_queue(guild_id, Song({**info, "requested_by": requested_by}))
+            added += 1
+            await self.bot.save_guild_queue(guild_id)
+            if added == 1:
+                await on_first()
+        return added, skipped
 
     # ── Core playback loop ─────────────────────────────────────────────
 

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import time
 
@@ -8,7 +9,7 @@ from discord.ext import commands
 
 from config import AUDIO_EFFECTS, COLOR, COMMAND_COOLDOWN, PLAY_COOLDOWN, SONGS_PER_PAGE
 from models.song import Song
-from services.music_service import MusicService
+from services.music_service import SPOTIFY_TRACK_LIMIT, MusicService, spotify_collection
 from utils.ban_system import ban_user_id, unban_user_id
 from utils.helpers import (
     create_embed,
@@ -373,6 +374,48 @@ class MusicCommands(commands.Cog):
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
+    async def _queue_spotify_collection(self, interaction: discord.Interaction, url: str):
+        """Queue a Spotify playlist or album in the background, starting playback with the first song found."""
+        tracks = await self.music_service.spotify_tracks(url)
+        if not tracks:
+            embed = create_embed("Error", "Could not read that Spotify playlist or album!", COLOR, self.bot.user)
+            with contextlib.suppress(discord.NotFound, discord.HTTPException):
+                await interaction.edit_original_response(embed=embed)
+            return
+
+        guild_id = interaction.guild.id
+        capped_note = f"\nSpotify only shares the first {SPOTIFY_TRACK_LIMIT} songs." if len(tracks) >= SPOTIFY_TRACK_LIMIT else ""
+
+        async def on_first():
+            asyncio.create_task(self.playback_service.play_next(guild_id))
+            embed = create_embed(
+                "Adding Playlist...", f"Adding {len(tracks)} songs, playing as soon as the first is found.", COLOR,
+                self.bot.user,
+            )
+            with contextlib.suppress(discord.NotFound, discord.HTTPException):
+                await interaction.edit_original_response(embed=embed)
+
+        task = self.playback_service.import_songs(
+            guild_id, self.music_service.iter_youtube_matches(tracks), interaction.user.mention, on_first,
+        )
+        await asyncio.wait([task])
+
+        if task.cancelled():
+            embed = create_embed("Playlist Stopped", "Stopped adding songs because the queue was cleared.", COLOR, self.bot.user)
+        elif task.exception():
+            embed = create_embed("Error", "Could not process playlist!", COLOR, self.bot.user)
+        else:
+            added, skipped = task.result()
+            if added:
+                desc = f"Added {added} songs to queue!" + (f"\nSkipped {skipped} duplicates." if skipped else "")
+                embed = create_embed("Playlist Added", desc + capped_note, COLOR, self.bot.user)
+            elif skipped:
+                embed = create_embed("No Songs Added", "All songs were duplicates!", COLOR, self.bot.user)
+            else:
+                embed = create_embed("Error", "Could not find any of these songs!", COLOR, self.bot.user)
+        with contextlib.suppress(discord.NotFound, discord.HTTPException):
+            await interaction.edit_original_response(embed=embed)
+
     @app_commands.command(
         name="play", description="Play a song or add it to queue"
     )
@@ -469,6 +512,9 @@ class MusicCommands(commands.Cog):
                     )
 
                 await interaction.edit_original_response(embed=embed)
+
+            elif spotify_collection(query):
+                await self._queue_spotify_collection(interaction, query)
 
             else:
                 song_data = await self.bot.get_song_info_cached(query)

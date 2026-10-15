@@ -6,6 +6,7 @@ from activity import helpers, known_songs, tasks
 from activity.cog_hooks import install_broadcast_hooks
 from bot import MusicBot
 from models.song import Song
+from services.queue_service import cancel_imports
 
 GUILD_ID = 111
 USER = {"id": "42", "username": "tester"}
@@ -60,9 +61,12 @@ async def bot(tmp_path, monkeypatch, ws):
 
     yield bot
 
+    for guild_data in bot.guilds_data.values():
+        cancel_imports(guild_data)
     await tasks.cancel_all()
     bot.executor.shutdown(wait=False)
     bot.db_executor.shutdown(wait=False)
+    bot.import_executor.shutdown(wait=False)
     bot.download_executor.shutdown(wait=False)
     known_songs._songs.clear()
     helpers._pending_broadcasts.clear()

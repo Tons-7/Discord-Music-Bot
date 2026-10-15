@@ -14,6 +14,7 @@ from activity.ws_manager import ConnectionManager
 from bot import MusicBot
 from cogs.music_commands import MusicCommands
 from cogs.playlist_commands import PlaylistCommands
+from services.queue_service import cancel_imports
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -115,6 +116,7 @@ async def lifespan(app: FastAPI):
             from activity.helpers import clear_activity_playback, record_activity_listening
             await record_activity_listening(bot, ws_manager, guild_id, user_ids=last_user_ids)
 
+            cancel_imports(guild_data)
             clear_activity_playback(guild_data, cancel_prefetch=True)
             await bot.save_guild_queue(guild_id)
             logger.info(f"Activity closed for guild {guild_id}, cleared playback state")
