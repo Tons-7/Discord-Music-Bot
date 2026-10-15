@@ -234,7 +234,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
 
             {/* Volume */}
             <div className="flex items-center gap-1.5 justify-end @max-[42rem]:hidden">
-              <Btn label={localVol === 0 ? "Unmute" : "Mute"} onClick={() => { const v = localVol === 0 ? 50 : 0; applyVolume(v); commitVolume(v); }}>
+              <Btn label={localVol === 0 ? "Unmute" : "Mute"} onClick={() => setLocalVol(transport.toggleMute())}>
                 <VolumeIcon muted={localVol === 0} />
               </Btn>
               <input type="range" min={0} max={100} value={localVol} aria-label="Volume"

@@ -1,17 +1,21 @@
 "use client";
 
-import { useRef } from "react";
 import { useGuildState } from "@/components/GuildStateProvider";
 import { useToast } from "@/components/Toast";
 import { apiFetch } from "@/lib/api";
 import type { AudioPlayerHandle } from "./useAudioPlayer";
+import { lastAudibleVolume, rememberAudibleVolume } from "./useLocalVolume";
+
+// Shared voice volume before muting, kept apart from the listener's own volume memory.
+let sharedVolumeBeforeMute = 0;
 
 export interface TransportControls {
   playPause: () => void;
   seekBy: (deltaSeconds: number) => void;
   next: () => void;
   previous: () => void;
-  toggleMute: () => void;
+  /** Returns the new volume level. */
+  toggleMute: () => number;
 }
 
 /**
@@ -27,7 +31,6 @@ export function useTransportControls(
 ): TransportControls {
   const { state, guildId, sendCommand } = useGuildState();
   const { toast } = useToast();
-  const preMuteRef = useRef(0);
   const { current } = state;
 
   const totalDur = audio.ready && audio.duration > 0 ? audio.duration : (current?.duration ?? 0);
@@ -76,11 +79,18 @@ export function useTransportControls(
   const toggleMute = () => {
     const sharedVolume = state.is_connected;
     const currentLevel = sharedVolume ? state.volume : volume;
-    const level = currentLevel === 0 ? (preMuteRef.current || 50) : 0;
-    if (currentLevel > 0) preMuteRef.current = currentLevel;
+    let level: number;
+    if (sharedVolume) {
+      if (currentLevel > 0) sharedVolumeBeforeMute = currentLevel;
+      level = currentLevel === 0 ? sharedVolumeBeforeMute || 100 : 0;
+    } else {
+      rememberAudibleVolume(currentLevel);
+      level = currentLevel === 0 ? lastAudibleVolume() : 0;
+    }
     audio.setVolume(level);
     if (sharedVolume) sendCommand("volume", { level }).catch(() => {});
     else onVolumeChange(level);
+    return level;
   };
 
   return { playPause, seekBy, next, previous, toggleMute };
