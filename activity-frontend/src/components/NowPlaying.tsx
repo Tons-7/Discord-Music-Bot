@@ -114,7 +114,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
           {current?.is_live && (
             <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500">
               <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-              <span className="text-[9px] font-bold text-white">LIVE</span>
+              <span className="text-[11px] font-bold text-white">LIVE</span>
             </div>
           )}
           {audio.blocked && hasSong && !state.is_connected && (
@@ -138,7 +138,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
               {hasSong ? (
                 <>
                   <MarqueeText className="text-sm font-semibold text-white select-text">{current.title}</MarqueeText>
-                  <p className="text-[11px] text-white/50 truncate mt-0.5">{current.uploader}</p>
+                  <p className="text-xs text-white/50 truncate mt-0.5">{current.uploader}</p>
                 </>
               ) : (
                 <p className="text-sm text-white/50 truncate">Nothing playing</p>
@@ -154,7 +154,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
 
           {hasSong && !current.is_live && (
             <div className="flex items-center gap-2.5">
-              <LiveTime get={getDisplayPosition} className="text-[10px] font-mono tabular-nums text-white/50 w-9 flex-shrink-0" />
+              <LiveTime get={getDisplayPosition} className="text-xs font-mono tabular-nums text-white/50 min-w-10 flex-shrink-0" />
               <SeekBar
                 duration={totalDur}
                 getPosition={getDisplayPosition}
@@ -162,7 +162,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
                 disabled={!totalDur}
                 className="flex-1"
               />
-              <span className="text-[10px] font-mono tabular-nums text-white/50 w-9 text-right flex-shrink-0">{formatDuration(totalDur)}</span>
+              <span className="text-xs font-mono tabular-nums text-white/50 min-w-10 text-right flex-shrink-0">{formatDuration(totalDur)}</span>
             </div>
           )}
 
@@ -176,7 +176,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
               <Popover open={expanded === "speed"} onClose={closeExpanded} anchorRef={speedAnchorRef} className="min-w-[48px]">
                 {SPEEDS.map(s => (
                   <button key={s} onClick={() => { sendCommand("speed", { rate: s }); setExpanded(null); toast(`Speed ${s}x`); }}
-                    className={cn("block w-full text-center px-2 py-1.5 rounded-lg text-[10px] font-medium transition-colors", s === state.speed ? "bg-accent text-white" : "text-white/70 hover:bg-white/[0.08]")}>
+                    className={cn("block w-full text-center px-2 py-1.5 rounded-lg text-xs font-medium transition-colors", s === state.speed ? "bg-accent text-white" : "text-white/70 hover:bg-white/[0.08]")}>
                     {s}x</button>))}
               </Popover>
               <Pill ref={fxAnchorRef} active={expanded === "fx" || state.audio_effect !== "none"} label="Audio effects"
@@ -186,7 +186,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
               <Popover open={expanded === "fx"} onClose={closeExpanded} anchorRef={fxAnchorRef} className="min-w-[80px]">
                 {AUDIO_EFFECTS.map(([id, l]) => (
                   <button key={id} onClick={() => { sendCommand("effects", { effect: id }); setExpanded(null); toast(id === "none" ? "Effects off" : l); }}
-                    className={cn("block w-full text-left px-3 py-1.5 rounded-lg text-[10px] font-medium transition-colors whitespace-nowrap", id === state.audio_effect ? "bg-accent text-white" : "text-white/70 hover:bg-white/[0.08]")}>
+                    className={cn("block w-full text-left px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap", id === state.audio_effect ? "bg-accent text-white" : "text-white/70 hover:bg-white/[0.08]")}>
                     {l}</button>))}
               </Popover>
               <Pill active={state.autoplay} label="Autoplay" onClick={() => { sendCommand("autoplay"); toast(state.autoplay ? "Autoplay off" : "Autoplay on"); }}>
@@ -250,7 +250,7 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
                 ref={volAnchorRef}
                 onClick={() => setExpanded(expanded === "volume" ? null : "volume")}
                 aria-label="Volume"
-                className="h-7 px-2.5 rounded-full text-[10px] font-semibold flex items-center gap-1 text-white/60 active:bg-white/[0.08]"
+                className="h-7 px-2.5 rounded-full text-xs font-semibold flex items-center gap-1 text-white/60 active:bg-white/[0.08]"
               >
                 <VolumeIcon muted={localVol === 0} />
                 {localVol}%
@@ -313,7 +313,7 @@ function Pill({ children, active, onClick, label, ref }: {
 }) {
   return (
     <button ref={ref} onClick={onClick} aria-label={label} title={label} aria-pressed={!!active}
-      className={cn("relative h-7 px-2.5 rounded-full text-[11px] font-semibold flex items-center gap-1 transition-all flex-shrink-0",
+      className={cn("relative h-7 px-2.5 rounded-full text-xs font-semibold flex items-center gap-1 transition-all flex-shrink-0",
         "pointer-coarse:after:absolute pointer-coarse:after:-inset-y-1.5 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']",
         active ? "bg-accent/20 text-accent" : "text-white/60 hover:text-white/80 hover:bg-white/[0.08]"
       )}>{children}</button>

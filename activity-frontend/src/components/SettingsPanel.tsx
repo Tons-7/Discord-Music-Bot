@@ -113,7 +113,7 @@ function Setting({ label, hint, value, options, emptyLabel, prefix, onChange }: 
     <div className="flex flex-col gap-2">
       <div>
         <p className="text-sm font-semibold text-white">{label}</p>
-        <p className="text-[11px] text-muted mt-0.5">{hint}</p>
+        <p className="text-xs text-muted mt-0.5">{hint}</p>
       </div>
       <div className="flex flex-col gap-1">
         <Row selected={!value} onClick={() => onChange(null)}>{emptyLabel}</Row>

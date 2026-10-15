@@ -198,7 +198,7 @@ export default function QueuePanel() {
           <button
             onClick={handleClear}
             className={cn(
-              "text-[11px] font-medium px-2 py-1 -my-1 rounded-md transition-colors",
+              "text-xs font-medium px-2 py-1 -my-1 rounded-md transition-colors",
               confirmClear ? "text-white bg-danger" : "text-danger/60 hover:text-danger"
             )}
           >
@@ -224,7 +224,7 @@ export default function QueuePanel() {
           )}
         </div>
         {filtering && (
-          <p className="text-[10px] text-muted mt-1.5">Reordering is off while filtering</p>
+          <p className="text-xs text-muted mt-1.5">Reordering is off while filtering</p>
         )}
       </div>
 
@@ -286,7 +286,7 @@ function QueueRow({ song, index, arming, draggable, onSkipTo, onRemove }: {
         title="Skip to this song"
         aria-label={`Skip to "${song.title}"`}
       >
-        <span className="text-[11px] tabular-nums group-hover:hidden">{index + 1}</span>
+        <span className="text-xs tabular-nums group-hover:hidden">{index + 1}</span>
         <PlayIcon className="w-3.5 h-3.5 hidden group-hover:block" />
       </button>
 
@@ -318,7 +318,7 @@ function QueueRow({ song, index, arming, draggable, onSkipTo, onRemove }: {
             <CloseIcon className="w-3 h-3" />
           </IconButton>
         </div>
-        <span className="text-[11px] tabular-nums text-muted w-8 text-right">
+        <span className="text-xs tabular-nums text-muted min-w-8 text-right">
           {song.duration > 0 ? formatDuration(song.duration) : ""}
         </span>
       </div>

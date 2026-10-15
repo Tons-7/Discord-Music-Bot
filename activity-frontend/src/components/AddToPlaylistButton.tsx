@@ -323,7 +323,7 @@ function PlaylistPicker({ onPick, onDone, excludeName, excludeGlobal }: {
             key={String(g)}
             onClick={() => { setGlobalMode(g); setCreating(false); }}
             className={cn(
-              "flex-1 h-6 rounded-md text-[10px] font-semibold transition-colors",
+              "flex-1 h-6 rounded-md text-xs font-semibold transition-colors",
               globalMode === g ? "bg-accent text-white" : "text-white/50 hover:text-white/80"
             )}
           >
@@ -333,20 +333,20 @@ function PlaylistPicker({ onPick, onDone, excludeName, excludeGlobal }: {
       </div>
 
       <div className="max-h-56 overflow-y-auto flex flex-col gap-0.5">
-        {isLoading && <p className="text-[11px] text-muted px-2 py-2">Loading…</p>}
+        {isLoading && <p className="text-xs text-muted px-2 py-2">Loading…</p>}
         {!isLoading && playlists.length === 0 && (
-          <p className="text-[11px] text-muted px-2 py-2">No {globalMode ? "global" : "server"} playlists yet</p>
+          <p className="text-xs text-muted px-2 py-2">No {globalMode ? "global" : "server"} playlists yet</p>
         )}
         {playlists.map(p => (
           <button
             key={p.name}
             disabled={busy}
             onClick={() => pick(p.name, p.owner_id)}
-            className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-left text-[11px] text-white/80 hover:bg-white/[0.08] disabled:opacity-50"
+            className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-left text-xs text-white/80 hover:bg-white/[0.08] disabled:opacity-50"
           >
             <span className="truncate">{p.name}</span>
             {typeof p.song_count === "number" && (
-              <span className="text-[10px] text-muted tabular-nums flex-shrink-0">{p.song_count}</span>
+              <span className="text-xs text-muted tabular-nums flex-shrink-0">{p.song_count}</span>
             )}
           </button>
         ))}
@@ -364,12 +364,12 @@ function PlaylistPicker({ onPick, onDone, excludeName, excludeGlobal }: {
             }}
             placeholder="Playlist name"
             maxLength={50}
-            className="flex-1 min-w-0 h-7 px-2 rounded-lg bg-white/[0.06] text-base sm:text-[11px] text-white placeholder:text-muted outline-none focus:bg-white/[0.1]"
+            className="flex-1 min-w-0 h-7 px-2 rounded-lg bg-white/[0.06] text-base sm:text-xs text-white placeholder:text-muted outline-none focus:bg-white/[0.1]"
           />
           <button
             onClick={createAndPick}
             disabled={!newName.trim() || busy}
-            className="h-7 px-2 rounded-lg bg-accent text-white text-[10px] font-semibold disabled:opacity-40"
+            className="h-7 px-2 rounded-lg bg-accent text-white text-xs font-semibold disabled:opacity-40"
           >
             Save
           </button>
@@ -377,7 +377,7 @@ function PlaylistPicker({ onPick, onDone, excludeName, excludeGlobal }: {
       ) : (
         <button
           onClick={() => setCreating(true)}
-          className="px-2 py-1.5 rounded-lg text-left text-[11px] font-medium text-accent hover:bg-accent/10"
+          className="px-2 py-1.5 rounded-lg text-left text-xs font-medium text-accent hover:bg-accent/10"
         >
           + New playlist
         </button>

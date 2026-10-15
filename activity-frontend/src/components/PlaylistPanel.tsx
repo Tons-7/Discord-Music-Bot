@@ -324,7 +324,7 @@ export default function PlaylistPanel() {
             <BackIcon />
           </IconButton>
           <h3 className="text-sm font-semibold text-white truncate flex-1">{selectedName}</h3>
-          <span className="text-[10px] text-muted">Collaborators</span>
+          <span className="text-xs text-muted">Collaborators</span>
         </div>
 
         <div className="px-4 py-3 border-b border-white/[0.08] flex-shrink-0">
@@ -343,7 +343,7 @@ export default function PlaylistPanel() {
           {memberSearch && (
             <div className="mb-3">
               <div className="flex items-center gap-2 mt-2 px-1">
-                <span className="text-[10px] text-muted">Add as</span>
+                <span className="text-xs text-muted">Add as</span>
                 <LevelPicker levels={levels} value={newCollabPermission} onChange={setNewCollabPermission} />
               </div>
               {memberSearching ? (
@@ -357,19 +357,19 @@ export default function PlaylistPanel() {
                     >
                       <div className="w-8 h-8 rounded-full bg-surface-3 overflow-hidden flex-shrink-0">
                         {m.avatar ? <img src={proxyImg(m.avatar)} alt="" className="w-full h-full object-cover" /> : (
-                          <div className="w-full h-full flex items-center justify-center text-muted text-[10px] font-bold">{m.display_name[0]}</div>
+                          <div className="w-full h-full flex items-center justify-center text-muted text-xs font-bold">{m.display_name[0]}</div>
                         )}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-medium text-white truncate">{m.display_name}</p>
-                        <p className="text-[10px] text-white/40 truncate">@{m.username}</p>
+                        <p className="text-xs text-white/40 truncate">@{m.username}</p>
                       </div>
                       <PlusIcon className="w-4 h-4 text-accent flex-shrink-0" />
                     </button>
                   ))}
                 </div>
               ) : (
-                <p className="text-[11px] text-muted text-center py-3">No members found</p>
+                <p className="text-xs text-muted text-center py-3">No members found</p>
               )}
             </div>
           )}
@@ -379,16 +379,16 @@ export default function PlaylistPanel() {
           ) : collabs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 text-center">
               <p className="text-xs text-muted">No collaborators yet</p>
-              <p className="text-[10px] text-muted/60 mt-1">Search for members above to add</p>
+              <p className="text-xs text-muted/60 mt-1">Search for members above to add</p>
             </div>
           ) : (
             <div className="flex flex-col gap-1 mt-1">
-              <p className="text-[10px] text-muted px-1 mb-1">{collabs.length} collaborator{collabs.length !== 1 ? "s" : ""}</p>
+              <p className="text-xs text-muted px-1 mb-1">{collabs.length} collaborator{collabs.length !== 1 ? "s" : ""}</p>
               {collabs.map(c => (
                 <div key={c.id} className="flex items-center gap-2 p-2 rounded-xl bg-white/[0.02] border border-white/[0.04] group">
                   <div className="w-8 h-8 rounded-full bg-surface-3 overflow-hidden flex-shrink-0">
                     {c.avatar ? <img src={proxyImg(c.avatar)} alt="" className="w-full h-full object-cover" /> : (
-                      <div className="w-full h-full flex items-center justify-center text-muted text-[10px] font-bold">{c.display_name[0]}</div>
+                      <div className="w-full h-full flex items-center justify-center text-muted text-xs font-bold">{c.display_name[0]}</div>
                     )}
                   </div>
                   <p className="text-xs font-medium text-white truncate flex-1 min-w-0">{c.display_name}</p>
@@ -462,8 +462,8 @@ export default function PlaylistPanel() {
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.08] flex-shrink-0">
         <div className="flex bg-white/[0.04] rounded-xl p-[3px] flex-1">
-          <button onClick={() => setGlobalMode(false)} className={cn("flex-1 text-[11px] font-semibold py-1.5 rounded-[9px] transition-[background-color,color,box-shadow] duration-200", !globalMode ? "bg-accent text-white shadow-[0_1px_4px_rgba(88,101,242,0.3)]" : "text-white/40 hover:text-white/60")}>Server</button>
-          <button onClick={() => setGlobalMode(true)} className={cn("flex-1 text-[11px] font-semibold py-1.5 rounded-[9px] transition-[background-color,color,box-shadow] duration-200", globalMode ? "bg-accent text-white shadow-[0_1px_4px_rgba(88,101,242,0.3)]" : "text-white/40 hover:text-white/60")}>Global</button>
+          <button onClick={() => setGlobalMode(false)} className={cn("flex-1 text-xs font-semibold py-1.5 rounded-[9px] transition-[background-color,color,box-shadow] duration-200", !globalMode ? "bg-accent text-white shadow-[0_1px_4px_rgba(88,101,242,0.3)]" : "text-white/40 hover:text-white/60")}>Server</button>
+          <button onClick={() => setGlobalMode(true)} className={cn("flex-1 text-xs font-semibold py-1.5 rounded-[9px] transition-[background-color,color,box-shadow] duration-200", globalMode ? "bg-accent text-white shadow-[0_1px_4px_rgba(88,101,242,0.3)]" : "text-white/40 hover:text-white/60")}>Global</button>
         </div>
         <IconButton label="Create playlist" onClick={() => setShowCreate(!showCreate)}>
           <PlusIcon />
@@ -508,9 +508,9 @@ export default function PlaylistPanel() {
                   </div>
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-white truncate">{pl.name}</p>
-                    <p className="text-[10px] text-white/40">{pl.song_count} song{pl.song_count !== 1 ? "s" : ""}</p>
+                    <p className="text-xs text-white/40">{pl.song_count} song{pl.song_count !== 1 ? "s" : ""}</p>
                     {pl.owner && (
-                      <span className="inline-block max-w-full truncate mt-0.5 px-1.5 py-px rounded-md bg-white/[0.05] text-[9px] text-white/40">
+                      <span className="inline-block max-w-full truncate mt-0.5 px-1.5 py-px rounded-md bg-white/[0.05] text-[11px] text-white/40">
                         shared by {pl.owner} · {pl.permission}
                       </span>
                     )}
@@ -557,7 +557,7 @@ function HeaderBtn({ children, onClick, title, className }: {
     <button
       onClick={onClick}
       title={title}
-      className={cn("text-[11px] font-medium px-2 py-1.5 rounded-lg text-muted hover:text-white hover:bg-white/[0.06] transition-colors flex-shrink-0", className)}
+      className={cn("text-xs font-medium px-2 py-1.5 rounded-lg text-muted hover:text-white hover:bg-white/[0.06] transition-colors flex-shrink-0", className)}
     >
       {children}
     </button>
@@ -575,7 +575,7 @@ function LevelPicker({ levels, value, onChange }: {
           onClick={() => onChange(lv)}
           title={`Set to ${lv}`}
           className={cn(
-            "px-1.5 h-5 rounded-md text-[9px] font-semibold capitalize transition-colors",
+            "px-1.5 h-5 rounded-md text-[11px] font-semibold capitalize transition-colors",
             value === lv ? "bg-accent text-white" : "text-white/40 hover:text-white/70",
           )}
         >
@@ -613,7 +613,7 @@ function SortableSongRow({ song, index, arming, queueing, added, canEdit, onQueu
           : "bg-white/[0.02] border-white/[0.04] hover:bg-white/[0.06]"
       )}
     >
-      <span className="w-4 text-center text-[10px] tabular-nums text-muted flex-shrink-0">{index + 1}</span>
+      <span className="min-w-5 text-center text-xs tabular-nums text-muted flex-shrink-0">{index + 1}</span>
       <div className="w-9 h-9 rounded-lg overflow-hidden bg-surface-3 flex-shrink-0">
         {song.thumbnail ? (
           <img src={proxyImg(song.thumbnail)} alt="" className="w-full h-full object-cover" loading="lazy" />
@@ -625,7 +625,7 @@ function SortableSongRow({ song, index, arming, queueing, added, canEdit, onQueu
       </div>
       <div className="flex-1 min-w-0">
         <MarqueeText className={cn("text-xs font-medium", added ? "text-success" : "text-white")}>{song.title}</MarqueeText>
-        <p className="text-[10px] text-white/40 truncate">{song.uploader}</p>
+        <p className="text-xs text-white/40 truncate">{song.uploader}</p>
       </div>
       <div className="flex items-center gap-1 flex-shrink-0">
         <div
@@ -655,7 +655,7 @@ function SortableSongRow({ song, index, arming, queueing, added, canEdit, onQueu
         {queueing && <Spinner className="w-3.5 h-3.5" />}
         {added && <CheckIcon className="w-3.5 h-3.5 text-success" />}
         {!queueing && !added && (
-          <span className="text-[10px] tabular-nums text-muted w-8 text-right">{song.duration > 0 ? formatDuration(song.duration) : ""}</span>
+          <span className="text-xs tabular-nums text-muted min-w-8 text-right">{song.duration > 0 ? formatDuration(song.duration) : ""}</span>
         )}
       </div>
     </div>

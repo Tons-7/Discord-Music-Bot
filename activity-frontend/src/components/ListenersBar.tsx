@@ -41,14 +41,14 @@ export default function ListenersBar({ className }: { className?: string }) {
             {l.avatar ? (
               <img src={proxyImg(l.avatar)} alt={l.name} className="w-full h-full object-cover" />
             ) : (
-              <span className="text-[9px] font-semibold text-white/60">
+              <span className="text-[11px] font-semibold text-white/60">
                 {l.name.slice(0, 1).toUpperCase()}
               </span>
             )}
           </div>
         ))}
       </div>
-      {extra > 0 && <span className="text-[10px] text-muted tabular-nums">+{extra}</span>}
+      {extra > 0 && <span className="text-xs text-muted tabular-nums">+{extra}</span>}
     </div>
   );
 }

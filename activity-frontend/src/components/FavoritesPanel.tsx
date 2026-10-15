@@ -95,7 +95,7 @@ export default function FavoritesPanel() {
   return (
     <div className="flex flex-col h-full">
       <div className="px-4 py-2.5 border-b border-white/[0.06] flex-shrink-0">
-        <span className="text-[11px] text-muted">{favorites.length} favorite{favorites.length !== 1 ? "s" : ""}</span>
+        <span className="text-xs text-muted">{favorites.length} favorite{favorites.length !== 1 ? "s" : ""}</span>
       </div>
       <div className="flex-1 overflow-y-auto px-3 pb-3">
         <div className="flex flex-col gap-1.5 mt-2">
@@ -124,7 +124,7 @@ export default function FavoritesPanel() {
                     >
                       <CloseIcon className="w-3 h-3" />
                     </IconButton>
-                    <span className="text-[11px] tabular-nums text-muted w-8 text-right">
+                    <span className="text-xs tabular-nums text-muted min-w-8 text-right">
                       {fav.duration > 0 ? formatDuration(fav.duration) : ""}
                     </span>
                   </>

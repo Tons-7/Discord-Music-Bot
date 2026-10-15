@@ -231,7 +231,7 @@ export default function SearchPanel() {
                 trailing={
                   <>
                     <AddToPlaylistButton song={{ webpage_url: key, title: result.title, duration: result.duration, thumbnail: result.thumbnail, uploader: result.uploader, url: result.url }} />
-                    <span className="text-[11px] tabular-nums text-muted">
+                    <span className="text-xs tabular-nums text-muted">
                       {result.duration > 0 ? formatDuration(result.duration) : ""}
                     </span>
                     {isPending && (

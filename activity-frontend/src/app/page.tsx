@@ -34,7 +34,7 @@ export default function ActivityPage() {
       <div className="h-dvh flex flex-col items-center justify-center bg-surface-1 gap-4">
         <div className="w-10 h-10 border-2 border-accent border-t-transparent rounded-full animate-spin" />
         <p className="text-sm text-muted">Connecting...</p>
-        <p className="text-[10px] text-muted/60 font-mono">build {process.env.NEXT_PUBLIC_BUILD_ID}</p>
+        <p className="text-xs text-muted/60 font-mono">build {process.env.NEXT_PUBLIC_BUILD_ID}</p>
       </div>
     );
   }

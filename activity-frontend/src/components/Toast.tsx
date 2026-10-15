@@ -75,7 +75,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 <button
                   type="button"
                   onClick={() => { action.onClick(); dismiss(t.id); }}
-                  className="ml-auto -my-0.5 flex-shrink-0 px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-semibold transition-colors"
+                  className="ml-auto -my-0.5 flex-shrink-0 px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold transition-colors"
                 >
                   {action.label}
                 </button>

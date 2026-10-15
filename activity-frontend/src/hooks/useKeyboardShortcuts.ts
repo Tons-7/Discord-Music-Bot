@@ -9,9 +9,20 @@ export interface KeyboardShortcutHandlers {
   previous: () => void;
   toggleMute: () => void;
   focusSearch: () => void;
+  toggleShortcuts: () => void;
 }
 
 export const SEEK_STEP_SECONDS = 5;
+
+export const SHORTCUTS: { keys: string[]; label: string }[] = [
+  { keys: ["Space"], label: "Play / pause" },
+  { keys: ["←", "→"], label: `Seek ${SEEK_STEP_SECONDS}s` },
+  { keys: ["N"], label: "Next song" },
+  { keys: ["P"], label: "Previous song" },
+  { keys: ["M"], label: "Mute" },
+  { keys: ["/"], label: "Search" },
+  { keys: ["?"], label: "Show shortcuts" },
+];
 
 function isTypingTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -33,6 +44,12 @@ function isActivatableTarget(target: EventTarget | null): boolean {
  */
 export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers) {
   const onKeyDown = useEffectEvent((e: KeyboardEvent) => {
+    // "?" needs Shift on most layouts, so it is checked before the modifier guard.
+    if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey && !isTypingTarget(e.target)) {
+      e.preventDefault();
+      handlers.toggleShortcuts();
+      return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
     if (e.isComposing) return;
     if (isTypingTarget(e.target)) return;

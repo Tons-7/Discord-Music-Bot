@@ -27,3 +27,20 @@ The per-second WS position tick lives in a ref + subscription (`ServerPosition` 
 # Deploying UI changes
 
 Chunk filenames are NOT content-hashed across builds; Discord's activity proxy + Cloudflare cache them. `next.config.ts` therefore sets a per-build `assetPrefix` (`/v-<stamp>`), and the backend strips that segment (`FrontendStaticFiles` in `activity/app.py`). A local `npm run build` is never served — deploy with `docker compose build bot && docker compose up -d`, then verify the `build <stamp>` line on the Connecting screen before debugging "change didn't apply".
+
+# UI rules
+
+Condensed from the project's UI/UX guide; follow them for every UI change.
+
+- **Fit the product.** Use the theme tokens in `globals.css` (`surface-*`, `accent`, `muted`, `success`, `danger`) and the existing components (`SongRow`, `IconButton`, `Popover`, `KeyCap`, `ui/icons`). No new aesthetic, no raw hex in components. Dark only: Activities run inside Discord.
+- **Quiet by default.** Neutral surfaces and one accent; status colours only where earned (`success` done, `danger` destructive/error).
+- **Rows** read as a strong title, then muted details joined by " · ". Siblings share height, padding and alignment; the whole row is the click target.
+- **Type.** Body and titles `text-sm` (14px), secondary details `text-xs` (12px). Nothing smaller, except badges (`text-[11px]`), the PiP tile and the mobile tab labels.
+- **Time, duration and index columns** use `tabular-nums` with a `min-w-*`, never a fixed width that long values overflow.
+- **Feedback on every action at once:** per-row pending/added state plus a toast. Never block other rows while one action is in flight.
+- **Loading** uses skeletons shaped like the content (`ui/Skeleton`), one indicator at a time, no flash of empty state.
+- **Errors** in plain language, with the fix as a button where there is one. Destructive actions ask for confirmation.
+- **Empty states** are minimal: a quiet icon and the next action.
+- **Motion** is short (150–250ms). `globals.css` honours `prefers-reduced-motion`; JS-driven motion (`scrollIntoView`, marquee) must check it too.
+- **Shortcuts** are listed in `SHORTCUTS` (`useKeyboardShortcuts.ts`) and shown as `KeyCap`s in the shortcuts popover; add new ones there.
+- **Words.** Short labels, plain language, the same name for each thing everywhere (Queue, Playlists, Favorites, History).

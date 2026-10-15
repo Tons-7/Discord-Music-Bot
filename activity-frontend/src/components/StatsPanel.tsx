@@ -60,7 +60,7 @@ export default function StatsPanel() {
           <button
             onClick={() => setTab("me")}
             className={cn(
-              "flex-1 py-1.5 rounded-[9px] text-[11px] font-semibold transition-[background-color,color,box-shadow] duration-200",
+              "flex-1 py-1.5 rounded-[9px] text-xs font-semibold transition-[background-color,color,box-shadow] duration-200",
               tab === "me"
                 ? "bg-accent text-white shadow-[0_1px_4px_rgba(88,101,242,0.3)]"
                 : "text-white/40 hover:text-white/60"
@@ -71,7 +71,7 @@ export default function StatsPanel() {
           <button
             onClick={() => setTab("leaderboard")}
             className={cn(
-              "flex-1 py-1.5 rounded-[9px] text-[11px] font-semibold transition-[background-color,color,box-shadow] duration-200",
+              "flex-1 py-1.5 rounded-[9px] text-xs font-semibold transition-[background-color,color,box-shadow] duration-200",
               tab === "leaderboard"
                 ? "bg-accent text-white shadow-[0_1px_4px_rgba(88,101,242,0.3)]"
                 : "text-white/40 hover:text-white/60"
@@ -103,7 +103,7 @@ function MyStatsView({ stats }: { stats: MyStats | null }) {
           </svg>
         </div>
         <p className="text-xs font-medium text-white/60">No listening data yet</p>
-        <p className="text-[10px] text-muted mt-1">Play some music to start tracking</p>
+        <p className="text-xs text-muted mt-1">Play some music to start tracking</p>
       </div>
     );
   }
@@ -113,11 +113,11 @@ function MyStatsView({ stats }: { stats: MyStats | null }) {
       {/* Overview cards */}
       <div className="grid grid-cols-2 gap-2">
         <div className="bg-white/[0.03] rounded-xl p-3 border border-white/[0.04]">
-          <p className="text-[10px] text-muted uppercase tracking-wider font-medium">Songs Played</p>
+          <p className="text-xs text-muted uppercase tracking-wider font-medium">Songs Played</p>
           <p className="text-xl font-bold text-white mt-1">{stats.play_count.toLocaleString()}</p>
         </div>
         <div className="bg-white/[0.03] rounded-xl p-3 border border-white/[0.04]">
-          <p className="text-[10px] text-muted uppercase tracking-wider font-medium">Listen Time</p>
+          <p className="text-xs text-muted uppercase tracking-wider font-medium">Listen Time</p>
           <p className="text-xl font-bold text-white mt-1">{formatListenTime(stats.total_seconds)}</p>
         </div>
       </div>
@@ -125,7 +125,7 @@ function MyStatsView({ stats }: { stats: MyStats | null }) {
       {/* Top Songs */}
       {stats.top_songs.length > 0 && (
         <div>
-          <h3 className="text-[11px] font-semibold text-white/50 uppercase tracking-wider px-1 mb-1.5">
+          <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wider px-1 mb-1.5">
             Top Songs
           </h3>
           <div className="flex flex-col gap-1">
@@ -141,7 +141,7 @@ function MyStatsView({ stats }: { stats: MyStats | null }) {
                   {i + 1}
                 </span>
                 <span className="text-sm text-white truncate flex-1">{song.title}</span>
-                <span className="text-[11px] text-muted tabular-nums flex-shrink-0">
+                <span className="text-xs text-muted tabular-nums flex-shrink-0">
                   {song.plays} play{song.plays !== 1 ? "s" : ""}
                 </span>
               </div>
@@ -153,7 +153,7 @@ function MyStatsView({ stats }: { stats: MyStats | null }) {
       {/* Top Artists */}
       {stats.top_artists.length > 0 && (
         <div>
-          <h3 className="text-[11px] font-semibold text-white/50 uppercase tracking-wider px-1 mb-1.5">
+          <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wider px-1 mb-1.5">
             Top Artists
           </h3>
           <div className="flex flex-col gap-1">
@@ -169,7 +169,7 @@ function MyStatsView({ stats }: { stats: MyStats | null }) {
                   {i + 1}
                 </span>
                 <span className="text-sm text-white truncate flex-1">{artist.name}</span>
-                <span className="text-[11px] text-muted tabular-nums flex-shrink-0">
+                <span className="text-xs text-muted tabular-nums flex-shrink-0">
                   {artist.plays} play{artist.plays !== 1 ? "s" : ""}
                 </span>
               </div>
@@ -191,7 +191,7 @@ function LeaderboardView({ entries, yourId }: { entries: LeaderboardEntry[]; you
           </svg>
         </div>
         <p className="text-xs font-medium text-white/60">No leaderboard data</p>
-        <p className="text-[10px] text-muted mt-1">Start listening to climb the ranks</p>
+        <p className="text-xs text-muted mt-1">Start listening to climb the ranks</p>
       </div>
     );
   }
@@ -246,9 +246,9 @@ function LeaderboardView({ entries, yourId }: { entries: LeaderboardEntry[]; you
             <div className="flex-1 min-w-0 relative">
               <p className={cn("text-sm font-medium truncate", isYou ? "text-accent" : "text-white")}>
                 {entry.display_name}
-                {isYou && <span className="text-[10px] text-accent/60 ml-1">(you)</span>}
+                {isYou && <span className="text-xs text-accent/60 ml-1">(you)</span>}
               </p>
-              <p className="text-[11px] text-muted">
+              <p className="text-xs text-muted">
                 {formatListenTime(entry.total_seconds)} &middot; {entry.play_count.toLocaleString()} play{entry.play_count !== 1 ? "s" : ""}
               </p>
             </div>

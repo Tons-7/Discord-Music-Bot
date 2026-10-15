@@ -18,7 +18,7 @@ export default function EmptyState({ icon, title, subtitle, compact }: {
       </div>
       <p className={cn("font-medium text-white/60", compact ? "text-xs" : "text-sm")}>{title}</p>
       {subtitle && (
-        <p className={cn("text-muted mt-1", compact ? "text-[10px]" : "text-xs")}>{subtitle}</p>
+        <p className={cn("text-muted mt-1", compact ? "text-xs" : "text-xs")}>{subtitle}</p>
       )}
     </div>
   );

@@ -19,6 +19,7 @@ import StatsPanel from "./StatsPanel";
 import PiPView from "./PiPView";
 import ConnectionStatus from "./ConnectionStatus";
 import SettingsPanel from "./SettingsPanel";
+import ShortcutsButton from "./ShortcutsButton";
 import { useLayoutMode, LayoutMode } from "@/hooks/useLayoutMode";
 import { useLocalVolume } from "@/hooks/useLocalVolume";
 import { useTransportControls } from "@/hooks/useTransportControls";
@@ -71,6 +72,7 @@ const MOBILE_MORE: Exclude<Panel, null>[] = ["favorites", "stats", "history", "s
 export default function Dashboard() {
   const [activePanel, setActivePanel] = useState<Panel>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const { state, guildId, eventVersion, sendCommand } = useGuildState();
   const serverPos = useServerPosition();
   const { current } = state;
@@ -156,6 +158,7 @@ export default function Dashboard() {
 
   useKeyboardShortcuts({
     ...transport,
+    toggleShortcuts: () => setShortcutsOpen(open => !open),
     focusSearch: () => {
       setActivePanel("search");
       // The panel is already mounted but display:none while hidden — focus once
@@ -219,6 +222,7 @@ export default function Dashboard() {
             {icon}
           </SidebarBtn>
         ))}
+        <ShortcutsButton open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </div>
 
       <div
@@ -276,7 +280,7 @@ function SidebarBtn({ children, active, label, onClick }: {
       aria-pressed={active}
     >
       {children}
-      <span className="absolute right-full mr-2 px-2 py-1 rounded-lg bg-surface-3 text-[11px] text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-lg">
+      <span className="absolute right-full mr-2 px-2 py-1 rounded-lg bg-surface-3 text-xs text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-lg">
         {label}
       </span>
     </button>
@@ -406,7 +410,7 @@ function MobileMiniPlayer({ audio, onExpand }: { audio: AudioPlayerHandle; onExp
 
         <div className="flex-1 min-w-0">
           <p className="text-[12px] font-semibold text-white truncate leading-tight">{current.title}</p>
-          <p className="text-[10px] text-white/50 truncate mt-0.5 leading-tight">
+          <p className="text-xs text-white/50 truncate mt-0.5 leading-tight">
             {current.is_live
               ? "LIVE"
               : totalDur > 0

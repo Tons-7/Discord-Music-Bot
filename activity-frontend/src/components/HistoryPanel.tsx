@@ -92,7 +92,7 @@ export default function HistoryPanel() {
               }
             }}
             className={cn(
-              "text-[11px] font-medium px-2 py-1 -my-1 rounded-md transition-colors",
+              "text-xs font-medium px-2 py-1 -my-1 rounded-md transition-colors",
               confirmClear ? "text-white bg-danger" : "text-danger/60 hover:text-danger"
             )}
           >
@@ -120,7 +120,7 @@ export default function HistoryPanel() {
                   <>
                     <AddToPlaylistButton song={song} />
                     <FavHeart webpageUrl={song.webpage_url} title={song.title} duration={song.duration} thumbnail={song.thumbnail} uploader={song.uploader} />
-                    <span className="text-[11px] tabular-nums text-muted">
+                    <span className="text-xs tabular-nums text-muted">
                       {song.duration > 0 ? formatDuration(song.duration) : ""}
                     </span>
                     {isPending && (

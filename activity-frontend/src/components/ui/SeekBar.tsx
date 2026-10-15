@@ -153,7 +153,7 @@ export function SeekBar({
       {(scrubbing || hovering) && duration > 0 && (
         <div
           ref={bubbleRef}
-          className="absolute -top-6 -translate-x-1/2 px-1.5 py-0.5 rounded bg-surface-2 border border-white/[0.1] text-[10px] font-mono text-white/80 pointer-events-none shadow-lg whitespace-nowrap"
+          className="absolute -top-6 -translate-x-1/2 px-1.5 py-0.5 rounded bg-surface-2 border border-white/[0.1] text-xs font-mono text-white/80 pointer-events-none shadow-lg whitespace-nowrap"
           style={{ left: "0%" }}
         />
       )}

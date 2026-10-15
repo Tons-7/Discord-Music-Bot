@@ -164,7 +164,8 @@ export default function LyricsPanel({ getPosition, onSeek }: {
   useEffect(() => {
     if (autoScrollPaused) return;
     if (activeLineRef.current) {
-      activeLineRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      activeLineRef.current.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
     }
   }, [activeLine, autoScrollPaused]);
 
@@ -231,7 +232,7 @@ export default function LyricsPanel({ getPosition, onSeek }: {
     return (
       <div className="flex flex-col h-full">
         <div className="px-4 py-2 border-b border-white/[0.06] flex-shrink-0 flex items-center gap-2">
-          <p className="text-[10px] text-muted truncate flex-1">{lyrics.title} — {lyrics.artist}</p>
+          <p className="text-xs text-muted truncate flex-1">{lyrics.title} — {lyrics.artist}</p>
           <div className="flex items-center gap-0.5 flex-shrink-0">
             <IconButton label="Shift lyrics earlier" size="xs" onClick={() => adjustOffset(-OFFSET_STEP)}>
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -244,7 +245,7 @@ export default function LyricsPanel({ getPosition, onSeek }: {
               disabled={offset === 0}
               title="Reset lyrics sync"
               className={cn(
-                "text-[10px] tabular-nums w-9 text-center transition-colors",
+                "text-xs tabular-nums min-w-9 text-center transition-colors",
                 offset === 0 ? "text-muted/60" : "text-accent hover:text-white"
               )}
             >
@@ -290,7 +291,7 @@ export default function LyricsPanel({ getPosition, onSeek }: {
             <button
               type="button"
               onClick={() => setAutoScrollPaused(false)}
-              className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-accent/15 border border-accent/30 text-accent text-[11px] font-medium backdrop-blur-md shadow-[0_2px_12px_rgba(0,0,0,0.35)] hover:bg-accent/25 transition-colors"
+              className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-accent/15 border border-accent/30 text-accent text-xs font-medium backdrop-blur-md shadow-[0_2px_12px_rgba(0,0,0,0.35)] hover:bg-accent/25 transition-colors"
             >
               Jump to current
             </button>
@@ -303,7 +304,7 @@ export default function LyricsPanel({ getPosition, onSeek }: {
   return (
     <div className="flex flex-col h-full">
       <div className="px-4 py-2 border-b border-white/[0.06] flex-shrink-0">
-        <p className="text-[10px] text-muted truncate">{lyrics.title} — {lyrics.artist}</p>
+        <p className="text-xs text-muted truncate">{lyrics.title} — {lyrics.artist}</p>
       </div>
       <div className="flex-1 overflow-y-auto px-5 py-4">
         <pre className="text-xs text-white/60 whitespace-pre-wrap font-sans leading-relaxed select-text">{lyrics.lyrics}</pre>
