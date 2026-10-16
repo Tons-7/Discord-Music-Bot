@@ -81,7 +81,7 @@ callback calls `play_next()` again via `run_coroutine_threadsafe`.
 **Autoplay:** When queue empties and autoplay is enabled, uses Last.fm similar tracks/artists/tags to find related
 songs. Pre-fetches next song in background while current plays.
 
-**Database:** SQLite (`music_bot.db`, schema version 5) with tables:
+**Database:** SQLite (`music_bot.db`, schema version 6) with tables:
 
 - `playlists` — per-guild user playlists.
 - `global_playlists` — cross-guild user playlists.
@@ -92,6 +92,7 @@ songs. Pre-fetches next song in background while current plays.
   (`view` < `append` < `edit`; the owner always outranks them). Levels live in `config.PLAYLIST_PERMISSIONS`
   and are enforced in both `activity/routes/playlist_routes.py` (`_resolve_playlist`/`_require`) and
   `cogs/playlist_commands.py` (`_get_collab_playlist_songs(need=...)`).
+- `user_preferences` — per-user Activity preferences (theme), shared across servers and devices.
 - `schema_version` — tracks DB migration version.
 
 Queue state persisted on changes and restored on startup.
@@ -173,6 +174,9 @@ through voice channel), with separate M4A disk cache at `audio_cache/activity/`.
 - PiP/minimized view: `useLayoutMode` subscribes to `ACTIVITY_LAYOUT_MODE_UPDATE`, renders `PiPView` (fullscreen
   thumbnail, tap-to-play/pause, always-visible bottom progress strip; text only when the tile is ≥150px tall).
 - Click/tap a row to add in Search/History/Favorites/Playlist detail, duplicate detection, toast notifications.
+- Per-listener colour themes (Midnight, True black, Discord, Ocean, Violet) in Settings → Appearance: `[data-theme]`
+  blocks in `globals.css`. Saved per Discord account in `user_preferences` (`/api/me/preferences`); a localStorage
+  copy is applied before first paint (`lib/themes.ts`) and replaced by the server's value once it loads (`useTheme`).
 - Searching a playlist/album link offers "Add all" (queue) and "Save all to playlist" (`/playlists/{name}/add-url`).
   URL searches go through `get_song_info_cached`, so both reuse the search's resolution. Spotify links are the
   exception: search lists their tracks straight from the embed page, and rows carry Spotify track links, which are

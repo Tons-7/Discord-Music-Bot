@@ -22,6 +22,7 @@ import SettingsPanel from "./SettingsPanel";
 import ShortcutsButton from "./ShortcutsButton";
 import { useLayoutMode, LayoutMode } from "@/hooks/useLayoutMode";
 import { useLocalVolume } from "@/hooks/useLocalVolume";
+import { useTheme } from "@/hooks/useTheme";
 import { useTransportControls } from "@/hooks/useTransportControls";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { ProgressStrip, LiveTime } from "./ui/SeekBar";
@@ -79,6 +80,7 @@ export default function Dashboard() {
 
   const layoutMode = useLayoutMode();
   const [userVolume, setUserVolume] = useLocalVolume();
+  useTheme(); // loads the listener's saved theme on launch
 
   const audio = useAudioPlayer(
     guildId,

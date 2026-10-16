@@ -49,7 +49,7 @@ LRCLIB_USER_AGENT = os.getenv(
 AUDIO_CACHE_DIR = "audio_cache"
 
 # Database
-DB_VERSION = 5  # bump when adding migrations
+DB_VERSION = 6  # bump when adding migrations
 
 # Playlist collaborator access, weakest first. "owner" is implicit.
 PLAYLIST_PERMISSIONS = ("view", "append", "edit")

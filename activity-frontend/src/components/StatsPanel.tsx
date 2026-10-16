@@ -62,7 +62,7 @@ export default function StatsPanel() {
             className={cn(
               "flex-1 py-1.5 rounded-[9px] text-xs font-semibold transition-[background-color,color,box-shadow] duration-200",
               tab === "me"
-                ? "bg-accent text-white shadow-[0_1px_4px_rgba(88,101,242,0.3)]"
+                ? "bg-accent text-white shadow-[0_1px_4px_var(--color-accent-glow)]"
                 : "text-white/40 hover:text-white/60"
             )}
           >
@@ -73,7 +73,7 @@ export default function StatsPanel() {
             className={cn(
               "flex-1 py-1.5 rounded-[9px] text-xs font-semibold transition-[background-color,color,box-shadow] duration-200",
               tab === "leaderboard"
-                ? "bg-accent text-white shadow-[0_1px_4px_rgba(88,101,242,0.3)]"
+                ? "bg-accent text-white shadow-[0_1px_4px_var(--color-accent-glow)]"
                 : "text-white/40 hover:text-white/60"
             )}
           >

@@ -324,6 +324,17 @@ class MusicBot(commands.Bot):
                 """
             )
 
+            # Per-user Activity preferences (theme), shared across servers and devices
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_preferences
+                (
+                    user_id INTEGER PRIMARY KEY,
+                    theme   TEXT
+                )
+                """
+            )
+
             # Auto-cleanup collaborators when a playlist is deleted
             cursor.execute(
                 """
@@ -613,6 +624,17 @@ class MusicBot(commands.Bot):
         except Exception as e:
             logger.error(f"Failed to remove favorite: {e}")
             return False, None
+
+    async def get_user_theme(self, user_id: int) -> str | None:
+        rows = await self.fetch_db_query("SELECT theme FROM user_preferences WHERE user_id = ?", (user_id,))
+        return rows[0][0] if rows else None
+
+    async def set_user_theme(self, user_id: int, theme: str) -> None:
+        await self.execute_db_query(
+            "INSERT INTO user_preferences (user_id, theme) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET theme = excluded.theme",
+            (user_id, theme),
+        )
 
     async def get_favorites(self, user_id: int) -> list[dict]:
         try:

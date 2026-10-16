@@ -462,8 +462,8 @@ export default function PlaylistPanel() {
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.08] flex-shrink-0">
         <div className="flex bg-white/[0.04] rounded-xl p-[3px] flex-1">
-          <button onClick={() => setGlobalMode(false)} className={cn("flex-1 text-xs font-semibold py-1.5 rounded-[9px] transition-[background-color,color,box-shadow] duration-200", !globalMode ? "bg-accent text-white shadow-[0_1px_4px_rgba(88,101,242,0.3)]" : "text-white/40 hover:text-white/60")}>Server</button>
-          <button onClick={() => setGlobalMode(true)} className={cn("flex-1 text-xs font-semibold py-1.5 rounded-[9px] transition-[background-color,color,box-shadow] duration-200", globalMode ? "bg-accent text-white shadow-[0_1px_4px_rgba(88,101,242,0.3)]" : "text-white/40 hover:text-white/60")}>Global</button>
+          <button onClick={() => setGlobalMode(false)} className={cn("flex-1 text-xs font-semibold py-1.5 rounded-[9px] transition-[background-color,color,box-shadow] duration-200", !globalMode ? "bg-accent text-white shadow-[0_1px_4px_var(--color-accent-glow)]" : "text-white/40 hover:text-white/60")}>Server</button>
+          <button onClick={() => setGlobalMode(true)} className={cn("flex-1 text-xs font-semibold py-1.5 rounded-[9px] transition-[background-color,color,box-shadow] duration-200", globalMode ? "bg-accent text-white shadow-[0_1px_4px_var(--color-accent-glow)]" : "text-white/40 hover:text-white/60")}>Global</button>
         </div>
         <IconButton label="Create playlist" onClick={() => setShowCreate(!showCreate)}>
           <PlusIcon />

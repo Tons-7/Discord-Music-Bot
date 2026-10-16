@@ -7,6 +7,7 @@ from .image_proxy import router as image_proxy_router
 from .lyrics_routes import router as lyrics_router
 from .playback_routes import router as playback_router
 from .playlist_routes import router as playlist_router
+from .preferences_routes import router as preferences_router
 from .presence_routes import router as presence_router
 from .queue_routes import router as queue_router
 from .search_routes import router as search_router
@@ -32,3 +33,4 @@ api_router.include_router(lyrics_router)
 api_router.include_router(stats_router)
 api_router.include_router(presence_router)
 api_router.include_router(settings_router)
+api_router.include_router(preferences_router)

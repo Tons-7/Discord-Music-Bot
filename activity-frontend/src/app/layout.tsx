@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { APPLY_SAVED_THEME } from "@/lib/themes";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -18,7 +19,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full">
+    // The theme script sets data-theme before hydration.
+    <html lang="en" className="h-full" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: APPLY_SAVED_THEME }} />
+      </head>
       <body className="h-full">{children}</body>
     </html>
   );

@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
-@theme inline {
+/* Not "inline": utilities must read these variables so themes can swap them at runtime. */
+@theme {
   --color-surface-1: #0a0a0f;
   --color-surface-2: #12121a;
   --color-surface-3: #1a1a2e;
@@ -11,7 +12,32 @@
   --color-muted: #6e6e8c;
 }
 
-:root { color-scheme: dark; }
+:root { color-scheme: dark; --color-text: #e8e8ed; }
+
+/* Themes (lib/themes.ts). Set on <html>, or on any element to theme just that subtree (the picker's previews). */
+:root, [data-theme] {
+  --color-accent-glow: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+[data-theme="midnight"] {
+  --color-surface-1: #0a0a0f; --color-surface-2: #12121a; --color-surface-3: #1a1a2e;
+  --color-accent: #5865F2; --color-muted: #6e6e8c; --color-text: #e8e8ed;
+}
+[data-theme="oled"] {
+  --color-surface-1: #000000; --color-surface-2: #000000; --color-surface-3: #161616;
+  --color-accent: #5865F2; --color-muted: #7a7a7a; --color-text: #e6e6e6;
+}
+[data-theme="discord"] {
+  --color-surface-1: #1e1f22; --color-surface-2: #2b2d31; --color-surface-3: #383a40;
+  --color-accent: #5865F2; --color-muted: #949ba4; --color-text: #dbdee1;
+}
+[data-theme="ocean"] {
+  --color-surface-1: #06101c; --color-surface-2: #0b1828; --color-surface-3: #132438;
+  --color-accent: #3d9df2; --color-muted: #6a85a3; --color-text: #e2ebf5;
+}
+[data-theme="violet"] {
+  --color-surface-1: #0c0912; --color-surface-2: #140f1d; --color-surface-3: #20172e;
+  --color-accent: #8b6cf6; --color-muted: #8a80a3; --color-text: #ebe7f4;
+}
 
 /* No universal margin/padding reset here — Tailwind preflight already does it,
    and an unlayered *-reset would override layered utility classes */
@@ -19,7 +45,7 @@
 body {
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, "Noto Sans", "Helvetica Neue", sans-serif;
   background: var(--color-surface-1);
-  color: #e8e8ed;
+  color: var(--color-text);
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   user-select: none;
@@ -68,7 +94,7 @@ input[type="range"]::-webkit-slider-thumb {
   height: 14px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 0 8px rgba(88,101,242,0.4);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-accent) 40%, transparent);
   cursor: pointer;
 }
 
@@ -77,7 +103,7 @@ input[type="range"]::-moz-range-thumb {
   height: 14px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 0 8px rgba(88,101,242,0.4);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-accent) 40%, transparent);
   cursor: pointer;
   border: none;
 }

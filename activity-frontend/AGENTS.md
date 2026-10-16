@@ -32,7 +32,8 @@ Chunk filenames are NOT content-hashed across builds; Discord's activity proxy +
 
 Condensed from the project's UI/UX guide; follow them for every UI change.
 
-- **Fit the product.** Use the theme tokens in `globals.css` (`surface-*`, `accent`, `muted`, `success`, `danger`) and the existing components (`SongRow`, `IconButton`, `Popover`, `KeyCap`, `ui/icons`). No new aesthetic, no raw hex in components. Dark only: Activities run inside Discord.
+- **Fit the product.** Use the theme tokens in `globals.css` (`surface-*`, `accent`, `accent-glow`, `muted`, `success`, `danger`) and the existing components (`SongRow`, `IconButton`, `Popover`, `KeyCap`, `ui/icons`). No new aesthetic, no raw hex or rgba in components: every colour must follow the listener's theme. Dark only: Activities run inside Discord.
+- **Themes** are per listener, saved on the server per Discord account (`useTheme` → `/api/me/preferences`); the localStorage copy only paints the theme before the server answers. Each theme is a `[data-theme]` block in `globals.css` plus an entry in `lib/themes.ts`; `@theme` must stay non-`inline` so utilities read the variables. New themes keep `muted` at 4.5:1 or better against `surface-1` and `surface-2`.
 - **Quiet by default.** Neutral surfaces and one accent; status colours only where earned (`success` done, `danger` destructive/error).
 - **Rows** read as a strong title, then muted details joined by " · ". Siblings share height, padding and alignment; the whole row is the click target.
 - **Type.** Body and titles `text-sm` (14px), secondary details `text-xs` (12px). Nothing smaller, except badges (`text-[11px]`), the PiP tile and the mobile tab labels.
