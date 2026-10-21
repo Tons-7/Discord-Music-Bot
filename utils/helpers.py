@@ -1,11 +1,64 @@
+import logging
+import re
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 import discord
+from discord import app_commands
 
 from config import COLOR
 
 from .ban_system import is_banned
+
+logger = logging.getLogger(__name__)
+
+
+async def reply_error(bot, interaction: discord.Interaction, text: str, title: str = "Error") -> None:
+    """A private error reply, whether or not the interaction was answered or deferred already."""
+    embed = create_embed(title, text, COLOR, bot.user)
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        # The first followup after a public defer would replace the public "thinking" message, which can't be
+        # made private, so that message goes first.
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except discord.HTTPException as e:
+        logger.debug(f"Could not send an error reply: {e}")
+
+
+async def report_command_error(bot, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+    """The reply to a failed slash command: cooldowns and permissions explained, anything else logged."""
+    if isinstance(error, app_commands.CommandOnCooldown):
+        embed = create_embed("⏰ Command on Cooldown", f"Try again in {error.retry_after:.1f} seconds.", COLOR, bot.user)
+    elif isinstance(error, app_commands.MissingPermissions):
+        names = ", ".join(p.replace("_", " ").title() for p in error.missing_permissions)
+        embed = create_embed("❌ Missing Permissions", f"You need the {names} permission to use this command.",
+                             COLOR, bot.user)
+    elif isinstance(error, app_commands.BotMissingPermissions):
+        names = ", ".join(p.replace("_", " ").title() for p in error.missing_permissions)
+        embed = create_embed("❌ Missing Permissions", f"I need the {names} permission for that.", COLOR, bot.user)
+    elif isinstance(error, app_commands.CheckFailure):
+        if interaction.response.is_done():
+            return  # the check already answered (a banned user)
+        embed = create_embed("❌ Not Allowed", "You can't use this command here.", COLOR, bot.user)
+    else:
+        logger.error(f"Slash command error in /{getattr(interaction.command, 'qualified_name', '?')}", exc_info=error)
+        embed = create_embed("❌ Error", "An unexpected error occurred. Please try again.", COLOR, bot.user)
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    except discord.NotFound:
+        logger.warning(f"Could not send error response — interaction expired: {error}")
+    except discord.HTTPException as e:
+        logger.warning(f"Failed to send error response for command error: {e}")
 
 
 async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -39,12 +92,28 @@ def build_progress_bar(current: int, total: int, length: int = 20) -> str:
 
 
 def get_existing_urls(guild_data) -> set:
+    """Songs that adding again would duplicate: the upcoming ones and the current one (a played song moves down)."""
     urls = {song.webpage_url for song in guild_data["queue"]}
-    if guild_data.get("loop_mode") == "queue":
-        urls.update(song.webpage_url for song in guild_data["loop_backup"])
     if guild_data.get("current"):
         urls.add(guild_data["current"].webpage_url)
     return urls
+
+
+def index_by_url(items: list, position: int, url: str | None, url_of, gone: str) -> int:
+    """The index a client meant: the position if the item there has ``url``, else that item's index.
+
+    Raises LookupError (with ``gone`` when the item is no longer there) for anything else.
+    """
+    if url is None:
+        if 0 <= position < len(items):
+            return position
+        raise LookupError("Invalid position")
+    if 0 <= position < len(items) and url_of(items[position]) == url:
+        return position
+    for index, item in enumerate(items):
+        if url_of(item) == url:
+            return index
+    raise LookupError(gone)
 
 
 def parse_time_to_seconds(time_str: str) -> int:
@@ -143,11 +212,27 @@ def youtube_thumbnail(webpage_url: str, quality: str = "hqdefault") -> str:
     return f"https://i.ytimg.com/vi/{video_id}/{quality}.jpg"
 
 
+# Discord rejects a Components V2 message whose text displays add up to more than this
+V2_TEXT_LIMIT = 4000
+
+_MARKDOWN = re.compile(r"([\\*_~`|>\[\]()])")
+
+
+def clip(text: str, limit: int) -> str:
+    """Text cut to at most ``limit`` characters, ending in "…" when it was cut."""
+    return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def md(text: str) -> str:
+    """User or site text (song titles, uploaders, queries) made safe to put inside markdown."""
+    return _MARKDOWN.sub(r"\\\1", text or "")
+
+
 def create_v2_embed(title: str, description: str = "", colour: int = COLOR, thumbnail: str = "") -> discord.ui.LayoutView:
     """Create a simple Components V2 display — Container with accent colour and text."""
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Colour(colour))
-    text = f"### {title}\n{description}" if title else description
+    text = clip(f"### {title}\n{description}" if title else description, V2_TEXT_LIMIT)
     if thumbnail:
         container.add_item(discord.ui.Section(
             discord.ui.TextDisplay(text),

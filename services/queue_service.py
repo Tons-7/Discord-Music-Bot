@@ -1,154 +1,153 @@
 import logging
 import random
+from typing import TYPE_CHECKING
 
-from config import MAX_HISTORY_SIZE
+from config import MAX_HISTORY_SIZE, MAX_PLAYLIST_SIZE
 from models.song import Song
+
+if TYPE_CHECKING:
+    from bot import GuildData
 
 logger = logging.getLogger(__name__)
 
 
-def cancel_imports(guild_data: dict) -> None:
+def cancel_imports(guild_data: GuildData) -> None:
     """Stop background playlist imports, so a cleared queue stays cleared."""
     for task in guild_data.pop("import_tasks", set()):
         task.cancel()
 
 
+# Played songs kept in the queue outside queue-loop mode (in queue loop they are the rest of the loop)
+PLAYED_LIMIT = MAX_PLAYLIST_SIZE
+
+
 class QueueService:
+    """The queue works like YouTube's: songs stay in it once played.
+
+    ``played`` holds the songs before the current one (oldest first) and ``queue`` the ones after it. A song is in
+    at most one of them, so skipping, going back and looping only move songs between the two.
+    """
+
     def __init__(self, bot):
         self.bot = bot
 
     @staticmethod
-    def _bump_queue_version(guild_data: dict):
-        """Invalidate cached queue derivations (e.g. queue duration) after a mutation."""
-        guild_data["queue_version"] = guild_data.get("queue_version", 0) + 1
+    def mark_played(guild_data: GuildData, songs: list[Song]) -> None:
+        """Songs passed in queue order (finished, jumped over or unplayable) stay above the current one."""
+        played = guild_data["played"]
+        urls = {s.webpage_url for s in played}
+        for song in songs:
+            if song.webpage_url not in urls:
+                played.append(song)
+                urls.add(song.webpage_url)
+        if guild_data.get("loop_mode") != "queue" and len(played) > PLAYED_LIMIT:
+            del played[:len(played) - PLAYED_LIMIT]
 
-    def sync_loop_backup(self, guild_id: int, force_rebuild: bool = False):
-        guild_data = self.bot.get_guild_data(guild_id)
+    @staticmethod
+    def played_before(guild_data: GuildData) -> list[Song]:
+        """The played songs as listeners see them: a current song that just ended is still the current one."""
+        played = guild_data["played"]
+        current = guild_data.get("current")
+        if current and played and played[-1].webpage_url == current.webpage_url:
+            return played[:-1]
+        return played[:]
 
-        if force_rebuild:
-            seen_urls = set()
-            deduplicated = []
-            for song in guild_data["loop_backup"]:
-                if song.webpage_url not in seen_urls:
-                    deduplicated.append(song)
-                    seen_urls.add(song.webpage_url)
-            guild_data["loop_backup"] = deduplicated
-            logger.info(
-                f"Deduplicated loop backup to {len(guild_data['loop_backup'])} songs"
-            )
+    def whole_queue(self, guild_data: GuildData) -> list[Song]:
+        """Every song of the queue in order: the played ones, the current one, then the upcoming ones."""
+        current = guild_data.get("current")
+        return self.played_before(guild_data) + ([current] if current else []) + guild_data["queue"]
 
     def get_visible_queue(self, guild_id: int) -> list[Song]:
+        """The songs still to come, in play order; in queue-loop mode the next round's played songs follow."""
         guild_data = self.bot.get_guild_data(guild_id)
-
-        all_songs = guild_data["queue"][:]
-
-        if guild_data["loop_mode"] == "queue" and guild_data["loop_backup"]:
-            all_songs.extend(guild_data["loop_backup"])
-
-        return list({song.webpage_url: song for song in all_songs}.values())
+        if guild_data["loop_mode"] == "queue":
+            return guild_data["queue"] + self.played_before(guild_data)
+        return guild_data["queue"][:]
 
     def add_to_history(self, guild_id: int, song: Song):
+        """Record a finished song in the listening history; a song played again moves to the most recent end."""
         guild_data = self.bot.get_guild_data(guild_id)
-        history = guild_data["history"]
-
-        # Walking back with the previous button: the song that just finished is
-        # the one history_position points at. Leave order and position alone so
-        # the next previous click steps further back instead of repeating it.
-        pos = guild_data.get("history_position", len(history))
-        if 0 <= pos < len(history) and history[pos].webpage_url == song.webpage_url:
-            return
-
-        # A song played again moves to the most-recent end rather than being
-        # skipped as a duplicate, so history order — and the previous button,
-        # which reads history[history_position - 1] — reflect real play order.
-        for i, existing in enumerate(history):
-            if existing.webpage_url == song.webpage_url:
-                del history[i]
-                break
-
+        history = [s for s in guild_data["history"] if s.webpage_url != song.webpage_url]
         history.append(Song.from_dict(song.to_dict()))
-
-        if len(history) > MAX_HISTORY_SIZE:
-            history = history[-MAX_HISTORY_SIZE:]
-            guild_data["history"] = history
-
-        guild_data["history_position"] = len(history)
-
-        existing_urls = {s.webpage_url for s in guild_data["loop_backup"]}
-        if song.webpage_url not in existing_urls:
-            guild_data["loop_backup"].append(Song.from_dict(song.to_dict()))
-            logger.info(f"Added finished song to loop backup: {song.title}")
-
-    def add_songs_to_history(self, guild_id: int, songs: list[Song]):
-        """Bulk add_to_history: same move-to-most-recent semantics, deduped once (O(n+m))."""
-        if not songs:
-            return
-
-        guild_data = self.bot.get_guild_data(guild_id)
-        backup_urls = {s.webpage_url for s in guild_data["loop_backup"]}
-        added_backup = 0
-
-        # Last occurrence wins, mirroring repeated per-song appends
-        incoming = {}
-        for song in songs:
-            incoming.pop(song.webpage_url, None)
-            incoming[song.webpage_url] = song
-
-        history = [s for s in guild_data["history"] if s.webpage_url not in incoming]
-
-        for song in incoming.values():
-            history.append(Song.from_dict(song.to_dict()))
-            if song.webpage_url not in backup_urls:
-                guild_data["loop_backup"].append(Song.from_dict(song.to_dict()))
-                backup_urls.add(song.webpage_url)
-                added_backup += 1
-
-        if len(history) > MAX_HISTORY_SIZE:
-            history = history[-MAX_HISTORY_SIZE:]
-
-        guild_data["history"] = history
-        guild_data["history_position"] = len(history)
-
-        if added_backup:
-            logger.info(f"Added {added_backup} skipped song(s) to loop backup")
+        guild_data["history"] = history[-MAX_HISTORY_SIZE:]
 
     async def get_next_song(self, guild_id: int) -> Song | None:
+        """Move on from the current song, which stays in the queue as played, and take the next one."""
         guild_data = self.bot.get_guild_data(guild_id)
+        # A user skip moves on once even in song-loop mode.
+        advance = guild_data.pop("force_advance", False)
+        current = guild_data["current"]
 
-        if guild_data["loop_mode"] == "song" and guild_data["current"]:
-            return Song.from_dict(guild_data["current"].to_dict())
+        if guild_data["loop_mode"] == "song" and current and not advance:
+            return Song.from_dict(current.to_dict())
 
+        if current:
+            self.mark_played(guild_data, [current])
         if guild_data["queue"]:
-            song = guild_data["queue"].pop(0)
-            self._bump_queue_version(guild_data)
-            return song
+            return guild_data["queue"].pop(0)
 
-        if guild_data["loop_mode"] == "queue" and guild_data["loop_backup"]:
-            logger.info(
-                f"Queue empty, restoring from loop backup ({len(guild_data['loop_backup'])} songs)"
-            )
-
-            guild_data["queue"] = [
-                Song.from_dict(song.to_dict())
-                for song in guild_data["loop_backup"]
-            ]
-
+        if guild_data["loop_mode"] == "queue" and guild_data["played"]:
+            logger.info(f"Queue finished, starting it again ({len(guild_data['played'])} songs)")
+            guild_data["queue"], guild_data["played"] = guild_data["played"], []
             if guild_data["shuffle"]:
                 random.shuffle(guild_data["queue"])
-
-            self._bump_queue_version(guild_data)
-
-            if guild_data["queue"]:
-                return guild_data["queue"].pop(0)
+            return guild_data["queue"].pop(0)
 
         return None
 
+    def skip_ahead(self, guild_data: GuildData, index: int) -> Song:
+        """Jump to queue[index], left at the front of the queue; the current song and those before it are played."""
+        queue = guild_data["queue"]
+        passed = queue[:index]
+        if guild_data.get("current"):
+            passed.insert(0, guild_data["current"])
+        self.mark_played(guild_data, passed)
+        guild_data["queue"] = queue[index:]
+        return guild_data["queue"][0]
+
+    def step_back(self, guild_data: GuildData, index: int | None = None) -> Song | None:
+        """Go back to a played song (default: the one before the current song) and return it to be played.
+
+        The songs after it, the current one included, return to the front of the queue. With nothing played yet,
+        the previous button falls back to the listening history. None when there is nothing to go back to.
+        """
+        played = self.played_before(guild_data)
+        current = guild_data.get("current")
+        at = len(played) - 1 if index is None else index
+        if 0 <= at < len(played):
+            target = played[at]
+            back = played[at + 1:]
+            guild_data["played"] = played[:at]
+        elif index is None and not played and (target := self._previous_in_history(guild_data)):
+            back = []
+            guild_data["played"] = played  # a current song that just ended goes back in the queue, below
+            guild_data["queue"] = [s for s in guild_data["queue"] if s.webpage_url != target.webpage_url]
+        else:
+            return None
+        if current:
+            back.append(current)
+        guild_data["queue"][:0] = back
+        return target
+
+    def has_previous(self, guild_data: GuildData) -> bool:
+        return bool(self.played_before(guild_data)) or self._previous_in_history(guild_data) is not None
+
+    @staticmethod
+    def _previous_in_history(guild_data: GuildData) -> Song | None:
+        """A copy of the history song heard before the current one (the latest one when nothing plays)."""
+        history = guild_data["history"]
+        current = guild_data.get("current")
+        end = len(history)
+        if current:
+            end = next((i for i, s in enumerate(history) if s.webpage_url == current.webpage_url), end)
+        return Song.from_dict(history[end - 1].to_dict()) if end > 0 else None
+
     def clear_queue(self, guild_id: int):
+        """Empty the queue, played songs included; the current song keeps playing."""
         guild_data = self.bot.get_guild_data(guild_id)
         cancel_imports(guild_data)
         guild_data["queue"].clear()
-        guild_data["loop_backup"].clear()
-        self._bump_queue_version(guild_data)
+        guild_data["played"].clear()
 
     def remove_song_from_queue(self, guild_id: int, position: int) -> Song | None:
         guild_data = self.bot.get_guild_data(guild_id)
@@ -156,9 +155,13 @@ class QueueService:
         if position < 0 or position >= len(guild_data["queue"]):
             return None
 
-        song = guild_data["queue"].pop(position)
-        self._bump_queue_version(guild_data)
-        return song
+        return guild_data["queue"].pop(position)
+
+    def remove_played(self, guild_id: int, position: int) -> Song | None:
+        guild_data = self.bot.get_guild_data(guild_id)
+        if 0 <= position < len(self.played_before(guild_data)):
+            return guild_data["played"].pop(position)
+        return None
 
     def move_song_in_queue(self, guild_id: int, from_pos: int, to_pos: int) -> bool:
         guild_data = self.bot.get_guild_data(guild_id)
@@ -171,14 +174,12 @@ class QueueService:
         # Clamp to_pos to valid range after pop (list is now 1 shorter)
         to_pos = min(to_pos, len(queue))
         queue.insert(to_pos, song)
-        self._bump_queue_version(guild_data)
         return True
 
     def shuffle_queue(self, guild_id: int):
         guild_data = self.bot.get_guild_data(guild_id)
         if guild_data["queue"]:
             random.shuffle(guild_data["queue"])
-            self._bump_queue_version(guild_data)
 
     def toggle_shuffle(self, guild_id: int) -> bool:
         guild_data = self.bot.get_guild_data(guild_id)
@@ -194,60 +195,47 @@ class QueueService:
         guild_data["loop_mode"] = mode
 
     def add_song_to_queue(self, guild_id: int, song: Song):
+        """Append a song; one that was played already moves down from the played part."""
         guild_data = self.bot.get_guild_data(guild_id)
+        played = guild_data["played"]
+        for i, s in enumerate(played):
+            if s.webpage_url == song.webpage_url:
+                del played[i]
+                break
         guild_data["queue"].append(song)
-        guild_data["loop_backup"].append(Song.from_dict(song.to_dict()))
-        self._bump_queue_version(guild_data)
 
     # Queue duration & search
 
     def get_queue_duration(self, guild_id: int) -> int:
-        """Total duration of all songs in queue (seconds). 0-duration songs are excluded.
-
-        Cached against ``queue_version`` so the O(n) sum is only recomputed when the
-        queue actually changes (read on every queue view and every state broadcast).
-        """
+        """Total duration of all songs in queue (seconds). 0-duration songs are excluded."""
         guild_data = self.bot.get_guild_data(guild_id)
-        version = guild_data.get("queue_version", 0)
-
-        cache = guild_data.get("_queue_duration_cache")
-        if cache is not None and cache[0] == version:
-            return cache[1]
-
-        total = sum(s.duration for s in guild_data["queue"] if s.duration and s.duration > 0)
-        guild_data["_queue_duration_cache"] = (version, total)
-        return total
+        return sum(s.duration for s in guild_data["queue"] if s.duration and s.duration > 0)
 
     def get_estimated_wait_time(self, guild_id: int, position: int) -> int:
         """Estimated wall-clock seconds until a given 1-based queue position starts playing.
 
         Accounts for the remaining time of the current song plus all songs before
-        the target position, adjusted for current playback speed.
+        the target position, adjusted for playback speed.
         """
         guild_data = self.bot.get_guild_data(guild_id)
-        playback_service = self.bot._playback_service
-        effective_speed = playback_service.get_effective_speed(guild_data)
-        wait = 0
+        playback_service = self.bot.playback
+        wait = 0.0
 
-        # Add remaining time of current song
+        # The current song keeps the speed its source was built with
         current = guild_data.get("current")
         if current and current.duration:
             current_pos = playback_service.get_current_position(guild_id)
             remaining = max(0, current.duration - current_pos)
-            wait += remaining
+            wait += remaining / (playback_service.source_speed(guild_data) or 1.0)
 
-        # Add durations of songs before target position
-        for i, song in enumerate(guild_data["queue"]):
-            if i >= position - 1:
-                break
-            if song.duration and song.duration > 0:
-                wait += song.duration
+        queued = sum(
+            song.duration for song in guild_data["queue"][:max(0, position - 1)]
+            if song.duration and song.duration > 0
+        )
+        effective_speed = playback_service.get_effective_speed(guild_data)
+        wait += queued / effective_speed if effective_speed > 0 else queued
 
-        # Adjust for playback speed (songs play faster/slower than their duration)
-        if effective_speed > 0 and effective_speed != 1.0:
-            wait = int(wait / effective_speed)
-
-        return wait
+        return int(wait)
 
     def search_queue(self, guild_id: int, query: str) -> list[tuple[int, Song]]:
         """Search the queue for songs matching a query. Returns (1-based position, Song) pairs."""

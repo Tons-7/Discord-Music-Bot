@@ -73,4 +73,4 @@ async def test_voice_position_follows_elapsed_time(bot, guild_data, clock):
 
     clock.advance(12)
 
-    assert bot._playback_service.get_current_position(GUILD_ID) == 72
+    assert bot.playback.get_current_position(GUILD_ID) == 72
