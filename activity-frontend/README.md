@@ -17,21 +17,15 @@ Static output is served by the FastAPI backend that runs in the same process as 
 ## Local development
 
 ```bash
-cp .env.local.example .env.local   # fill in NEXT_PUBLIC_DISCORD_CLIENT_ID
 npm install
-npm run dev
+npm run build        # writes out/, which `uv run python main.py` serves at ACTIVITY_PORT
+npm run typecheck    # tsgo --noEmit
+npm test             # vitest unit tests for src/lib
 ```
 
-The dev server only renders the UI — it talks to the FastAPI backend from the bot process, so run
-`python main.py` from the repo root in parallel.
-
-## Production build
-
-```bash
-npm run build
-```
-
-Emits a static export into `out/`, which the FastAPI app serves from `ACTIVITY_PORT`.
+The Activity calls its API on the same origin, so it only works when served by the bot's FastAPI app (open it in
+Discord through the URL mapping). After a change, rebuild and reload the Activity; the backend serves `out/` from disk.
+`out/` is committed: Wispbyte has no Node, so commit the rebuilt export with every UI change.
 
 ## Setup inside Discord
 

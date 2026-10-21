@@ -1,27 +1,18 @@
 "use client";
 
-import { useMemo, useCallback } from "react";
-import { useGuildState, useServerPosition } from "./GuildStateProvider";
-import { formatDuration, proxyImg } from "@/lib/utils";
+import { formatDuration, proxyImg, cn } from "@/lib/utils";
 import { ProgressStrip, LiveTime } from "./ui/SeekBar";
 import { PlayIcon, NoteIcon } from "./ui/icons";
-import type { AudioPlayerHandle } from "@/hooks/useAudioPlayer";
+import type { PlaybackView } from "@/hooks/usePlaybackView";
 
-type PiPAudio = Pick<AudioPlayerHandle, "playing" | "ready" | "duration" | "playPause" | "positionRef">;
-
-export default function PiPView({ audio }: { audio: PiPAudio }) {
-  const { state } = useGuildState();
-  const serverPos = useServerPosition();
-  const { current } = state;
-
-  const getPosition = useCallback(
-    () => (audio.ready ? audio.positionRef.current : serverPos.ref.current.position),
-    [audio.ready, audio.positionRef, serverPos],
-  );
-
-  const totalDur = audio.ready && audio.duration > 0 ? audio.duration : (current?.duration ?? 0);
-  const isPaused = audio.ready ? !audio.playing : (current?.is_paused ?? true);
-  const thumb = useMemo(() => current?.thumbnail ? proxyImg(current.thumbnail) : null, [current?.thumbnail]);
+export default function PiPView({ view, blocked, onPlayPause }: {
+  view: PlaybackView;
+  blocked: boolean;
+  onPlayPause: () => void;
+}) {
+  const { current, totalDur, getPosition } = view;
+  const isPaused = view.isPaused || blocked;
+  const thumb = current?.thumbnail ? proxyImg(current.thumbnail) : null;
 
   return (
     <div className="relative h-dvh w-full bg-surface-1 overflow-hidden">
@@ -59,8 +50,8 @@ export default function PiPView({ audio }: { audio: PiPAudio }) {
 
             {current.is_live && (
               <div className="flex items-center gap-1 mt-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-                <span className="text-[10px] font-bold text-red-400">LIVE</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-danger animate-pulse" />
+                <span className="text-[10px] font-bold text-danger">LIVE</span>
               </div>
             )}
           </>
@@ -80,14 +71,19 @@ export default function PiPView({ audio }: { audio: PiPAudio }) {
       )}
 
       <button
-        onClick={audio.playPause}
+        type="button"
+        onClick={onPlayPause}
+        disabled={!current}
         className="absolute inset-0 z-20"
-        aria-label={isPaused ? "Play" : "Pause"}
+        aria-label={blocked ? "Tap to play" : isPaused ? "Play" : "Pause"}
       />
 
       {current && (
         <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none">
-          <div className={`w-16 h-16 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-opacity duration-300 ${isPaused ? "opacity-80" : "opacity-0"}`}>
+          <div className={cn(
+            "w-16 h-16 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-opacity duration-300",
+            isPaused ? "opacity-80" : "opacity-0",
+          )}>
             <PlayIcon className="w-7 h-7 ml-0.5 text-white" />
           </div>
         </div>

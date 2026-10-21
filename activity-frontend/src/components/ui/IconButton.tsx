@@ -12,13 +12,14 @@ const SIZE_CLS: Record<Size, string> = {
 };
 
 const TONE_CLS: Record<Tone, string> = {
-  default: "text-muted hover:text-white hover:bg-white/[0.06]",
+  default: "text-muted hover:text-fg hover:bg-fg/[0.06]",
   accent: "text-muted hover:text-accent hover:bg-accent/10",
   danger: "text-muted hover:text-danger hover:bg-danger/10",
   success: "text-muted hover:text-success hover:bg-success/10",
 };
 
-// Icon-only button; hit area is enlarged on touch devices via ::after.
+// Icon-only button; hit area is enlarged on touch devices via ::after. It stays visible
+// while focused even inside a hover-revealed action cluster.
 export default function IconButton({
   label,
   size = "sm",
@@ -41,7 +42,7 @@ export default function IconButton({
       title={label}
       {...rest}
       className={cn(
-        "relative flex items-center justify-center flex-shrink-0 transition-colors active:scale-90",
+        "relative flex items-center justify-center flex-shrink-0 transition-colors active:scale-90 focus-visible:opacity-100",
         "disabled:opacity-40 disabled:pointer-events-none",
         "pointer-coarse:after:absolute pointer-coarse:after:-inset-1.5 pointer-coarse:after:content-['']",
         SIZE_CLS[size],

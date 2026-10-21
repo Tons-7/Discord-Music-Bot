@@ -1,193 +1,133 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, useOptimistic, startTransition } from "react";
-import { useGuildState } from "./GuildStateProvider";
-import { apiFetch } from "@/lib/api";
-import { maybeAutoPlay } from "@/lib/queueActions";
-import { formatDuration, cn } from "@/lib/utils";
+import { useState, useEffect } from "react";
+import useSWR from "swr";
+import { useGuildId } from "./GuildStateProvider";
+import { apiFetch, errorMessage } from "@/lib/api";
+import { bulkAddMessage, type QueueAddResult } from "@/lib/queueActions";
+import { cn } from "@/lib/utils";
 import { useToast } from "./Toast";
 import SongRow from "./SongRow";
 import AddToPlaylistButton, { AddLinkToPlaylistButton } from "./AddToPlaylistButton";
-import EmptyState from "./EmptyState";
+import EmptyState, { ErrorState } from "./EmptyState";
 import { SongRowSkeleton } from "./ui/Skeleton";
-import { SearchIcon } from "./ui/icons";
+import { AddIcon, SearchIcon, Spinner } from "./ui/icons";
+import { useQueueAdd } from "@/hooks/useQueueAdd";
 import type { SearchResult } from "@/types";
-
-const EMPTY_PENDING: ReadonlySet<string> = new Set();
 
 // Server accepts up to 25 (activity/routes/search_routes.py)
 const SEARCH_LIMIT = 13;
+const DEBOUNCE_MS = 300;
+
+// A search runs yt-dlp: never repeat it on its own (focus, reconnect, remount, error).
+const SEARCH_SWR_OPTS = {
+  keepPreviousData: true,
+  revalidateIfStale: false,
+  revalidateOnFocus: false,
+  revalidateOnReconnect: false,
+  shouldRetryOnError: false,
+} as const;
+
+const isUrl = (q: string) => /^https?:\/\//i.test(q);
 
 export default function SearchPanel() {
-  const { guildId, state } = useGuildState();
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
-  const [addedSet, setAddedSet] = useState<Set<string>>(new Set());
-  // Keys with an in-flight add. useOptimistic reverts each key automatically
-  // when its transition settles (success or failure) — no manual rollback.
-  const [pendingSet, addPending] = useOptimistic(
-    EMPTY_PENDING,
-    (current, key: string) => new Set(current).add(key),
-  );
-  // Set when the last successful search was a URL — enables the "Add all" path
-  // that ships the URL straight to /queue/add (backend expands the playlist).
-  const [playlistUrl, setPlaylistUrl] = useState<string | null>(null);
-  const [addingAll, setAddingAll] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const abortRef = useRef<AbortController | null>(null);
+  const { guildId } = useGuildId();
   const { toast } = useToast();
+  const [query, setQuery] = useState("");
+  // Re-armed whenever the panel is shown again, so a search hidden mid-debounce still runs.
+  const [debounced, setDebounced] = useState("");
+  const [addingAll, setAddingAll] = useState(false);
+  const queue = useQueueAdd();
 
-  useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    abortRef.current?.abort();
-  }, []);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [query]);
 
-  const search = useCallback(async (q: string) => {
-    abortRef.current?.abort();
-    if (!q.trim()) { setResults([]); setPlaylistUrl(null); setError(false); setLoading(false); return; }
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setLoading(true);
-    setError(false);
-    try {
-      const data = await apiFetch<{ results: SearchResult[] }>(
-        `/api/guild/${guildId}/search?q=${encodeURIComponent(q)}&limit=${SEARCH_LIMIT}`,
-        { signal: ctrl.signal },
-      );
-      setResults(data.results);
-      const isUrl = /^https?:\/\//i.test(q.trim());
-      setPlaylistUrl(isUrl && data.results.length > 1 ? q.trim() : null);
-      setLoading(false);
-    } catch (e: any) {
-      if (e?.name === "AbortError") return; // superseded by a newer search
-      setResults([]); setPlaylistUrl(null); setError(true); setLoading(false);
-    }
-  }, [guildId]);
+  const key = debounced
+    ? `/api/guild/${guildId}/search?q=${encodeURIComponent(debounced)}&limit=${SEARCH_LIMIT}`
+    : null;
+  const { data, error, isLoading, mutate } = useSWR<{ results: SearchResult[]; list_url?: string }>(
+    key, SEARCH_SWR_OPTS,
+  );
 
-  const handleInput = (value: string) => {
-    setQuery(value);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => search(value), 300);
-  };
+  const trimmed = query.trim();
+  const searching = !!trimmed && (trimmed !== debounced || isLoading);
+  const failed = !searching && !!error;
+  const results = trimmed && !failed ? data?.results ?? [] : [];
+  // Set when the search was a playlist or album URL — enables "Add all", which ships
+  // the URL straight to /queue/add (the backend expands the playlist).
+  const playlistUrl = !searching && isUrl(debounced) && results.length > 1 ? debounced : null;
+  // A video opened from a playlist or Mix: the song is the result, and its list can still be added whole.
+  const listUrl = !searching && !playlistUrl && data?.list_url ? data.list_url : null;
+  const bulkUrl = playlistUrl ?? listUrl;
 
-  const handleAddAll = async () => {
-    if (!playlistUrl || addingAll) return;
+  const handleAddAll = () => {
+    if (!bulkUrl || addingAll) return;
     setAddingAll(true);
-    try {
-      const res = await apiFetch<{ ok: boolean; added: number; skipped?: number; duplicate?: boolean; auto_play?: boolean; in_background?: boolean; total?: number; capped?: boolean }>(
-        `/api/guild/${guildId}/queue/add`,
-        { method: "POST", body: JSON.stringify({ query: playlistUrl }) },
-      );
-
-      if (res.duplicate) {
-        toast(`All ${res.skipped ?? 0} songs already in queue`, "error");
-        return;
-      }
-
-      maybeAutoPlay(guildId, res, !!state.current);
-
-      const skipped = res.skipped ?? 0;
-      if (res.in_background) {
-        const cap = res.capped ? " (Spotify only shares the first 100)" : "";
-        toast(`Adding ${res.total ?? results.length} songs${cap}, they'll join the queue as they're found`, "success");
-      }
-      else toast(skipped > 0 ? `Added ${res.added} songs (${skipped} duplicates skipped)` : `Added ${res.added} songs`, "success");
-
-      // Mark every visible result as added
-      setAddedSet(new Set(results.map(r => r.webpage_url || r.url)));
-      setTimeout(() => setAddedSet(new Set()), 2500);
-    } catch (e: any) {
-      toast(e?.message || "Failed to add playlist", "error");
-    } finally {
-      setAddingAll(false);
-    }
-  };
-
-  const handleAdd = (result: SearchResult) => {
-    const key = result.webpage_url || result.url;
-    if (addedSet.has(key) || pendingSet.has(key)) return;
-
-    startTransition(async () => {
-      addPending(key);
-      try {
-        const res = await apiFetch<{ ok: boolean; added: number; duplicate?: boolean; title?: string; position?: number; playing?: boolean; auto_play?: boolean }>(
-          `/api/guild/${guildId}/queue/add`,
-          { method: "POST", body: JSON.stringify({ query: result.webpage_url || result.url }) },
-        );
-
-        if (res.duplicate) {
-          const msg = res.playing
-            ? `"${result.title}" is currently playing`
-            : res.position
-            ? `"${result.title}" is already in queue (#${res.position})`
-            : `"${result.title}" is already in queue`;
-          toast(msg, "error");
-          return;
-        }
-
-        // If nothing was playing, start playback of the just-added song
-        maybeAutoPlay(guildId, res, !!state.current);
-
-        setAddedSet(prev => new Set(prev).add(key));
-        toast(`Added "${result.title}"`, "success");
-        setTimeout(() => setAddedSet(prev => { const n = new Set(prev); n.delete(key); return n; }), 2500);
-      } catch {
-        // pending state reverts automatically when the transition settles
-      }
-    });
+    const shown = playlistUrl ? results.map(r => r.webpage_url) : [];
+    apiFetch<QueueAddResult>(`/api/guild/${guildId}/queue/add`, {
+      method: "POST",
+      body: JSON.stringify({ query: bulkUrl, as_list: !!listUrl }),
+    }).then(
+      (res) => {
+        setAddingAll(false);
+        toast(bulkAddMessage(res, shown.length || res.added || 0), res.duplicate ? "info" : "success");
+        if (!res.duplicate) queue.markAdded(shown);
+      },
+      (e: unknown) => {
+        setAddingAll(false);
+        toast(errorMessage(e, "Couldn't add these songs"), "error");
+      },
+    );
   };
 
   return (
     <div className="flex flex-col h-full">
       {/* Search input */}
-      <div className="px-4 py-3 flex-shrink-0 border-b border-white/[0.08]">
-        <div className="flex items-center gap-2.5 bg-surface-3/60 rounded-xl border border-white/[0.08] focus-within:border-accent/40 transition-[border-color] duration-200 px-3.5 py-2.5">
-          <SearchIcon className="w-4 h-4 text-white/40 flex-shrink-0" />
+      <div className="px-4 py-3 flex-shrink-0 border-b border-fg/[0.08]">
+        <div className="flex items-center gap-2.5 bg-surface-3/60 rounded-xl border border-fg/[0.08] focus-within:border-accent/40 transition-[border-color] duration-200 px-3.5 py-2.5">
+          <SearchIcon className="w-4 h-4 text-muted flex-shrink-0" />
           <input
-            type="search" value={query} onChange={(e) => handleInput(e.target.value)}
-            placeholder="Search or paste URL..."
+            type="search" value={query} onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search or paste a link…"
+            aria-label="Search songs"
             enterKeyHint="search" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             // 16px on mobile — iOS zooms the page when focusing smaller inputs
-            className="flex-1 bg-transparent text-white text-base sm:text-sm outline-none placeholder:text-white/30 min-w-0 [&::-webkit-search-cancel-button]:hidden"
+            className="flex-1 bg-transparent text-fg text-base sm:text-sm outline-none placeholder:text-muted min-w-0 [&::-webkit-search-cancel-button]:hidden"
           />
         </div>
       </div>
 
       {/* Results */}
-      <div className="flex-1 overflow-y-auto px-3 pb-3">
-        {loading && <SongRowSkeleton className="mt-1" />}
+      <div className="flex-1 overflow-y-auto px-3 pb-3" aria-busy={searching || undefined}>
+        {searching && results.length === 0 && <SongRowSkeleton className="mt-2" />}
 
-        {!loading && error && (
-          <div className="flex flex-col items-center justify-center py-16 gap-3">
-            <p className="text-sm text-white/60">Search failed</p>
-            <button
-              onClick={() => search(query)}
-              className="px-4 py-1.5 rounded-full bg-white/[0.06] hover:bg-white/[0.1] text-xs font-medium text-white/80 transition-colors"
-            >
-              Retry
-            </button>
-          </div>
-        )}
+        {failed && <ErrorState message="Search failed" onRetry={() => mutate()} />}
 
-        {!loading && !error && results.length === 0 && !query && (
+        {!trimmed && (
           <EmptyState
-            icon={<SearchIcon className="w-7 h-7 text-muted" />}
+            icon={<SearchIcon className="w-7 h-7" />}
             title="Search for songs"
-            subtitle="By name or paste a URL"
+            subtitle="By name, or paste a link"
           />
         )}
 
-        {!loading && !error && results.length === 0 && query && (
-          <div className="flex items-center justify-center py-16 text-muted text-sm">No results found</div>
+        {!searching && !failed && data && trimmed && results.length === 0 && (
+          <EmptyState
+            icon={<SearchIcon className="w-7 h-7" />}
+            title="No results found"
+            subtitle="Try other words, or paste a link"
+          />
         )}
 
-        {!loading && playlistUrl && results.length > 1 && (
-          <div className="sticky top-0 z-10 -mx-3 px-3 pt-3 pb-2 bg-gradient-to-b from-surface-1 via-surface-1 to-transparent flex items-center gap-2">
+        {bulkUrl && (
+          <div className="sticky top-0 z-20 -mx-3 px-3 pt-3 pb-2 bg-gradient-to-b from-surface-2 via-surface-2 to-transparent flex items-center gap-2">
             <button
+              type="button"
               onClick={handleAddAll}
               disabled={addingAll}
+              aria-busy={addingAll || undefined}
               className={cn(
                 "flex-1 min-w-0 flex items-center justify-center gap-2 py-2.5 px-4 rounded-2xl text-sm font-medium",
                 "bg-accent/15 text-accent border border-accent/30",
@@ -197,57 +137,42 @@ export default function SearchPanel() {
             >
               {addingAll ? (
                 <>
-                  <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                  <span>Adding playlist...</span>
+                  <Spinner label="Adding" />
+                  <span>Adding songs…</span>
                 </>
               ) : (
                 <>
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m6-6H6" />
-                  </svg>
-                  <span>Add all {results.length} songs</span>
+                  <AddIcon className="w-4 h-4" />
+                  <span>{playlistUrl ? `Add all ${results.length} songs` : "Add the whole playlist"}</span>
                 </>
               )}
             </button>
-            <AddLinkToPlaylistButton url={playlistUrl} />
+            <AddLinkToPlaylistButton url={bulkUrl} asList={!!listUrl} />
           </div>
         )}
 
-        <div className="flex flex-col gap-1.5">
-          {results.map((result, i) => {
-            const key = result.webpage_url || result.url;
-            const isAdded = addedSet.has(key);
-            const isPending = pendingSet.has(key);
-
-            return (
-              <SongRow
-                key={`${key}-${i}`}
-                title={result.title}
-                subtitle={result.uploader}
-                thumbnail={result.thumbnail}
-                state={isAdded ? "added" : isPending ? "pending" : "default"}
-                onClick={() => handleAdd(result)}
-                disabled={isAdded || isPending}
-                trailing={
-                  <>
-                    <AddToPlaylistButton song={{ webpage_url: key, title: result.title, duration: result.duration, thumbnail: result.thumbnail, uploader: result.uploader, url: result.url }} />
-                    <span className="text-xs tabular-nums text-muted">
-                      {result.duration > 0 ? formatDuration(result.duration) : ""}
-                    </span>
-                    {isPending && (
-                      <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                    )}
-                    {isAdded && (
-                      <svg className="w-4 h-4 text-success" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-                      </svg>
-                    )}
-                  </>
-                }
-              />
-            );
-          })}
-        </div>
+        {results.length > 0 && (
+          // Results of the previous search stay, dimmed, until the new ones arrive.
+          <div className={cn("flex flex-col gap-1.5 mt-2 transition-opacity duration-200", searching && "opacity-60")}>
+            {results.map((result, i) => {
+              const status = queue.status(result.webpage_url);
+              return (
+                <SongRow
+                  key={`${result.webpage_url}-${i}`}
+                  title={result.title}
+                  subtitle={result.uploader}
+                  thumbnail={result.thumbnail}
+                  actionLabel={`Add "${result.title}" to the queue`}
+                  state={status}
+                  onClick={() => queue.add(result.webpage_url, result.title)}
+                  disabled={status !== "default"}
+                  duration={result.duration}
+                  trailing={<AddToPlaylistButton song={result} />}
+                />
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

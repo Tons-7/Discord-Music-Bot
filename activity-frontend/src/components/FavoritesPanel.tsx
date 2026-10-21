@@ -1,106 +1,79 @@
 "use client";
 
-import { useState } from "react";
-import useSWR, { useSWRConfig } from "swr";
-import { useGuildState } from "./GuildStateProvider";
 import { useToast } from "./Toast";
-import { apiFetch } from "@/lib/api";
-import { maybeAutoPlay } from "@/lib/queueActions";
-import { formatDuration } from "@/lib/utils";
+import { apiFetch, errorMessage } from "@/lib/api";
 import SongRow from "./SongRow";
 import AddToPlaylistButton from "./AddToPlaylistButton";
-import EmptyState from "./EmptyState";
+import EmptyState, { ErrorState } from "./EmptyState";
 import IconButton from "./ui/IconButton";
 import { SongRowSkeleton } from "./ui/Skeleton";
-import { CloseIcon } from "./ui/icons";
-import { FAVORITES_KEY, type FavSong } from "./FavHeart";
+import { CloseIcon, HeartIcon } from "./ui/icons";
+import { useFavorites, type FavSong } from "@/hooks/useFavorites";
+import { useQueueAdd } from "@/hooks/useQueueAdd";
 
 export default function FavoritesPanel() {
-  const { guildId, state } = useGuildState();
   const { toast } = useToast();
-  const { mutate } = useSWRConfig();
-  const { data, isLoading } = useSWR<{ favorites: FavSong[] }>(FAVORITES_KEY);
+  const { data, error, isLoading, mutate } = useFavorites();
   const favorites = data?.favorites ?? [];
-  const [addingSet, setAddingSet] = useState<Set<string>>(new Set());
-
-  const handleAdd = async (fav: FavSong) => {
-    if (addingSet.has(fav.webpage_url)) return;
-    setAddingSet(prev => new Set(prev).add(fav.webpage_url));
-    try {
-      const res = await apiFetch<{ ok: boolean; auto_play?: boolean }>(`/api/guild/${guildId}/queue/add`, {
-        method: "POST", body: JSON.stringify({ query: fav.webpage_url }),
-      });
-      maybeAutoPlay(guildId, res, !!state.current);
-      toast(`Added "${fav.title}"`, "success");
-    } catch (e: any) { toast(e.message, "error"); }
-    finally {
-      setTimeout(() => setAddingSet(prev => { const n = new Set(prev); n.delete(fav.webpage_url); return n; }), 1500);
-    }
-  };
+  const queue = useQueueAdd();
 
   // Favorites are ordered by added_at and there is no reorder endpoint, so an
   // undone removal comes back at the end of the list rather than its old slot.
-  const undoRemove = async (fav: FavSong) => {
-    try {
-      await apiFetch("/api/favorites", {
-        method: "POST",
-        body: JSON.stringify({
-          title: fav.title, url: "", duration: fav.duration,
-          thumbnail: fav.thumbnail, uploader: fav.uploader, webpage_url: fav.webpage_url,
-        }),
-      });
-    } catch (e: any) {
-      toast(e.message || "Undo failed", "error");
-    } finally {
-      mutate(FAVORITES_KEY);
-    }
+  const undoRemove = (fav: FavSong) => {
+    apiFetch("/api/favorites", {
+      method: "POST",
+      body: JSON.stringify({ ...fav, url: "" }),
+    }).then(
+      () => mutate(),
+      (e: unknown) => {
+        toast(errorMessage(e, "Undo failed"), "error");
+        mutate();
+      },
+    );
   };
 
-  const handleRemove = async (fav: FavSong, pos: number) => {
-    mutate(
-      FAVORITES_KEY,
-      (d?: { favorites: FavSong[] }) =>
-        d ? { favorites: d.favorites.filter(f => f.webpage_url !== fav.webpage_url) } : d,
-      { revalidate: false },
+  // By URL, not list position: the list may have changed elsewhere since it loaded.
+  const handleRemove = (fav: FavSong) => {
+    const request = apiFetch(`/api/favorites?url=${encodeURIComponent(fav.webpage_url)}`, { method: "DELETE" });
+    mutate(request.then(() => undefined), {
+      optimisticData: d => ({ favorites: (d?.favorites ?? []).filter(f => f.webpage_url !== fav.webpage_url) }),
+      rollbackOnError: true,
+      populateCache: false,
+      revalidate: true,
+    }).then(
+      () => toast("Removed from Favorites", "success", { label: "Undo", onClick: () => undoRemove(fav) }),
+      (e: unknown) => toast(errorMessage(e, "Couldn't remove it from Favorites"), "error"),
     );
-    try {
-      await apiFetch(`/api/favorites/${pos + 1}`, { method: "DELETE" }); // bot uses 1-based
-      toast("Removed from favorites", "success", { label: "Undo", onClick: () => undoRemove(fav) });
-    } catch (e: any) {
-      toast(e.message, "error");
-    } finally {
-      mutate(FAVORITES_KEY);
-    }
   };
 
   if (isLoading) {
     return <SongRowSkeleton className="px-3 mt-2" />;
   }
 
+  if (error && !data) {
+    return <ErrorState compact message="Couldn't load your favorites" onRetry={() => mutate()} />;
+  }
+
   if (favorites.length === 0) {
     return (
       <EmptyState
         compact
-        icon={
-          <svg className="w-6 h-6 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
-          </svg>
-        }
+        icon={<HeartIcon className="w-6 h-6" strokeWidth={1.5} />}
         title="No favorites yet"
-        subtitle="Use /favorite while a song is playing"
+        subtitle="Tap the heart on any song to save it here"
       />
     );
   }
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-4 py-2.5 border-b border-white/[0.06] flex-shrink-0">
+      <div className="px-4 py-2.5 border-b border-fg/[0.06] flex-shrink-0">
         <span className="text-xs text-muted">{favorites.length} favorite{favorites.length !== 1 ? "s" : ""}</span>
       </div>
       <div className="flex-1 overflow-y-auto px-3 pb-3">
         <div className="flex flex-col gap-1.5 mt-2">
-          {favorites.map((fav, i) => {
-            const isAdding = addingSet.has(fav.webpage_url);
+          {favorites.map(fav => {
+            const status = queue.status(fav.webpage_url);
             return (
               <SongRow
                 key={fav.webpage_url}
@@ -108,25 +81,23 @@ export default function FavoritesPanel() {
                 subtitle={fav.uploader}
                 thumbnail={fav.thumbnail}
                 marquee
-                group
-                state={isAdding ? "added" : "default"}
-                onClick={() => handleAdd(fav)}
-                disabled={isAdding}
+                actionLabel={`Add "${fav.title}" to the queue`}
+                state={status}
+                onClick={() => queue.add(fav.webpage_url, fav.title)}
+                disabled={status !== "default"}
+                duration={fav.duration}
                 trailing={
                   <>
                     <AddToPlaylistButton song={fav} />
                     <IconButton
-                      label="Remove from favorites"
+                      label="Remove from Favorites"
                       size="xs"
                       tone="danger"
-                      className="opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100"
-                      onClick={(e) => { e.stopPropagation(); handleRemove(fav, i); }}
+                      className="opacity-0 group-hover:opacity-100 group-has-focus-visible:opacity-100 pointer-coarse:opacity-100"
+                      onClick={() => handleRemove(fav)}
                     >
                       <CloseIcon className="w-3 h-3" />
                     </IconButton>
-                    <span className="text-xs tabular-nums text-muted min-w-8 text-right">
-                      {fav.duration > 0 ? formatDuration(fav.duration) : ""}
-                    </span>
                   </>
                 }
               />

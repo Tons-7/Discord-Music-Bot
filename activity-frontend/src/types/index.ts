@@ -1,5 +1,5 @@
+// Songs are identified by webpage_url. The backend's `url` (a stream URL or server path) is never read.
 export interface Song {
-  url: string;
   title: string;
   duration: number;
   thumbnail: string;
@@ -10,8 +10,11 @@ export interface Song {
 }
 
 export interface CurrentSong extends Song {
-  position: number;
   is_paused: boolean;
+  // Increments each time a song becomes current (optional until the backend sends it)
+  seq?: number;
+  // "lastfm" or "youtube" for autoplay picks (optional)
+  autoplay_source?: string;
 }
 
 export type LoopMode = "off" | "song" | "queue";
@@ -19,6 +22,8 @@ export type LoopMode = "off" | "song" | "queue";
 export interface GuildState {
   current: CurrentSong | null;
   queue: Song[];
+  // Songs of the queue already played, oldest first: the queue keeps them, like YouTube's
+  played: Song[];
   history: Song[];
   volume: number;
   loop_mode: LoopMode;
@@ -28,6 +33,9 @@ export interface GuildState {
   audio_effect: string;
   is_connected: boolean;
   queue_duration: number;
+  // The bot's voice channel while it is connected (optional until the backend sends it)
+  voice_channel_id?: string | null;
+  voice_channel_name?: string | null;
 }
 
 export interface SearchResult {
@@ -36,7 +44,6 @@ export interface SearchResult {
   thumbnail: string;
   uploader: string;
   webpage_url: string;
-  url: string;
 }
 
 export type PlaylistPermission = "view" | "append" | "edit";

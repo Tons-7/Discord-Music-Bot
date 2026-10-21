@@ -1,102 +1,135 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useGuildState, useServerPosition } from "./GuildStateProvider";
+import { useState, useRef } from "react";
+import { useGuildState } from "./GuildStateProvider";
 import { useToast } from "./Toast";
 import { formatDuration, cn, proxyImg } from "@/lib/utils";
+import { errorMessage } from "@/lib/api";
+import { openExternal } from "@/lib/discord-sdk";
+import { AUDIO_EFFECTS, SPEEDS, effectLabel } from "@/lib/playback";
 import MarqueeText from "./MarqueeText";
 import FavHeart from "./FavHeart";
 import AddToPlaylistButton from "./AddToPlaylistButton";
 import InviteButton from "./InviteButton";
 import ListenersBar from "./ListenersBar";
 import Popover from "./ui/Popover";
+import { useConfirm } from "./ui/ConfirmButton";
 import { SeekBar, LiveTime } from "./ui/SeekBar";
-import { PlayIcon, PauseIcon, NoteIcon, InfinityIcon } from "./ui/icons";
+import { NowPlayingTextSkeleton } from "./ui/Skeleton";
+import {
+  PlayIcon, PauseIcon, NoteIcon, InfinityIcon, StopIcon, ShuffleIcon, SkipPrevIcon, SkipNextIcon,
+  RepeatIcon, RepeatOneIcon, VolumeIcon, VolumeOffIcon, AlertIcon,
+} from "./ui/icons";
 import type { AudioPlayerHandle } from "@/hooks/useAudioPlayer";
-import { useTransportControls } from "@/hooks/useTransportControls";
+import type { PlaybackView } from "@/hooks/usePlaybackView";
+import type { TransportControls } from "@/hooks/useTransportControls";
 import type { LoopMode } from "@/types";
 
 const NEXT_LOOP: Record<LoopMode, LoopMode> = { off: "song", song: "queue", queue: "off" };
-const AUDIO_EFFECTS: readonly [string, string][] = [
-  ["none", "Off"], ["bass_boost", "Bass"], ["nightcore", "NC"],
-  ["vaporwave", "Vap"], ["treble_boost", "Treb"], ["8d", "8D"],
-];
-const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+const LOOP_LABEL: Record<LoopMode, string> = { off: "Off", song: "This song", queue: "Queue" };
+const LASTFM_URL = "https://www.last.fm/";
 
-export default function NowPlaying({ audio, volume, onVolumeChange }: {
-  audio: AudioPlayerHandle; volume: number; onVolumeChange: (v: number) => void;
+export default function NowPlaying({ audio, view, transport, volume, onVolumeChange }: {
+  audio: AudioPlayerHandle;
+  view: PlaybackView;
+  transport: TransportControls;
+  volume: number;
+  onVolumeChange: (v: number) => void;
 }) {
-  const { state, sendCommand } = useGuildState();
-  const serverPos = useServerPosition();
+  const { state, sendCommand, channelId, hasState } = useGuildState();
   const { toast } = useToast();
-  const { current } = state;
-
-  const isConnected = state.is_connected;
-  const getDisplayPosition = useCallback(
-    () => (audio.ready ? audio.positionRef.current : (isConnected ? serverPos.ref.current.position : 0)),
-    [audio.ready, audio.positionRef, isConnected, serverPos],
-  );
-
-  const totalDur = audio.ready && audio.duration > 0 ? audio.duration : (current?.duration ?? 0);
-  const isPaused = audio.ready ? !audio.playing : (current?.is_paused ?? true);
-  const hasSong = !!current;
+  const { current, totalDur, isPaused, getPosition, noNext, hasSong } = view;
+  const stopConfirm = useConfirm();
 
   // In a voice channel the bot plays one shared stream, so volume stays a
   // server-wide command. Activity audio is per listener — keep it local.
   const sharedVolume = state.is_connected;
   const sourceVol = sharedVolume ? state.volume : volume;
-  const [localVol, setLocalVol] = useState(sourceVol);
-  const [dragging, setDragging] = useState(false);
-  useEffect(() => { if (!dragging) setLocalVol(sourceVol); }, [sourceVol, dragging]);
+  // While the slider moves it shows its own value; a sent shared level shows until the server's changes.
+  const [draft, setDraft] = useState<number | null>(null);
+  const [committed, setCommitted] = useState<{ value: number; base: number } | null>(null);
+  const shownVol = draft ?? (sharedVolume && committed && state.volume === committed.base ? committed.value : sourceVol);
 
   const [expanded, setExpanded] = useState<"speed" | "fx" | "volume" | null>(null);
   const speedAnchorRef = useRef<HTMLButtonElement>(null);
   const fxAnchorRef = useRef<HTMLButtonElement>(null);
   const volAnchorRef = useRef<HTMLButtonElement>(null);
-  const closeExpanded = useCallback(() => setExpanded(null), []);
+  const closeExpanded = () => setExpanded(null);
+  const toggle = (which: "speed" | "fx" | "volume") => setExpanded(expanded === which ? null : which);
 
-  const noNext = state.queue.length === 0 && !state.autoplay && !state.is_connected && state.loop_mode === "off";
+  // Toasts report what the server did, not what the button showed before the click.
+  const run = <T,>(action: string, data: Record<string, unknown> | undefined, done: (res: T) => string) => {
+    sendCommand<T>(action, data).then(
+      (res) => toast(done(res)),
+      (e: unknown) => toast(errorMessage(e, "Couldn't change that"), "error"),
+    );
+  };
 
-  const transport = useTransportControls(audio, volume, onVolumeChange, getDisplayPosition);
+  const setSpeed = (rate: number) => {
+    setExpanded(null);
+    run<{ speed?: number }>("speed", { rate }, r => `Speed ${r.speed ?? rate}x`);
+  };
 
-  const handleStop = useCallback(async () => {
-    audio.stop();
-    try {
-      await sendCommand("stop");
-    } catch (e: any) {
-      toast(e?.message || "Could not stop", "error");
+  const setEffect = (effect: string) => {
+    setExpanded(null);
+    run<{ audio_effect?: string }>("effects", { effect }, r => {
+      const applied = r.audio_effect ?? effect;
+      return applied === "none" ? "Effects off" : `${effectLabel(applied)} on`;
+    });
+  };
+
+  const handleStop = () => {
+    if (!stopConfirm.press(true)) return;
+    const stopped = current?.webpage_url;
+    sendCommand("stop").then(
+      // The broadcast tears down every listener's audio; this only spares the wait.
+      () => audio.stop(stopped),
+      (e: unknown) => toast(errorMessage(e, "Couldn't stop"), "error"),
+    );
+  };
+
+  const commitVolume = () => {
+    if (draft === null) return;
+    const v = draft;
+    setDraft(null);
+    if (!sharedVolume) {
+      onVolumeChange(v);
+      return;
     }
-  }, [audio, sendCommand, toast]);
+    setCommitted({ value: v, base: state.volume });
+    sendCommand("volume", { level: v }).catch((e: unknown) => {
+      setCommitted(null);
+      toast(errorMessage(e, "Couldn't change the volume"), "error");
+    });
+  };
 
-  const handleSeek = useCallback((seconds: number) => {
-    // Match the server clamp (duration - 5) so seeking to the bar's end can't
-    // fire 'ended' and skip the song
-    const clamped = totalDur > 0
-      ? Math.min(seconds, Math.max(0, Math.floor(totalDur) - 5))
-      : seconds;
-    audio.seek(clamped);
-    sendCommand("seek", { position: String(clamped) })
-      .catch((e: any) => toast(e?.message || "Seek failed", "error"));
-  }, [audio, sendCommand, totalDur, toast]);
+  const volumeInput = (className: string) => (
+    <input
+      type="range" min={0} max={100} value={shownVol} aria-label="Volume" aria-valuetext={`${shownVol}%`}
+      onChange={(e) => {
+        const v = Number(e.target.value);
+        setDraft(v);
+        audio.setVolume(v);
+      }}
+      onPointerUp={commitVolume}
+      onPointerCancel={commitVolume}
+      onKeyUp={commitVolume}
+      onBlur={commitVolume}
+      className={className}
+    />
+  );
 
-  const applyVolume = useCallback((v: number) => {
-    setLocalVol(v);
-    audio.setVolume(v);
-  }, [audio]);
-
-  const commitVolume = useCallback((v: number) => {
-    if (sharedVolume) sendCommand("volume", { level: v }).catch(() => {});
-    else onVolumeChange(v);
-  }, [sharedVolume, sendCommand, onVolumeChange]);
-
-  const thumb = useMemo(() => current?.thumbnail ? proxyImg(current.thumbnail) : null, [current?.thumbnail]);
+  const thumb = current?.thumbnail ? proxyImg(current.thumbnail) : null;
+  const elsewhere = state.is_connected && !!state.voice_channel_id && !!channelId && state.voice_channel_id !== channelId;
+  const autoplayPick = current?.requested_by === "Autoplay" && current.autoplay_source !== "youtube";
 
   return (
     <div className="relative h-full w-full bg-surface-1 flex flex-col">
       {thumb && <img src={thumb} alt="" className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125 opacity-20" />}
       <div className="absolute inset-0 bg-gradient-to-b from-surface-1/50 via-surface-1/30 to-surface-1/80" />
 
-      <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
+      {/* Below Discord's top-corner overlay on phones */}
+      <div className="absolute top-3 max-sm:top-12 right-3 z-20 flex items-center gap-2">
         <ListenersBar />
         <InviteButton />
       </div>
@@ -112,17 +145,34 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
             </div>
           )}
           {current?.is_live && (
-            <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500">
+            <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-danger">
               <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
               <span className="text-[11px] font-bold text-white">LIVE</span>
             </div>
           )}
-          {audio.blocked && hasSong && !state.is_connected && (
+          {hasSong && audio.error && (
+            <div className="absolute inset-0 z-20 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center gap-3 px-6 text-center" role="alert">
+              <AlertIcon className="w-8 h-8 text-white/80" strokeWidth={1.5} />
+              <p className="text-sm font-medium text-white">{audio.error}</p>
+              <div className="flex gap-2">
+                <button type="button" onClick={audio.retry} className="min-h-8 px-4 rounded-full bg-white text-black text-xs font-semibold">
+                  Try again
+                </button>
+                {!noNext && (
+                  <button type="button" onClick={transport.next} className="min-h-8 px-4 rounded-full bg-white/15 text-white text-xs font-semibold hover:bg-white/25">
+                    Skip
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {hasSong && !audio.error && audio.blocked && (
             <button
+              type="button"
               onClick={audio.resume}
               className="absolute inset-0 z-20 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center gap-2"
             >
-              <div className="w-14 h-14 rounded-full bg-white text-surface-1 flex items-center justify-center">
+              <div className="w-14 h-14 rounded-full bg-white text-black flex items-center justify-center">
                 <PlayIcon className="w-7 h-7 ml-0.5" />
               </div>
               <span className="text-xs font-medium text-white">Tap to play</span>
@@ -131,20 +181,43 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
         </div>
       </div>
 
+      {elsewhere && (
+        <p className="relative z-10 mx-auto -mt-2 mb-1 px-3 py-1 rounded-full bg-surface-3/80 border border-fg/[0.08] text-xs text-muted text-center max-w-[calc(100%-2rem)] truncate" role="status">
+          Playing in 🔊 {state.voice_channel_name || "another voice channel"}. Join it to listen.
+        </p>
+      )}
+
       <div className="relative z-10 flex-shrink-0 p-4 max-sm:p-3 @container">
-        <div className="w-full max-w-4xl mx-auto rounded-2xl bg-surface-3/80 backdrop-blur-lg border border-white/[0.08] px-8 py-6 @max-[42rem]:px-4 @max-[42rem]:py-3.5 flex flex-col gap-3">
+        <div className="w-full max-w-4xl mx-auto rounded-2xl bg-surface-3/80 backdrop-blur-lg border border-fg/[0.08] px-8 py-6 @max-[42rem]:px-4 @max-[42rem]:py-3.5 flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              {hasSong ? (
+              {current ? (
                 <>
-                  <MarqueeText className="text-sm font-semibold text-white select-text">{current.title}</MarqueeText>
-                  <p className="text-xs text-white/50 truncate mt-0.5">{current.uploader}</p>
+                  <MarqueeText className="text-sm font-semibold text-fg select-text">{current.title}</MarqueeText>
+                  <p className="text-xs text-muted truncate mt-0.5">
+                    {current.uploader}
+                    {autoplayPick && (
+                      <>
+                        {current.uploader ? " · " : ""}
+                        <button
+                          type="button"
+                          onClick={() => openExternal(LASTFM_URL)}
+                          className="hover:text-fg hover:underline underline-offset-2"
+                          title="Autoplay recommendations come from Last.fm"
+                        >
+                          via Last.fm
+                        </button>
+                      </>
+                    )}
+                  </p>
                 </>
+              ) : hasState ? (
+                <p className="text-sm text-muted truncate">Nothing playing</p>
               ) : (
-                <p className="text-sm text-white/50 truncate">Nothing playing</p>
+                <NowPlayingTextSkeleton />
               )}
             </div>
-            {hasSong && (
+            {current && (
               <div className="flex items-center gap-1 flex-shrink-0">
                 <AddToPlaylistButton song={current} size="md" />
                 <FavHeart webpageUrl={current.webpage_url} title={current.title} duration={current.duration} thumbnail={current.thumbnail} uploader={current.uploader} size="md" />
@@ -152,48 +225,58 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
             )}
           </div>
 
-          {hasSong && !current.is_live && (
+          {current && !current.is_live && (
             <div className="flex items-center gap-2.5">
-              <LiveTime get={getDisplayPosition} className="text-xs font-mono tabular-nums text-white/50 min-w-10 flex-shrink-0" />
+              <LiveTime get={getPosition} className="text-xs font-mono tabular-nums text-muted min-w-10 flex-shrink-0" />
               <SeekBar
                 duration={totalDur}
-                getPosition={getDisplayPosition}
-                onSeek={handleSeek}
+                getPosition={getPosition}
+                onSeek={transport.seekTo}
                 disabled={!totalDur}
                 className="flex-1"
               />
-              <span className="text-xs font-mono tabular-nums text-white/50 min-w-10 text-right flex-shrink-0">{formatDuration(totalDur)}</span>
+              <span className="text-xs font-mono tabular-nums text-muted min-w-10 text-right flex-shrink-0">{formatDuration(totalDur)}</span>
             </div>
           )}
 
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 @max-[42rem]:grid-cols-1 @max-[42rem]:justify-items-center">
             {/* Secondary controls */}
-            <div className="flex items-center gap-2 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden @max-[42rem]:order-2 @max-[42rem]:w-full @max-[42rem]:justify-center">
-              <Pill ref={speedAnchorRef} active={expanded === "speed" || state.speed !== 1.0} label="Playback speed"
-                onClick={() => setExpanded(expanded === "speed" ? null : "speed")}>
+            <div className="flex items-center gap-2 min-w-0 overflow-x-auto @max-[42rem]:order-2 @max-[42rem]:w-full @max-[42rem]:justify-center">
+              <Pill ref={speedAnchorRef} active={expanded === "speed" || state.speed !== 1.0}
+                label={`Playback speed: ${state.speed}x`} expanded={expanded === "speed"}
+                onClick={() => toggle("speed")}>
                 {state.speed}x
               </Pill>
-              <Popover open={expanded === "speed"} onClose={closeExpanded} anchorRef={speedAnchorRef} className="min-w-[48px]">
+              <Popover open={expanded === "speed"} onClose={closeExpanded} anchorRef={speedAnchorRef} role="menu" label="Playback speed" className="min-w-[64px]">
                 {SPEEDS.map(s => (
-                  <button key={s} onClick={() => { sendCommand("speed", { rate: s }); setExpanded(null); toast(`Speed ${s}x`); }}
-                    className={cn("block w-full text-center px-2 py-1.5 rounded-lg text-xs font-medium transition-colors", s === state.speed ? "bg-accent text-white" : "text-white/70 hover:bg-white/[0.08]")}>
+                  <button key={s} type="button" role="menuitemradio" aria-checked={s === state.speed}
+                    onClick={() => setSpeed(s)}
+                    className={cn("block w-full text-center px-2 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                      s === state.speed ? "bg-accent text-white" : "text-fg/80 hover:bg-fg/[0.08]")}>
                     {s}x</button>))}
               </Popover>
-              <Pill ref={fxAnchorRef} active={expanded === "fx" || state.audio_effect !== "none"} label="Audio effects"
-                onClick={() => setExpanded(expanded === "fx" ? null : "fx")}>
-                FX
+              <Pill ref={fxAnchorRef} active={expanded === "fx" || state.audio_effect !== "none"}
+                label={`Audio effect: ${effectLabel(state.audio_effect)}`} expanded={expanded === "fx"}
+                onClick={() => toggle("fx")}>
+                {state.audio_effect === "none" ? "FX" : effectLabel(state.audio_effect)}
               </Pill>
-              <Popover open={expanded === "fx"} onClose={closeExpanded} anchorRef={fxAnchorRef} className="min-w-[80px]">
-                {AUDIO_EFFECTS.map(([id, l]) => (
-                  <button key={id} onClick={() => { sendCommand("effects", { effect: id }); setExpanded(null); toast(id === "none" ? "Effects off" : l); }}
-                    className={cn("block w-full text-left px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap", id === state.audio_effect ? "bg-accent text-white" : "text-white/70 hover:bg-white/[0.08]")}>
-                    {l}</button>))}
+              <Popover open={expanded === "fx"} onClose={closeExpanded} anchorRef={fxAnchorRef} role="menu" label="Audio effect" className="min-w-[132px]">
+                {AUDIO_EFFECTS.map(({ id, label }) => (
+                  <button key={id} type="button" role="menuitemradio" aria-checked={id === state.audio_effect}
+                    onClick={() => setEffect(id)}
+                    className={cn("block w-full text-left px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap",
+                      id === state.audio_effect ? "bg-accent text-white" : "text-fg/80 hover:bg-fg/[0.08]")}>
+                    {label}</button>))}
               </Popover>
-              <Pill active={state.autoplay} label="Autoplay" onClick={() => { sendCommand("autoplay"); toast(state.autoplay ? "Autoplay off" : "Autoplay on"); }}>
+              <Pill active={state.autoplay} pressed={state.autoplay} label="Autoplay"
+                onClick={() => run<{ autoplay?: boolean }>("autoplay", undefined, r => ((r.autoplay ?? !state.autoplay) ? "Autoplay on" : "Autoplay off"))}>
                 <InfinityIcon className="w-4 h-4" />
               </Pill>
-              <Pill active={false} label="Stop" onClick={handleStop}>
-                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
+              <Pill active={stopConfirm.armed === true} danger={stopConfirm.armed === true}
+                label={stopConfirm.armed ? "Press again to stop and clear the queue" : "Stop and clear the queue"}
+                onClick={handleStop}>
+                <StopIcon className="w-3.5 h-3.5" />
+                {stopConfirm.armed && <span>Stop &amp; clear?</span>}
               </Pill>
             </div>
 
@@ -202,66 +285,59 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
               <ToggleBtn
                 active={state.shuffle}
                 label="Shuffle"
-                onClick={() => { sendCommand("shuffle"); toast(state.shuffle ? "Shuffle off" : "Shuffle on"); }}
+                onClick={() => run<{ shuffle?: boolean }>("shuffle", undefined, r => ((r.shuffle ?? !state.shuffle) ? "Shuffle on" : "Shuffle off"))}
               >
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z" /></svg>
+                <ShuffleIcon />
               </ToggleBtn>
-              <Btn onClick={transport.previous} disabled={!hasSong || state.history.length === 0} label="Previous">
-                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
+              <Btn onClick={transport.previous} disabled={state.played.length === 0 && (!hasSong || state.history.length === 0)} label="Previous">
+                <SkipPrevIcon className="w-5 h-5" />
               </Btn>
-              <button onClick={audio.playPause} disabled={!hasSong}
+              <button type="button" onClick={transport.playPause} disabled={!hasSong}
                 aria-label={isPaused ? "Play" : "Pause"}
                 className={cn("w-12 h-12 rounded-full flex items-center justify-center transition-all",
-                  hasSong ? "bg-white text-surface-1 hover:scale-105 active:scale-95" : "bg-white/10 text-white/20 cursor-not-allowed"
+                  hasSong ? "bg-fg text-surface-1 hover:scale-105 active:scale-95" : "bg-fg/10 text-fg/20 cursor-not-allowed"
                 )}>
                 {isPaused ? <PlayIcon className="w-6 h-6 ml-0.5" /> : <PauseIcon className="w-6 h-6" />}
               </button>
-              <Btn onClick={transport.next} disabled={!hasSong || noNext} label="Skip">
-                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
+              <Btn onClick={transport.next} disabled={!hasSong || noNext} label="Next">
+                <SkipNextIcon className="w-5 h-5" />
               </Btn>
               <ToggleBtn
                 active={state.loop_mode !== "off"}
-                label={`Loop: ${state.loop_mode}`}
-                onClick={() => { const n = NEXT_LOOP[state.loop_mode]; sendCommand("loop", { mode: n }); toast(`Loop: ${n}`); }}
+                label={`Loop: ${LOOP_LABEL[state.loop_mode]}`}
+                onClick={() => {
+                  const mode = NEXT_LOOP[state.loop_mode];
+                  run<{ loop_mode?: LoopMode }>("loop", { mode }, r => `Loop: ${LOOP_LABEL[r.loop_mode ?? mode]}`);
+                }}
               >
-                {state.loop_mode === "song" ? (
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z" /></svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" /></svg>
-                )}
+                {state.loop_mode === "song" ? <RepeatOneIcon /> : <RepeatIcon />}
               </ToggleBtn>
             </div>
 
             {/* Volume */}
             <div className="flex items-center gap-1.5 justify-end @max-[42rem]:hidden">
-              <Btn label={localVol === 0 ? "Unmute" : "Mute"} onClick={() => setLocalVol(transport.toggleMute())}>
-                <VolumeIcon muted={localVol === 0} />
+              <Btn label={shownVol === 0 ? "Unmute" : "Mute"} onClick={transport.toggleMute}>
+                {shownVol === 0 ? <VolumeOffIcon className="w-3.5 h-3.5" /> : <VolumeIcon className="w-3.5 h-3.5" />}
               </Btn>
-              <input type="range" min={0} max={100} value={localVol} aria-label="Volume"
-                onChange={(e) => { setDragging(true); applyVolume(Number(e.target.value)); }}
-                onMouseUp={() => { setDragging(false); commitVolume(localVol); }}
-                onTouchEnd={() => { setDragging(false); commitVolume(localVol); }}
-                className="w-16 h-0.5" />
+              {volumeInput("w-16 h-0.5")}
             </div>
 
             {/* Narrow layout: volume as a popover */}
             <div className="hidden @max-[42rem]:flex items-center @max-[42rem]:order-3">
               <button
                 ref={volAnchorRef}
-                onClick={() => setExpanded(expanded === "volume" ? null : "volume")}
-                aria-label="Volume"
-                className="h-7 px-2.5 rounded-full text-xs font-semibold flex items-center gap-1 text-white/60 active:bg-white/[0.08]"
+                type="button"
+                onClick={() => toggle("volume")}
+                aria-label={`Volume: ${shownVol}%`}
+                aria-haspopup="dialog"
+                aria-expanded={expanded === "volume"}
+                className="h-7 px-2.5 rounded-full text-xs font-semibold flex items-center gap-1 text-muted active:bg-fg/[0.08]"
               >
-                <VolumeIcon muted={localVol === 0} />
-                {localVol}%
+                {shownVol === 0 ? <VolumeOffIcon className="w-3.5 h-3.5" /> : <VolumeIcon className="w-3.5 h-3.5" />}
+                {shownVol}%
               </button>
-              <Popover open={expanded === "volume"} onClose={closeExpanded} anchorRef={volAnchorRef} className="px-3 py-2.5">
-                <input
-                  type="range" min={0} max={100} value={localVol} aria-label="Volume"
-                  onChange={(e) => { setDragging(true); applyVolume(Number(e.target.value)); }}
-                  onPointerUp={() => { setDragging(false); commitVolume(localVol); }}
-                  className="w-36"
-                />
+              <Popover open={expanded === "volume"} onClose={closeExpanded} anchorRef={volAnchorRef} label="Volume" className="px-3 py-2.5">
+                {volumeInput("w-36")}
               </Popover>
             </div>
           </div>
@@ -271,22 +347,12 @@ export default function NowPlaying({ audio, volume, onVolumeChange }: {
   );
 }
 
-function VolumeIcon({ muted }: { muted: boolean }) {
-  return (
-    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-      {muted
-        ? <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.796 8.796 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 003.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" />
-        : <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />}
-    </svg>
-  );
-}
-
 function Btn({ children, onClick, disabled, label }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; label: string }) {
   return (
-    <button onClick={onClick} disabled={disabled} aria-label={label} title={label}
+    <button type="button" onClick={onClick} disabled={disabled} aria-label={label} title={label}
       className={cn("relative w-10 h-10 rounded-full flex items-center justify-center transition-all",
         "pointer-coarse:after:absolute pointer-coarse:after:-inset-1 pointer-coarse:after:content-['']",
-        disabled ? "text-white/20 cursor-not-allowed" : "text-white/80 hover:text-white hover:bg-white/[0.12] active:scale-90"
+        disabled ? "text-fg/20 cursor-not-allowed" : "text-fg/80 hover:text-fg hover:bg-fg/[0.12] active:scale-90"
       )}>{children}</button>
   );
 }
@@ -296,10 +362,10 @@ function ToggleBtn({ children, active, onClick, label }: {
   children: React.ReactNode; active: boolean; onClick: () => void; label: string;
 }) {
   return (
-    <button onClick={onClick} aria-label={label} title={label} aria-pressed={active}
+    <button type="button" onClick={onClick} aria-label={label} title={label} aria-pressed={active}
       className={cn("relative w-9 h-9 rounded-full flex items-center justify-center transition-all active:scale-90",
         "pointer-coarse:after:absolute pointer-coarse:after:-inset-1 pointer-coarse:after:content-['']",
-        active ? "text-accent" : "text-white/60 hover:text-white hover:bg-white/[0.08]"
+        active ? "text-accent" : "text-muted hover:text-fg hover:bg-fg/[0.08]"
       )}>
       {children}
       {active && <span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-accent" />}
@@ -307,15 +373,22 @@ function ToggleBtn({ children, active, onClick, label }: {
   );
 }
 
-function Pill({ children, active, onClick, label, ref }: {
-  children: React.ReactNode; active?: boolean; onClick: () => void; label: string;
+// `pressed` only for real toggles, `expanded` only for popover triggers.
+function Pill({ children, active, pressed, expanded, danger, disabled, onClick, label, ref }: {
+  children: React.ReactNode; active?: boolean; pressed?: boolean; expanded?: boolean; danger?: boolean;
+  disabled?: boolean; onClick: () => void; label: string;
   ref?: React.Ref<HTMLButtonElement>;
 }) {
   return (
-    <button ref={ref} onClick={onClick} aria-label={label} title={label} aria-pressed={!!active}
-      className={cn("relative h-7 px-2.5 rounded-full text-xs font-semibold flex items-center gap-1 transition-all flex-shrink-0",
+    <button ref={ref} type="button" onClick={onClick} disabled={disabled} aria-label={label} title={label}
+      aria-pressed={pressed}
+      aria-haspopup={expanded !== undefined ? "menu" : undefined}
+      aria-expanded={expanded}
+      className={cn("relative h-7 px-2.5 rounded-full text-xs font-semibold flex items-center gap-1 transition-all flex-shrink-0 whitespace-nowrap disabled:opacity-40",
         "pointer-coarse:after:absolute pointer-coarse:after:-inset-y-1.5 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']",
-        active ? "bg-accent/20 text-accent" : "text-white/60 hover:text-white/80 hover:bg-white/[0.08]"
+        danger ? "bg-danger text-white"
+          : active ? "bg-accent/20 text-accent" : "text-muted hover:text-fg hover:bg-fg/[0.08]"
       )}>{children}</button>
   );
 }
+

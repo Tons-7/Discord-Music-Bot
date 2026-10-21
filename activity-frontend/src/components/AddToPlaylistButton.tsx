@@ -1,12 +1,15 @@
 "use client";
 
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { useGuildState } from "./GuildStateProvider";
+import { useGuildId } from "./GuildStateProvider";
 import { useToast } from "./Toast";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, errorMessage } from "@/lib/api";
+import { isPlaylistDetailKey, playlistListKey, playlistNameError, PLAYLIST_NAME_MAX } from "@/lib/playlists";
 import IconButton from "./ui/IconButton";
 import Popover from "./ui/Popover";
+import SegmentedControl from "./ui/SegmentedControl";
+import { CopyIcon, PlaylistAddIcon } from "./ui/icons";
 import { cn } from "@/lib/utils";
 import { playlistCan, type Playlist } from "@/types";
 
@@ -16,10 +19,9 @@ export interface PlaylistCandidate {
   duration?: number;
   thumbnail?: string;
   uploader?: string;
-  url?: string;
 }
 
-// Returns true when the popover should close (i.e. the add succeeded).
+// Resolves true when the popover should close (i.e. the save succeeded).
 type PickHandler = (name: string, globalMode: boolean, ownerId: string | null) => Promise<boolean>;
 
 interface BulkSaveResult {
@@ -29,44 +31,30 @@ interface BulkSaveResult {
   capped?: boolean;
 }
 
-function bulkSavedMessage(res: BulkSaveResult, name: string): string {
+function savedMessage(verb: "Added" | "Copied", res: BulkSaveResult, name: string): string {
+  if (res.added === 0 && res.skipped > 0 && !res.dropped) {
+    return `Nothing new — all ${res.skipped} song${res.skipped === 1 ? " is" : "s are"} already in "${name}"`;
+  }
   const parts = [];
   if (res.skipped > 0) parts.push(`${res.skipped} already there`);
   if (res.dropped) parts.push(`${res.dropped} dropped, playlist full`);
   if (res.capped) parts.push("Spotify only shares the first 100");
   const note = parts.length ? ` (${parts.join(", ")})` : "";
-  return `Added ${res.added} song${res.added === 1 ? "" : "s"} to "${name}"${note}`;
+  return `${verb} ${res.added} song${res.added === 1 ? "" : "s"} to "${name}"${note}`;
 }
 
-function PlaylistAddIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h11M4 11h11M4 16h6m5 2h6m-3-3v6" />
-    </svg>
-  );
-}
-
-function CopyIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V5a2 2 0 012-2h9a2 2 0 012 2v9a2 2 0 01-2 2h-2M5 7h9a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V9a2 2 0 012-2z" />
-    </svg>
-  );
-}
-
-function PickerButton({ label, size, className, disabled, excludeName, excludeGlobal, onPick, children }: {
+function PickerButton({ label, size, className, disabled, exclude, onPick, children }: {
   label: string;
   size: "xs" | "sm" | "md";
   className?: string;
   disabled?: boolean;
-  excludeName?: string;
-  excludeGlobal?: boolean;
+  exclude?: { name: string; globalMode: boolean; ownerId?: string | null };
   onPick: PickHandler;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
-  const close = useCallback(() => setOpen(false), []);
+  const close = () => setOpen(false);
 
   return (
     <>
@@ -77,13 +65,15 @@ function PickerButton({ label, size, className, disabled, excludeName, excludeGl
         tone="accent"
         className={className}
         disabled={disabled}
+        aria-haspopup="dialog"
+        aria-expanded={open}
         onClick={(e) => { e.stopPropagation(); if (!disabled) setOpen(o => !o); }}
       >
         {children}
       </IconButton>
-      <Popover open={open} onClose={close} anchorRef={anchorRef} className="w-56 p-2">
+      <Popover open={open} onClose={close} anchorRef={anchorRef} label={label} className="w-60 p-2">
         {/* Mounted only while open, so the playlist fetch is on demand */}
-        <PlaylistPicker onPick={onPick} onDone={close} excludeName={excludeName} excludeGlobal={excludeGlobal} />
+        <PlaylistPicker onPick={onPick} onDone={close} exclude={exclude} />
       </Popover>
     </>
   );
@@ -98,33 +88,33 @@ export default function AddToPlaylistButton({ song, size = "xs", className }: {
   size?: "xs" | "sm" | "md";
   className?: string;
 }) {
-  const { guildId } = useGuildState();
+  const { guildId } = useGuildId();
   const { toast } = useToast();
 
-  const onPick: PickHandler = async (name, globalMode, ownerId) => {
-    try {
-      await apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add`, {
-        method: "POST",
-        body: JSON.stringify({
-          song_url: song.webpage_url,
-          global_mode: globalMode,
-          owner_id: ownerId,
-          song: {
-            title: song.title,
-            duration: song.duration ?? 0,
-            thumbnail: song.thumbnail ?? "",
-            uploader: song.uploader ?? "",
-            url: song.url ?? "",
-          },
-        }),
-      });
-      toast(`Saved to "${name}"`, "success");
-      return true;
-    } catch (e: any) {
-      toast(e?.message || "Could not save", "error");
-      return false;
-    }
-  };
+  const onPick: PickHandler = (name, globalMode, ownerId) =>
+    apiFetch(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add`, {
+      method: "POST",
+      body: JSON.stringify({
+        song_url: song.webpage_url,
+        global_mode: globalMode,
+        owner_id: ownerId,
+        song: {
+          title: song.title,
+          duration: song.duration ?? 0,
+          thumbnail: song.thumbnail ?? "",
+          uploader: song.uploader ?? "",
+        },
+      }),
+    }).then(
+      () => {
+        toast(`Saved to "${name}"`, "success");
+        return true;
+      },
+      (e: unknown) => {
+        toast(errorMessage(e, "Couldn't save it"), "error");
+        return false;
+      },
+    );
 
   return (
     <PickerButton label="Save to playlist" size={size} className={className} onPick={onPick}>
@@ -144,47 +134,36 @@ export function CopyPlaylistButton({ sourceName, sourceGlobal, sourceOwnerId, si
   size?: "xs" | "sm" | "md";
   className?: string;
 }) {
-  const { guildId } = useGuildState();
+  const { guildId } = useGuildId();
   const { toast } = useToast();
 
-  const onPick: PickHandler = async (name, globalMode, targetOwnerId) => {
-    try {
-      const res = await apiFetch<{ added: number; skipped: number; dropped?: number; truncated?: boolean }>(
-        `/api/guild/${guildId}/playlists/${encodeURIComponent(sourceName)}/copy`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            target: name,
-            global_mode: sourceGlobal,
-            target_global_mode: globalMode,
-            owner_id: sourceOwnerId ?? null,
-            target_owner_id: targetOwnerId ?? null,
-          }),
-        },
-      );
-      if (res.added === 0) {
-        toast(`Nothing new — all ${res.skipped} song${res.skipped === 1 ? " is" : "s are"} already in "${name}"`, "success");
+  const onPick: PickHandler = (name, globalMode, targetOwnerId) =>
+    apiFetch<BulkSaveResult>(`/api/guild/${guildId}/playlists/${encodeURIComponent(sourceName)}/copy`, {
+      method: "POST",
+      body: JSON.stringify({
+        target: name,
+        global_mode: sourceGlobal,
+        target_global_mode: globalMode,
+        owner_id: sourceOwnerId ?? null,
+        target_owner_id: targetOwnerId,
+      }),
+    }).then(
+      (res) => {
+        toast(savedMessage("Copied", res, name), "success");
         return true;
-      }
-      const parts = [];
-      if (res.skipped > 0) parts.push(`${res.skipped} already there`);
-      if (res.dropped) parts.push(`${res.dropped} dropped, playlist full`);
-      const note = parts.length ? ` (${parts.join(", ")})` : "";
-      toast(`Copied ${res.added} song${res.added === 1 ? "" : "s"} to "${name}"${note}`, "success");
-      return true;
-    } catch (e: any) {
-      toast(e?.message || "Could not copy the playlist", "error");
-      return false;
-    }
-  };
+      },
+      (e: unknown) => {
+        toast(errorMessage(e, "Couldn't copy the playlist"), "error");
+        return false;
+      },
+    );
 
   return (
     <PickerButton
       label="Copy to playlist"
       size={size}
       className={className}
-      excludeName={sourceName}
-      excludeGlobal={sourceGlobal}
+      exclude={{ name: sourceName, globalMode: sourceGlobal, ownerId: sourceOwnerId }}
       onPick={onPick}
     >
       <CopyIcon className="w-4 h-4" />
@@ -201,58 +180,56 @@ export function AddQueueToPlaylistButton({ disabled, size = "sm", className }: {
   size?: "xs" | "sm" | "md";
   className?: string;
 }) {
-  const { guildId } = useGuildState();
+  const { guildId } = useGuildId();
   const { toast } = useToast();
 
-  const onPick: PickHandler = async (name, globalMode, ownerId) => {
-    try {
-      const res = await apiFetch<BulkSaveResult>(
-        `/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add-queue`,
-        { method: "POST", body: JSON.stringify({ global_mode: globalMode, owner_id: ownerId }) },
-      );
-      toast(bulkSavedMessage(res, name), "success");
-      return true;
-    } catch (e: any) {
-      toast(e?.message || "Could not save the queue", "error");
-      return false;
-    }
-  };
+  const onPick: PickHandler = (name, globalMode, ownerId) =>
+    apiFetch<BulkSaveResult>(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add-queue`, {
+      method: "POST",
+      body: JSON.stringify({ global_mode: globalMode, owner_id: ownerId }),
+    }).then(
+      (res) => {
+        toast(savedMessage("Added", res, name), "success");
+        return true;
+      },
+      (e: unknown) => {
+        toast(errorMessage(e, "Couldn't save the queue"), "error");
+        return false;
+      },
+    );
 
   return (
-    <PickerButton
-      label="Save queue to playlist"
-      size={size}
-      className={className}
-      disabled={disabled}
-      onPick={onPick}
-    >
+    <PickerButton label="Save queue to playlist" size={size} className={className} disabled={disabled} onPick={onPick}>
       <PlaylistAddIcon className="w-4 h-4" />
     </PickerButton>
   );
 }
 
 /** Save every song from a playlist or album link (e.g. a search result) to a playlist. */
-export function AddLinkToPlaylistButton({ url, size = "md", className }: {
+export function AddLinkToPlaylistButton({ url, asList = false, size = "md", className }: {
   url: string;
+  // url is the playlist or Mix a searched video came from (search's list_url)
+  asList?: boolean;
   size?: "xs" | "sm" | "md";
   className?: string;
 }) {
-  const { guildId } = useGuildState();
+  const { guildId } = useGuildId();
   const { toast } = useToast();
 
-  const onPick: PickHandler = async (name, globalMode, ownerId) => {
-    try {
-      const res = await apiFetch<BulkSaveResult>(
-        `/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add-url`,
-        { method: "POST", body: JSON.stringify({ url, global_mode: globalMode, owner_id: ownerId }) },
-      );
-      toast(bulkSavedMessage(res, name), "success");
-      return true;
-    } catch (e: any) {
-      toast(e?.message || "Could not save these songs", "error");
-      return false;
-    }
-  };
+  const onPick: PickHandler = (name, globalMode, ownerId) =>
+    apiFetch<BulkSaveResult>(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}/add-url`, {
+      method: "POST",
+      body: JSON.stringify({ url, global_mode: globalMode, owner_id: ownerId, as_list: asList }),
+    }).then(
+      (res) => {
+        toast(savedMessage("Added", res, name), "success");
+        return true;
+      },
+      (e: unknown) => {
+        toast(errorMessage(e, "Couldn't save these songs"), "error");
+        return false;
+      },
+    );
 
   return (
     <PickerButton label="Save all to playlist" size={size} className={className} onPick={onPick}>
@@ -261,90 +238,110 @@ export function AddLinkToPlaylistButton({ url, size = "md", className }: {
   );
 }
 
-function PlaylistPicker({ onPick, onDone, excludeName, excludeGlobal }: {
+const SCOPES = [{ value: false, label: "Server" }, { value: true, label: "Global" }];
+
+function PlaylistPicker({ onPick, onDone, exclude }: {
   onPick: PickHandler;
   onDone: () => void;
-  excludeName?: string;
-  excludeGlobal?: boolean;
+  exclude?: { name: string; globalMode: boolean; ownerId?: string | null };
 }) {
-  const { guildId } = useGuildState();
+  const { guildId } = useGuildId();
   const { toast } = useToast();
   const { mutate } = useSWRConfig();
 
   const [globalMode, setGlobalMode] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [nameError, setNameError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const listKey = `/api/guild/${guildId}/playlists?global_mode=${globalMode}`;
-  const { data, isLoading } = useSWR<{ playlists: Playlist[] }>(listKey);
+  const listKey = playlistListKey(guildId, globalMode);
+  const { data, error, isLoading, mutate: reload } = useSWR<{ playlists: Playlist[] }>(listKey);
   // Every picker target is written to, so a view-only share is not a candidate.
   const playlists = (data?.playlists ?? []).filter(p =>
     playlistCan(p.permission, "append")
-    && !(p.name === excludeName && globalMode === excludeGlobal)
+    && !(exclude && p.name === exclude.name && globalMode === exclude.globalMode
+      && (!exclude.ownerId || p.owner_id === exclude.ownerId))
   );
 
-  const pick = async (name: string, ownerId: string | null = null) => {
+  const pick = (name: string, ownerId: string | null) => {
     if (busy) return;
     setBusy(true);
-    const ok = await onPick(name, globalMode, ownerId);
-    setBusy(false);
-    if (!ok) return;
-    mutate(listKey);
-    mutate(`/api/guild/${guildId}/playlists/${encodeURIComponent(name)}?global_mode=${globalMode}`);
-    onDone();
+    onPick(name, globalMode, ownerId).then((ok) => {
+      setBusy(false);
+      if (!ok) return;
+      mutate(listKey);
+      // The open detail view's key carries an owner_id; match it with or without one.
+      mutate((key: unknown) => isPlaylistDetailKey(key, guildId, name, globalMode));
+      onDone();
+    });
   };
 
-  const createAndPick = async () => {
-    const name = newName.trim();
-    if (!name || busy) return;
-    setBusy(true);
-    try {
-      await apiFetch(`/api/guild/${guildId}/playlists`, {
-        method: "POST",
-        body: JSON.stringify({ name, global_mode: globalMode }),
-      });
-      setNewName("");
-      setCreating(false);
-    } catch (e: any) {
-      toast(e?.message || "Could not create playlist", "error");
-      setBusy(false);
+  const createAndPick = () => {
+    const problem = playlistNameError(newName);
+    if (problem) {
+      setNameError(problem);
       return;
     }
-    setBusy(false);
-    await pick(name, null);
+    if (busy) return;
+    const name = newName.trim();
+    setBusy(true);
+    apiFetch(`/api/guild/${guildId}/playlists`, {
+      method: "POST",
+      body: JSON.stringify({ name, global_mode: globalMode }),
+    }).then(
+      () => {
+        setBusy(false);
+        setNewName("");
+        setCreating(false);
+        pick(name, null);
+      },
+      (e: unknown) => {
+        setBusy(false);
+        toast(errorMessage(e, "Couldn't create the playlist"), "error");
+      },
+    );
   };
 
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-1 p-0.5 rounded-lg bg-white/[0.04]">
-        {[false, true].map(g => (
-          <button
-            key={String(g)}
-            onClick={() => { setGlobalMode(g); setCreating(false); }}
-            className={cn(
-              "flex-1 h-6 rounded-md text-xs font-semibold transition-colors",
-              globalMode === g ? "bg-accent text-white" : "text-white/50 hover:text-white/80"
-            )}
-          >
-            {g ? "Global" : "Server"}
-          </button>
-        ))}
-      </div>
+      <SegmentedControl
+        label="Playlist scope"
+        size="sm"
+        options={SCOPES}
+        value={globalMode}
+        onChange={g => { setGlobalMode(g); setCreating(false); }}
+      />
 
-      <div className="max-h-56 overflow-y-auto flex flex-col gap-0.5">
-        {isLoading && <p className="text-xs text-muted px-2 py-2">Loading…</p>}
-        {!isLoading && playlists.length === 0 && (
+      <div className="max-h-56 overflow-y-auto flex flex-col gap-0.5" aria-busy={isLoading || undefined}>
+        {isLoading && (
+          <div className="flex flex-col gap-1 py-1 animate-pulse" aria-hidden="true">
+            {[0, 1, 2].map(i => <div key={i} className="h-8 rounded-lg bg-fg/[0.04]" />)}
+          </div>
+        )}
+        {!isLoading && error && !data && (
+          <div className="flex items-center justify-between gap-2 px-2 py-2">
+            <p className="text-xs text-muted">Couldn&apos;t load playlists</p>
+            <button type="button" onClick={() => reload()} className="text-xs font-semibold text-accent hover:underline">
+              Try again
+            </button>
+          </div>
+        )}
+        {!isLoading && data && playlists.length === 0 && (
           <p className="text-xs text-muted px-2 py-2">No {globalMode ? "global" : "server"} playlists yet</p>
         )}
         {playlists.map(p => (
           <button
-            key={p.name}
+            key={`${p.name}:${p.owner_id}`}
+            type="button"
             disabled={busy}
             onClick={() => pick(p.name, p.owner_id)}
-            className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-left text-xs text-white/80 hover:bg-white/[0.08] disabled:opacity-50"
+            className="flex items-center justify-between gap-2 px-2 py-1.5 min-h-9 rounded-lg text-left text-fg/90 hover:bg-fg/[0.08] disabled:opacity-50"
           >
-            <span className="truncate">{p.name}</span>
+            <span className="min-w-0">
+              <span className="block text-sm truncate">{p.name}</span>
+              {p.owner && <span className="block text-xs text-muted truncate">Shared by {p.owner}</span>}
+            </span>
             {typeof p.song_count === "number" && (
               <span className="text-xs text-muted tabular-nums flex-shrink-0">{p.song_count}</span>
             )}
@@ -353,31 +350,41 @@ function PlaylistPicker({ onPick, onDone, excludeName, excludeGlobal }: {
       </div>
 
       {creating ? (
-        <div className="flex items-center gap-1">
-          <input
-            autoFocus
-            value={newName}
-            onChange={e => setNewName(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter") createAndPick();
-              if (e.key === "Escape") { setCreating(false); setNewName(""); }
-            }}
-            placeholder="Playlist name"
-            maxLength={50}
-            className="flex-1 min-w-0 h-7 px-2 rounded-lg bg-white/[0.06] text-base sm:text-xs text-white placeholder:text-muted outline-none focus:bg-white/[0.1]"
-          />
-          <button
-            onClick={createAndPick}
-            disabled={!newName.trim() || busy}
-            className="h-7 px-2 rounded-lg bg-accent text-white text-xs font-semibold disabled:opacity-40"
-          >
-            Save
-          </button>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-1">
+            <input
+              autoFocus
+              value={newName}
+              onChange={e => { setNewName(e.target.value); setNameError(null); }}
+              onKeyDown={e => {
+                if (e.key === "Enter") createAndPick();
+                if (e.key === "Escape") { e.stopPropagation(); setCreating(false); setNewName(""); setNameError(null); }
+              }}
+              placeholder="Playlist name"
+              aria-label="New playlist name"
+              aria-invalid={!!nameError || undefined}
+              maxLength={PLAYLIST_NAME_MAX}
+              className={cn(
+                "flex-1 min-w-0 h-8 px-2 rounded-lg bg-fg/[0.06] text-base sm:text-sm text-fg placeholder:text-muted outline-none focus:bg-fg/[0.1]",
+                nameError && "ring-1 ring-danger/60",
+              )}
+            />
+            <button
+              type="button"
+              onClick={createAndPick}
+              disabled={!newName.trim() || busy}
+              className="h-8 px-2.5 rounded-lg bg-accent text-white text-xs font-semibold disabled:opacity-40"
+            >
+              Save
+            </button>
+          </div>
+          {nameError && <p className="text-xs text-danger px-1" role="alert">{nameError}</p>}
         </div>
       ) : (
         <button
+          type="button"
           onClick={() => setCreating(true)}
-          className="px-2 py-1.5 rounded-lg text-left text-xs font-medium text-accent hover:bg-accent/10"
+          className="px-2 py-1.5 min-h-8 rounded-lg text-left text-xs font-medium text-accent hover:bg-accent/10"
         >
           + New playlist
         </button>

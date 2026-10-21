@@ -17,8 +17,8 @@ export const SEEK_STEP_SECONDS = 5;
 export const SHORTCUTS: { keys: string[]; label: string }[] = [
   { keys: ["Space"], label: "Play / pause" },
   { keys: ["←", "→"], label: `Seek ${SEEK_STEP_SECONDS}s` },
-  { keys: ["N"], label: "Next song" },
-  { keys: ["P"], label: "Previous song" },
+  { keys: ["N"], label: "Next" },
+  { keys: ["P"], label: "Previous" },
   { keys: ["M"], label: "Mute" },
   { keys: ["/"], label: "Search" },
   { keys: ["?"], label: "Show shortcuts" },
@@ -39,20 +39,23 @@ function isActivatableTarget(target: EventTarget | null): boolean {
 
 /**
  * Desktop transport shortcuts. Deliberately inert while typing (the queue
- * filter, search box, playlist name field) and while any modifier is held, so
+ * filter, search box, playlist name field) and while Ctrl/Alt/Meta is held, so
  * browser and Discord shortcuts keep working.
  */
 export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers) {
   const onKeyDown = useEffectEvent((e: KeyboardEvent) => {
-    // "?" needs Shift on most layouts, so it is checked before the modifier guard.
-    if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey && !isTypingTarget(e.target)) {
-      e.preventDefault();
-      handlers.toggleShortcuts();
+    if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+    if (isTypingTarget(e.target)) return;
+
+    // "?" and "/" need Shift on many layouts (QWERTZ, AZERTY), so they are checked before the Shift guard.
+    if (e.key === "?" || e.key === "/") {
+      if (e.repeat) return;
+      e.preventDefault(); // "/" opens Firefox quick-find
+      if (e.key === "?") handlers.toggleShortcuts();
+      else handlers.focusSearch();
       return;
     }
-    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-    if (e.isComposing) return;
-    if (isTypingTarget(e.target)) return;
+    if (e.shiftKey) return;
 
     switch (e.key) {
       case " ":
@@ -63,15 +66,11 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers) {
       case "ArrowLeft":
       case "ArrowRight":
         // Only when nothing is focused — otherwise arrows belong to whatever
-        // widget has focus, and to page scrolling.
+        // widget has focus, and to page scrolling. Repeats seek locally; the
+        // server hears the final target once.
         if (e.target !== document.body) return;
         e.preventDefault();
         handlers.seekBy(e.key === "ArrowLeft" ? -SEEK_STEP_SECONDS : SEEK_STEP_SECONDS);
-        return;
-      case "/":
-        if (e.repeat) return;
-        e.preventDefault(); // Firefox quick-find
-        handlers.focusSearch();
         return;
     }
 

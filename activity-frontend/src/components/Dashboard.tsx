@@ -1,13 +1,14 @@
 "use client";
 
-import { Activity, useState, useMemo, useEffect, useCallback, memo } from "react";
-import { preload } from "swr";
+import { Activity, useState, useEffect, useEffectEvent, useRef, memo } from "react";
+import { useSWRConfig } from "swr";
 import { useGuildState, useServerPosition } from "./GuildStateProvider";
 import { lyricsKey, lyricsFetcher } from "./LyricsPanel";
-import { apiFetch } from "@/lib/api";
-import { useAudioPlayer, type AudioPlayerHandle } from "@/hooks/useAudioPlayer";
+import { useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { usePlaybackView, type PlaybackView } from "@/hooks/usePlaybackView";
 import { useRichPresence } from "@/hooks/useRichPresence";
 import { getSDK } from "@/lib/discord-sdk";
+import { playbackRate } from "@/lib/playback";
 import NowPlaying from "./NowPlaying";
 import QueuePanel from "./QueuePanel";
 import SearchPanel from "./SearchPanel";
@@ -20,249 +21,213 @@ import PiPView from "./PiPView";
 import ConnectionStatus from "./ConnectionStatus";
 import SettingsPanel from "./SettingsPanel";
 import ShortcutsButton from "./ShortcutsButton";
+import StatusScreen from "./StatusScreen";
+import { SidebarLabel } from "./SidebarLabel";
 import { useLayoutMode, LayoutMode } from "@/hooks/useLayoutMode";
 import { useLocalVolume } from "@/hooks/useLocalVolume";
 import { useTheme } from "@/hooks/useTheme";
 import { useTransportControls } from "@/hooks/useTransportControls";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { ProgressStrip, LiveTime } from "./ui/SeekBar";
-import { PlayIcon, PauseIcon, NoteIcon } from "./ui/icons";
+import {
+  PlayIcon, PauseIcon, NoteIcon, SearchIcon, QueueIcon, PlaylistIcon, LyricsIcon, HeartIcon, StatsIcon,
+  SettingsIcon, HistoryIcon, MoreIcon, ChevronDownIcon,
+} from "./ui/icons";
 import { cn, proxyImg } from "@/lib/utils";
 
-type Panel = "search" | "queue" | "history" | "playlists" | "lyrics" | "favorites" | "stats" | "settings" | null;
+type PanelId = "search" | "queue" | "history" | "playlists" | "lyrics" | "favorites" | "stats" | "settings";
+type Panel = PanelId | null;
 
-const PANELS: { id: Exclude<Panel, null>; icon: React.ReactNode; label: string }[] = [
-  {
-    id: "search", label: "Search",
-    icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>,
-  },
-  {
-    id: "queue", label: "Queue",
-    icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h10" /></svg>,
-  },
-  {
-    id: "playlists", label: "Playlists",
-    icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" /></svg>,
-  },
-  {
-    id: "lyrics", label: "Lyrics",
-    icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 9l10.5-3m0 6.553v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 11-.99-3.467l2.31-.66a2.25 2.25 0 001.632-2.163zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 01-.99-3.467l2.31-.66A2.25 2.25 0 009 15.553z" /></svg>,
-  },
-  {
-    id: "favorites", label: "Favorites",
-    icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" /></svg>,
-  },
-  {
-    id: "stats", label: "Stats",
-    icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" /></svg>,
-  },
-  {
-    id: "settings", label: "Settings",
-    icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 011.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.559.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 01-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.397.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 01-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 01.12-1.45l.773-.773a1.125 1.125 0 011.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>,
-  },
-  {
-    id: "history", label: "History",
-    icon: <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>,
-  },
+const ICON = "w-[18px] h-[18px]";
+
+const PANELS: { id: PanelId; icon: React.ReactNode; label: string }[] = [
+  { id: "search", label: "Search", icon: <SearchIcon className={ICON} /> },
+  { id: "queue", label: "Queue", icon: <QueueIcon className={ICON} /> },
+  { id: "playlists", label: "Playlists", icon: <PlaylistIcon className={ICON} /> },
+  { id: "lyrics", label: "Lyrics", icon: <LyricsIcon className={ICON} /> },
+  { id: "favorites", label: "Favorites", icon: <HeartIcon className={ICON} /> },
+  { id: "stats", label: "Stats", icon: <StatsIcon className={ICON} /> },
+  { id: "settings", label: "Settings", icon: <SettingsIcon className={ICON} /> },
+  { id: "history", label: "History", icon: <HistoryIcon className={ICON} /> },
 ];
 
+const panelMeta = (id: PanelId) => PANELS.find(p => p.id === id)!;
+
 // Mobile bottom nav: 4 primary tabs + a "More" sheet (7 tabs don't fit a phone)
-const MOBILE_PRIMARY: Exclude<Panel, null>[] = ["search", "queue", "playlists", "lyrics"];
-const MOBILE_MORE: Exclude<Panel, null>[] = ["favorites", "stats", "history", "settings"];
+const MOBILE_PRIMARY: PanelId[] = ["search", "queue", "playlists", "lyrics"];
+const MOBILE_MORE: PanelId[] = ["favorites", "stats", "history", "settings"];
+
+// Lyrics are warmed shortly after a song starts (after the stream kicks off).
+const LYRICS_PRELOAD_MS = 1500;
 
 export default function Dashboard() {
   const [activePanel, setActivePanel] = useState<Panel>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const { state, guildId, eventVersion, sendCommand } = useGuildState();
+  const { state, guildId, eventVersion, fatal, retryConnection } = useGuildState();
   const serverPos = useServerPosition();
+  const { mutate } = useSWRConfig();
   const { current } = state;
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
 
   const layoutMode = useLayoutMode();
   const [userVolume, setUserVolume] = useLocalVolume();
   useTheme(); // loads the listener's saved theme on launch
 
-  const audio = useAudioPlayer(
+  const audio = useAudioPlayer({
     guildId,
-    current?.webpage_url ?? null,
-    current?.duration ?? 0,
+    current,
     serverPos,
     eventVersion,
-    state.speed,
-    state.audio_effect,
-    userVolume,
-    state.is_connected,
-  );
+    speed: state.speed,
+    audioEffect: state.audio_effect,
+    volume: userVolume,
+    isConnected: state.is_connected,
+  });
+  const view = usePlaybackView(audio);
+  const transport = useTransportControls(audio, view, userVolume, setUserVolume);
 
-  // Fetch + refresh a signed session token for query-string contexts
-  // (<audio> stream URLs, WebSocket). Keeps the raw OAuth token out of URLs.
-  // guildId is set once Discord auth completes, so it doubles as the auth-ready signal.
+  // Fill the lyrics cache only on success, so a failed warm-up is not replayed when the panel opens.
+  const currentUrl = current?.webpage_url;
   useEffect(() => {
-    if (!guildId) return;
-    let cancelled = false;
-    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const fetchToken = async () => {
-      try {
-        const resp = await apiFetch<{ token: string; expires_in: number }>(
-          `/api/guild/${guildId}/session-token`,
-        );
-        if (cancelled || !resp?.token) return;
-        localStorage.setItem("activity_session_token", resp.token);
-        const expiresIn = typeof resp.expires_in === "number" ? resp.expires_in : 21600;
-        const refreshMs = Math.max(60_000, expiresIn * 0.8 * 1000);
-        refreshTimer = setTimeout(fetchToken, refreshMs);
-      } catch {
-        // Retry shortly if the token fetch fails.
-        if (!cancelled) refreshTimer = setTimeout(fetchToken, 60_000);
-      }
-    };
-
-    fetchToken();
-    return () => {
-      cancelled = true;
-      if (refreshTimer) clearTimeout(refreshTimer);
-    };
-  }, [guildId]);
-
-  // Warm the lyrics cache shortly after a song starts (after the stream kicks
-  // off), so opening the Lyrics panel is instant.
-  useEffect(() => {
-    const url = current?.webpage_url;
-    if (!guildId || !url) return;
+    if (!guildId || !currentUrl) return;
+    const key = lyricsKey(guildId, currentUrl);
     const t = setTimeout(() => {
-      preload(lyricsKey(guildId, url), lyricsFetcher(guildId)).catch(() => {});
-    }, 1500);
+      lyricsFetcher(guildId)(key).then(data => mutate(key, data, { revalidate: false }), () => {});
+    }, LYRICS_PRELOAD_MS);
     return () => clearTimeout(t);
-  }, [guildId, current?.webpage_url]);
+  }, [guildId, currentUrl, mutate]);
 
-  const getDisplayPosition = useCallback(
-    () => (audio.ready ? audio.positionRef.current : serverPos.ref.current.position),
-    [audio.ready, audio.positionRef, serverPos],
-  );
+  useRichPresence(getSDK(), current, view.getPosition, view.isPaused || audio.blocked, playbackRate(state.speed, state.audio_effect));
 
-  useRichPresence(
-    getSDK(),
-    current ?? null,
-    getDisplayPosition,
-    audio.ready ? !audio.playing : (current?.is_paused ?? true),
-  );
+  const handleLyricsSeek = (seconds: number) => transport.seekTo(seconds);
 
-  const handleLyricsSeek = useCallback(
-    (seconds: number) => {
-      audio.seek(seconds);
-      sendCommand("seek", { position: String(Math.floor(seconds)) }).catch(() => {});
-    },
-    [audio.seek, sendCommand],
-  );
-
-  const transport = useTransportControls(audio, userVolume, setUserVolume, getDisplayPosition);
+  const focusSearch = () => {
+    setActivePanel("search");
+    // The panel is already mounted but display:none while hidden — focus once
+    // the open state has painted.
+    requestAnimationFrame(() => {
+      const input = document.querySelector<HTMLInputElement>('[data-panel="search"] input');
+      input?.focus();
+      input?.select();
+    });
+  };
 
   useKeyboardShortcuts({
     ...transport,
     toggleShortcuts: () => setShortcutsOpen(open => !open),
-    focusSearch: () => {
-      setActivePanel("search");
-      // The panel is already mounted but display:none while hidden — focus once
-      // the open state has painted.
-      requestAnimationFrame(() => {
-        const input = document.querySelector<HTMLInputElement>('[data-panel="search"] input');
-        input?.focus();
-        input?.select();
-      });
-    },
+    focusSearch,
   });
 
-  if (layoutMode === LayoutMode.PiP) {
-    return <PiPView audio={audio} />;
+  if (fatal) {
+    return <StatusScreen kind="error" message={fatal} action={{ label: "Try again", onClick: retryConnection }} />;
   }
 
-  const togglePanel = (panel: Exclude<Panel, null>) => {
+  const togglePanel = (panel: PanelId) => {
     setActivePanel(prev => prev === panel ? null : panel);
   };
 
   const panelOpen = activePanel !== null;
+  const pip = layoutMode === LayoutMode.PiP;
 
   return (
-    <div className="flex max-sm:flex-col h-dvh bg-surface-1 text-white overflow-hidden">
-      <div className={cn(
-        "flex flex-col flex-1 min-w-0 min-h-0",
-        panelOpen && "max-sm:hidden"
-      )}>
-        <div className="flex-1 overflow-hidden">
-          <NowPlaying audio={audio} volume={userVolume} onVolumeChange={setUserVolume} />
-        </div>
-      </div>
-
-      <div className={cn(
-        "flex-shrink-0 overflow-hidden transition-[width,opacity] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]",
-        panelOpen
-          ? "sm:w-[min(50%,420px)] sm:border-l max-sm:flex-1 opacity-100 border-white/[0.06]"
-          : "sm:w-0 max-sm:hidden opacity-0 border-transparent"
-      )}>
-        {/* Always mounted: panels hide via <Activity> so their local state
-            (search results, scroll position) survives tab switches and close. */}
-        <div className={cn(
-          "h-full w-full bg-surface-2 flex flex-col",
-          panelOpen && "animate-[slide-in_0.25s_ease-out]",
-        )}>
-          {/* Centered: Discord's mobile chrome overlays bot name (left) and Leave (right) */}
-          {panelOpen && (
-            <div className="hidden max-sm:flex items-center justify-center px-4 py-3 border-b border-white/[0.08] flex-shrink-0">
-              <span className="text-sm font-semibold text-white capitalize">{activePanel}</span>
+    <>
+      {pip && <PiPView view={view} blocked={audio.blocked} onPlayPause={transport.playPause} />}
+      {/* Kept mounted (hidden) in PiP, so panels keep their state through a minimise. */}
+      <Activity mode={pip ? "hidden" : "visible"}>
+        <div className="flex max-sm:flex-col h-dvh bg-surface-1 text-fg overflow-hidden">
+          <div className={cn(
+            "flex flex-col flex-1 min-w-0 min-h-0",
+            panelOpen && "max-sm:hidden"
+          )}>
+            <div className="flex-1 overflow-hidden">
+              <NowPlaying audio={audio} view={view} transport={transport} volume={userVolume} onVolumeChange={setUserVolume} />
             </div>
-          )}
-          <div className="flex-1 overflow-hidden">
-            <Panels panel={activePanel} getPosition={getDisplayPosition} onSeek={handleLyricsSeek} />
           </div>
-        </div>
-      </div>
 
-      <div className="max-sm:hidden flex flex-col items-center gap-1 py-3 px-1.5 bg-surface-1 flex-shrink-0">
-        {PANELS.map(({ id, icon, label }) => (
-          <SidebarBtn key={id} active={activePanel === id} label={label} onClick={() => togglePanel(id)}>
-            {icon}
-          </SidebarBtn>
-        ))}
-        <ShortcutsButton open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
-      </div>
+          {/* The panel takes its width at once and only its content slides in: animating width would relayout every frame. */}
+          <div className={cn(
+            "flex-shrink-0 overflow-hidden",
+            panelOpen
+              ? "sm:w-[min(50%,420px)] sm:border-l max-sm:flex-1 border-fg/[0.06]"
+              : "sm:w-0 max-sm:hidden"
+          )}>
+            {/* Always mounted: panels hide via <Activity> so their local state
+                (search results, scroll position) survives tab switches and close. */}
+            <div className={cn(
+              "h-full w-full bg-surface-2 flex flex-col",
+              panelOpen && "animate-[slide-in_0.2s_ease-out]",
+            )}>
+              {/* Centered: Discord's mobile chrome overlays bot name (left) and Leave (right) */}
+              {activePanel && (
+                <div className="hidden max-sm:flex items-center justify-center px-4 py-2 border-b border-fg/[0.08] flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setActivePanel(null)}
+                    aria-label={`Close ${panelMeta(activePanel).label} and go back to the player`}
+                    className="flex items-center gap-1 min-h-9 px-3 rounded-full text-sm font-semibold text-fg active:bg-fg/[0.06]"
+                  >
+                    <ChevronDownIcon className="w-4 h-4 text-muted" />
+                    {panelMeta(activePanel).label}
+                  </button>
+                </div>
+              )}
+              <div className="flex-1 overflow-hidden">
+                <Panels panel={activePanel} getPosition={view.getPosition} onSeek={handleLyricsSeek} onSearch={focusSearch} />
+              </div>
+            </div>
+          </div>
 
-      <div
-        className="hidden max-sm:flex flex-col flex-shrink-0 bg-surface-1 border-t border-white/[0.06]"
-        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
-      >
-        {panelOpen && current && (
-          <MobileMiniPlayer audio={audio} onExpand={() => setActivePanel(null)} />
-        )}
-        <div className="flex items-center justify-around px-1 pt-1.5 pb-1">
-          {MOBILE_PRIMARY.map(id => {
-            const { icon, label } = PANELS.find(p => p.id === id)!;
-            return (
-              <MobileNavBtn key={id} active={activePanel === id} label={label} onClick={() => togglePanel(id)}>
+          <div className="max-sm:hidden flex flex-col items-center gap-1 py-3 px-1.5 bg-surface-1 flex-shrink-0">
+            {PANELS.map(({ id, icon, label }) => (
+              <SidebarBtn key={id} active={activePanel === id} label={label} onClick={() => togglePanel(id)}>
                 {icon}
-              </MobileNavBtn>
-            );
-          })}
-          <MobileNavBtn
-            active={MOBILE_MORE.includes(activePanel as Exclude<Panel, null>)}
-            label="More"
-            onClick={() => setMoreOpen(true)}
+              </SidebarBtn>
+            ))}
+            <ShortcutsButton open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+          </div>
+
+          <div
+            className="hidden max-sm:flex flex-col flex-shrink-0 bg-surface-1 border-t border-fg/[0.06]"
+            style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
           >
-            <svg className="w-[18px] h-[18px]" fill="currentColor" viewBox="0 0 24 24"><path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" /></svg>
-          </MobileNavBtn>
+            {panelOpen && current && (
+              <MobileMiniPlayer view={view} blocked={audio.blocked} onPlayPause={transport.playPause} onExpand={() => setActivePanel(null)} />
+            )}
+            <div className="flex items-center justify-around px-1 pt-1.5 pb-1">
+              {MOBILE_PRIMARY.map(id => {
+                const { icon, label } = panelMeta(id);
+                return (
+                  <MobileNavBtn key={id} active={activePanel === id} label={label} onClick={() => togglePanel(id)}>
+                    {icon}
+                  </MobileNavBtn>
+                );
+              })}
+              <MobileNavBtn
+                ref={moreButtonRef}
+                active={MOBILE_MORE.includes(activePanel as PanelId)}
+                label="More"
+                expanded={moreOpen}
+                onClick={() => setMoreOpen(true)}
+              >
+                <MoreIcon className={ICON} />
+              </MobileNavBtn>
+            </div>
+          </div>
+
+          <ConnectionStatus />
+
+          {moreOpen && (
+            <MoreSheet
+              active={activePanel}
+              onSelect={panel => { setMoreOpen(false); setActivePanel(panel); }}
+              onClose={() => setMoreOpen(false)}
+              returnFocusRef={moreButtonRef}
+            />
+          )}
         </div>
-      </div>
-
-      <ConnectionStatus />
-
-      {moreOpen && (
-        <MoreSheet
-          active={activePanel}
-          onSelect={panel => { setMoreOpen(false); togglePanel(panel); }}
-          onClose={() => setMoreOpen(false)}
-        />
-      )}
-    </div>
+      </Activity>
+    </>
   );
 }
 
@@ -271,65 +236,89 @@ function SidebarBtn({ children, active, label, onClick }: {
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className={cn(
         "w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-150 group relative",
         active
           ? "bg-accent text-white shadow-[0_0_12px_var(--color-accent-glow)]"
-          : "text-muted hover:text-white hover:bg-white/[0.06]"
+          : "text-muted hover:text-fg hover:bg-fg/[0.06]"
       )}
-      title={label}
+      aria-label={label}
       aria-pressed={active}
     >
       {children}
-      <span className="absolute right-full mr-2 z-50 px-2 py-1 rounded-lg bg-surface-3 text-xs text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-lg">
-        {label}
-      </span>
+      <SidebarLabel>{label}</SidebarLabel>
     </button>
   );
 }
 
-function MobileNavBtn({ children, active, label, onClick }: {
-  children: React.ReactNode; active: boolean; label: string; onClick: () => void;
+function MobileNavBtn({ children, active, label, onClick, expanded, ref }: {
+  children: React.ReactNode; active: boolean; label: string; onClick: () => void; expanded?: boolean;
+  ref?: React.Ref<HTMLButtonElement>;
 }) {
   return (
     <button
+      ref={ref}
+      type="button"
       onClick={onClick}
       className={cn(
         "flex flex-col items-center justify-center gap-0.5 flex-1 min-w-0 h-11 rounded-xl transition-colors",
-        active ? "text-accent bg-accent/10" : "text-muted active:bg-white/[0.06]"
+        active ? "text-accent bg-accent/10" : "text-muted active:bg-fg/[0.06]"
       )}
-      aria-pressed={active}
+      aria-pressed={expanded === undefined ? active : undefined}
+      aria-haspopup={expanded !== undefined ? "dialog" : undefined}
+      aria-expanded={expanded}
       aria-label={label}
     >
       {children}
-      <span className="text-[10px] font-medium leading-none">{label}</span>
+      <span className="text-[10px] font-medium leading-none" aria-hidden="true">{label}</span>
     </button>
   );
 }
 
-function MoreSheet({ active, onSelect, onClose }: {
+function MoreSheet({ active, onSelect, onClose, returnFocusRef }: {
   active: Panel;
-  onSelect: (panel: Exclude<Panel, null>) => void;
+  onSelect: (panel: PanelId) => void;
   onClose: () => void;
+  returnFocusRef: React.RefObject<HTMLButtonElement | null>;
 }) {
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const onEscape = useEffectEvent((e: KeyboardEvent) => {
+    if (e.key === "Escape") onClose();
+  });
+
+  useEffect(() => {
+    sheetRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+    const onKey = (e: KeyboardEvent) => onEscape(e);
+    document.addEventListener("keydown", onKey);
+    const returnTo = returnFocusRef.current;
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      returnTo?.focus({ preventScroll: true });
+    };
+  }, [returnFocusRef]);
+
   return (
-    <div className="fixed inset-0 z-40 sm:hidden" role="dialog" aria-label="More panels">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+    <div className="fixed inset-0 z-40 sm:hidden" role="dialog" aria-modal="true" aria-label="More panels">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} aria-hidden="true" />
       <div
-        className="absolute inset-x-0 bottom-0 bg-surface-2 border-t border-white/[0.08] rounded-t-2xl p-3 animate-[slide-up_0.2s_ease-out]"
+        ref={sheetRef}
+        className="absolute inset-x-0 bottom-0 bg-surface-2 border-t border-fg/[0.08] rounded-t-2xl p-3 animate-[slide-up_0.2s_ease-out]"
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 12px)" }}
       >
-        <div className="w-9 h-1 rounded-full bg-white/15 mx-auto mb-3" />
+        <div className="w-9 h-1 rounded-full bg-fg/15 mx-auto mb-3" aria-hidden="true" />
         {MOBILE_MORE.map(id => {
-          const { icon, label } = PANELS.find(p => p.id === id)!;
+          const { icon, label } = panelMeta(id);
           return (
             <button
               key={id}
+              type="button"
               onClick={() => onSelect(id)}
+              aria-current={active === id ? "page" : undefined}
               className={cn(
                 "w-full flex items-center gap-3 px-3 h-12 rounded-xl transition-colors",
-                active === id ? "text-accent bg-accent/10" : "text-white/80 active:bg-white/[0.06]"
+                active === id ? "text-accent bg-accent/10" : "text-fg/80 active:bg-fg/[0.06]"
               )}
             >
               {icon}
@@ -346,13 +335,13 @@ function MoreSheet({ active, onSelect, onClose }: {
 // (props are stable; panels read guild state via context).
 // Every panel stays mounted inside <Activity>: hidden ones are display:none
 // with state preserved and effects unmounted (so hidden panels don't fetch).
-const Panels = memo(function Panels({ panel, getPosition, onSeek }: {
-  panel: Panel; getPosition: () => number; onSeek: (seconds: number) => void;
+const Panels = memo(function Panels({ panel, getPosition, onSeek, onSearch }: {
+  panel: Panel; getPosition: () => number; onSeek: (seconds: number) => void; onSearch: () => void;
 }) {
-  const mode = (id: Exclude<Panel, null>) => (panel === id ? "visible" : "hidden");
+  const mode = (id: PanelId) => (panel === id ? "visible" : "hidden");
   return (
     <>
-      <Activity mode={mode("queue")}><QueuePanel /></Activity>
+      <Activity mode={mode("queue")}><QueuePanel onSearch={onSearch} /></Activity>
       {/* data-panel: the "/" shortcut focuses this panel's input from Dashboard */}
       <Activity mode={mode("search")}><div data-panel="search" className="h-full"><SearchPanel /></div></Activity>
       <Activity mode={mode("history")}><HistoryPanel /></Activity>
@@ -365,36 +354,28 @@ const Panels = memo(function Panels({ panel, getPosition, onSeek }: {
   );
 });
 
-function MobileMiniPlayer({ audio, onExpand }: { audio: AudioPlayerHandle; onExpand: () => void }) {
-  const { state } = useGuildState();
-  const serverPos = useServerPosition();
-  const { current } = state;
-  const thumb = useMemo(() => current?.thumbnail ? proxyImg(current.thumbnail) : null, [current?.thumbnail]);
-
-  const getPosition = useCallback(
-    () => (audio.ready ? audio.positionRef.current : serverPos.ref.current.position),
-    [audio.ready, audio.positionRef, serverPos],
-  );
-
+// The whole bar returns to the player; the play button sits above that as its own control.
+function MobileMiniPlayer({ view, blocked, onPlayPause, onExpand }: {
+  view: PlaybackView; blocked: boolean; onPlayPause: () => void; onExpand: () => void;
+}) {
+  const { current, totalDur, getPosition } = view;
   if (!current) return null;
-
-  const totalDur = audio.ready && audio.duration > 0 ? audio.duration : (current.duration ?? 0);
-  const isPaused = audio.ready ? !audio.playing : (current.is_paused ?? true);
+  const isPaused = view.isPaused || blocked;
+  const thumb = current.thumbnail ? proxyImg(current.thumbnail) : null;
 
   return (
-    <div
-      className="relative border-b border-white/[0.06] cursor-pointer active:bg-white/[0.03]"
-      role="button"
-      tabIndex={0}
-      aria-label="Back to player"
-      onClick={onExpand}
-      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onExpand(); } }}
-    >
+    <div className="relative border-b border-fg/[0.06] active:bg-fg/[0.03]">
+      <button
+        type="button"
+        onClick={onExpand}
+        aria-label={`Back to the player: ${current.title}`}
+        className="absolute inset-0 cursor-pointer"
+      />
       {!current.is_live && totalDur > 0 && (
         <ProgressStrip
           duration={totalDur}
           getPosition={getPosition}
-          className="absolute top-0 inset-x-0 h-[2px]"
+          className="absolute top-0 inset-x-0 h-[2px] pointer-events-none"
           fillClassName="bg-accent"
         />
       )}
@@ -411,8 +392,8 @@ function MobileMiniPlayer({ audio, onExpand }: { audio: AudioPlayerHandle; onExp
         </div>
 
         <div className="flex-1 min-w-0">
-          <p className="text-[12px] font-semibold text-white truncate leading-tight">{current.title}</p>
-          <p className="text-xs text-white/50 truncate mt-0.5 leading-tight">
+          <p className="text-sm font-semibold text-fg truncate leading-tight">{current.title}</p>
+          <p className="text-xs text-muted truncate mt-0.5 leading-tight">
             {current.is_live
               ? "LIVE"
               : totalDur > 0
@@ -422,9 +403,10 @@ function MobileMiniPlayer({ audio, onExpand }: { audio: AudioPlayerHandle; onExp
         </div>
 
         <button
-          onClick={e => { e.stopPropagation(); audio.playPause(); }}
-          className="w-10 h-10 rounded-full bg-white text-surface-1 flex items-center justify-center flex-shrink-0 active:scale-95 transition-transform"
-          aria-label={isPaused ? "Play" : "Pause"}
+          type="button"
+          onClick={onPlayPause}
+          className="relative w-10 h-10 rounded-full bg-fg text-surface-1 flex items-center justify-center flex-shrink-0 active:scale-95 transition-transform"
+          aria-label={blocked ? "Tap to play" : isPaused ? "Play" : "Pause"}
         >
           {isPaused ? <PlayIcon className="w-5 h-5 ml-0.5" /> : <PauseIcon className="w-5 h-5" />}
         </button>
@@ -432,3 +414,4 @@ function MobileMiniPlayer({ audio, onExpand }: { audio: AudioPlayerHandle; onExp
     </div>
   );
 }
+

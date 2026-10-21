@@ -1,9 +1,13 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef } from "react";
 import useSWR from "swr";
 import { useGuildState } from "./GuildStateProvider";
 import IconButton from "./ui/IconButton";
-import { apiFetch } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import EmptyState, { ErrorState } from "./EmptyState";
+import { LyricsSkeleton } from "./ui/Skeleton";
+import { LyricsIcon, MinusIcon, NoteIcon, PlusIcon } from "./ui/icons";
+import { apiFetch, errorStatus } from "@/lib/api";
+import { activeLineIndex, parseLRC, readOffset, writeOffset } from "@/lib/lyrics";
+import { cn, joinDetails, prefersReducedMotion } from "@/lib/utils";
 
 export interface LyricsData {
   lyrics: string;
@@ -11,6 +15,8 @@ export interface LyricsData {
   title: string;
   artist: string;
   webpage_url: string;
+  // The track has no words (optional until the backend sends it)
+  instrumental?: boolean;
 }
 
 // Lyrics are immutable per song — cache by song so reopening the panel (or a
@@ -30,80 +36,20 @@ const LYRICS_SWR_OPTS = {
   shouldRetryOnError: false,
 } as const;
 
-interface SyncedLine {
-  time: number;
-  text: string;
-}
-
-// Fractions are optional and may use "." or ":"; a line can carry several
-// leading stamps ("[00:12.00][01:30.00] chorus") and repeats at each of them.
-const LRC_TIMESTAMP = /\s*\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]/g;
-
-function parseLRC(synced: string): SyncedLine[] {
-  const lines: SyncedLine[] = [];
-  for (const raw of synced.split("\n")) {
-    LRC_TIMESTAMP.lastIndex = 0;
-    const times: number[] = [];
-    let consumed = 0;
-    let match: RegExpExecArray | null;
-    while ((match = LRC_TIMESTAMP.exec(raw)) !== null) {
-      if (match.index !== consumed) break;
-      consumed = match.index + match[0].length;
-      const frac = match[3];
-      times.push(
-        parseInt(match[1]) * 60 +
-          parseInt(match[2]) +
-          (frac ? parseInt(frac) / Math.pow(10, frac.length) : 0)
-      );
-    }
-    const text = raw.slice(consumed).trim();
-    if (!text) continue;
-    for (const time of times) lines.push({ time, text });
-  }
-  lines.sort((a, b) => a.time - b.time);
-  return lines;
-}
-
 const OFFSET_STEP = 0.5;
+const POLL_MS = 100;
 // Auto-scroll yields to a manual scroll, then takes over again after a lull
 const AUTO_SCROLL_RESUME_MS = 4000;
 // A scroll landing back on the active line resumes at once, but only once the
 // gesture has settled — the first flick starts from the centred line.
 const SETTLE_MS = 500;
-const OFFSET_KEY = "lyricsOffsets";
-const OFFSET_MAX = 100;
 
-function readOffsets(): Record<string, number> {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(OFFSET_KEY) || "{}");
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function readOffset(webpageUrl: string): number {
-  const value = readOffsets()[webpageUrl];
-  return Number.isFinite(value) ? value : 0;
-}
-
-function writeOffset(webpageUrl: string, offset: number) {
-  try {
-    const all = readOffsets();
-    if (offset === 0) delete all[webpageUrl];
-    else all[webpageUrl] = offset;
-    // Bounded: one key per song grew forever, and exhausting the origin quota
-    // would break every other localStorage user (volume, session token).
-    const keys = Object.keys(all);
-    for (const stale of keys.slice(0, Math.max(0, keys.length - OFFSET_MAX))) delete all[stale];
-    localStorage.setItem(OFFSET_KEY, JSON.stringify(all));
-  } catch {
-    // Storage unavailable — the offset just won't persist.
-  }
+function formatOffset(offset: number) {
+  return `${offset > 0 ? "+" : ""}${offset}s`;
 }
 
 export default function LyricsPanel({ getPosition, onSeek }: {
-  // Unified position: browser audio when it plays locally, server clock when voice-connected
+  // Unified position: browser audio when it plays locally, server clock otherwise
   getPosition: () => number;
   onSeek?: (seconds: number) => void;
 }) {
@@ -122,18 +68,14 @@ export default function LyricsPanel({ getPosition, onSeek }: {
 
   const currentUrl = state.current?.webpage_url || "";
 
-  const { data: lyrics, error, isLoading } = useSWR<LyricsData>(
+  const { data: lyrics, error, isLoading, mutate } = useSWR<LyricsData>(
     currentUrl ? lyricsKey(guildId, currentUrl) : null,
     lyricsFetcher(guildId),
     LYRICS_SWR_OPTS,
   );
-  const loading = isLoading;
 
-  const syncedLines = useMemo(
-    () => (lyrics?.synced ? parseLRC(lyrics.synced) : []),
-    [lyrics?.synced]
-  );
-  const hasSynced = syncedLines.length > 0;
+  const syncedLines = lyrics?.synced ? parseLRC(lyrics.synced) : [];
+  const hasSynced = syncedLines.some(line => line.text);
 
   useEffect(() => { setActiveLine(-1); setAutoScrollPaused(false); }, [currentUrl]);
 
@@ -148,25 +90,20 @@ export default function LyricsPanel({ getPosition, onSeek }: {
   };
 
   // Poll the position getter (no re-renders in parent) to update the active line
+  const syncedKey = lyrics?.synced ?? "";
   useEffect(() => {
-    if (!hasSynced) return;
+    if (!syncedKey) return;
+    const lines = parseLRC(syncedKey);
     const interval = setInterval(() => {
-      const pos = getPosition() - offset;
-      let line = -1;
-      for (let i = syncedLines.length - 1; i >= 0; i--) {
-        if (pos >= syncedLines[i].time) { line = i; break; }
-      }
+      const line = activeLineIndex(lines, getPosition() - offset);
       setActiveLine(prev => prev === line ? prev : line);
-    }, 200);
+    }, POLL_MS);
     return () => clearInterval(interval);
-  }, [hasSynced, syncedLines, getPosition, offset]);
+  }, [syncedKey, getPosition, offset]);
 
   useEffect(() => {
     if (autoScrollPaused) return;
-    if (activeLineRef.current) {
-      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      activeLineRef.current.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
-    }
+    activeLineRef.current?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "center" });
   }, [activeLine, autoScrollPaused]);
 
   useEffect(() => {
@@ -203,58 +140,59 @@ export default function LyricsPanel({ getPosition, onSeek }: {
 
   if (!currentUrl) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-center px-6">
-        <p className="text-xs text-muted">Play a song to see lyrics</p>
-      </div>
+      <EmptyState
+        compact
+        icon={<LyricsIcon className="w-6 h-6" strokeWidth={1.5} />}
+        title="Nothing is playing"
+        subtitle="Play a song to see its lyrics"
+      />
     );
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-      </div>
+  if (isLoading) return <LyricsSkeleton />;
+
+  if (error) {
+    // 404 means LRCLIB has no lyrics; anything else may work on a second try.
+    return errorStatus(error) === 404 ? (
+      <EmptyState compact icon={<LyricsIcon className="w-6 h-6" strokeWidth={1.5} />} title="No lyrics for this song" />
+    ) : (
+      <ErrorState compact message="Couldn't load lyrics" onRetry={() => mutate()} />
     );
   }
 
-  if (error || !lyrics) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-center px-6 gap-2">
-        <svg className="w-8 h-8 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 9l10.5-3m0 6.553v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 11-.99-3.467l2.31-.66a2.25 2.25 0 001.632-2.163zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 01-.99-3.467l2.31-.66A2.25 2.25 0 009 15.553z" />
-        </svg>
-        <p className="text-xs text-muted">Couldn't find lyrics</p>
-      </div>
-    );
+  if (!lyrics) return null;
+
+  const credit = joinDetails(lyrics.title, lyrics.artist);
+
+  if (lyrics.instrumental && !hasSynced && !lyrics.lyrics) {
+    return <EmptyState compact icon={<NoteIcon className="w-6 h-6" />} title="Instrumental" subtitle={credit} />;
   }
 
   if (hasSynced) {
+    const seekTo = (time: number) => onSeek?.(Math.max(0, time + offset));
     return (
       <div className="flex flex-col h-full">
-        <div className="px-4 py-2 border-b border-white/[0.06] flex-shrink-0 flex items-center gap-2">
-          <p className="text-xs text-muted truncate flex-1">{lyrics.title} — {lyrics.artist}</p>
-          <div className="flex items-center gap-0.5 flex-shrink-0">
+        <div className="px-4 py-2 border-b border-fg/[0.06] flex-shrink-0 flex items-center gap-2">
+          <p className="text-xs text-muted truncate flex-1">{credit}</p>
+          <div className="flex items-center gap-0.5 flex-shrink-0" role="group" aria-label="Lyrics sync">
             <IconButton label="Shift lyrics earlier" size="xs" onClick={() => adjustOffset(-OFFSET_STEP)}>
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                <path strokeLinecap="round" d="M5 12h14" />
-              </svg>
+              <MinusIcon className="w-3 h-3" />
             </IconButton>
             <button
               type="button"
               onClick={() => adjustOffset(0)}
               disabled={offset === 0}
               title="Reset lyrics sync"
+              aria-label={`Lyrics sync ${formatOffset(offset)}. Reset`}
               className={cn(
-                "text-xs tabular-nums min-w-9 text-center transition-colors",
-                offset === 0 ? "text-muted/60" : "text-accent hover:text-white"
+                "text-xs tabular-nums min-w-9 min-h-6 text-center rounded-md transition-colors",
+                offset === 0 ? "text-muted" : "text-accent hover:text-fg"
               )}
             >
-              {offset > 0 ? `+${offset}` : offset}s
+              {formatOffset(offset)}
             </button>
             <IconButton label="Shift lyrics later" size="xs" onClick={() => adjustOffset(OFFSET_STEP)}>
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                <path strokeLinecap="round" d="M12 5v14M5 12h14" />
-              </svg>
+              <PlusIcon className="w-3 h-3" />
             </IconButton>
           </div>
         </div>
@@ -267,24 +205,42 @@ export default function LyricsPanel({ getPosition, onSeek }: {
             className="h-full overflow-y-auto px-5 py-4"
           >
             <div className="flex flex-col gap-1 select-text">
-              {syncedLines.map((line, i) => (
-                <div
-                  key={i}
-                  ref={i === activeLine ? activeLineRef : undefined}
-                  role={onSeek ? "button" : undefined}
-                  tabIndex={onSeek ? 0 : undefined}
-                  onClick={onSeek ? () => onSeek(line.time + offset) : undefined}
-                  onKeyDown={onSeek ? (e) => { if (e.key === "Enter") onSeek(line.time + offset); } : undefined}
-                  className={cn(
-                    "text-sm font-medium py-0.5 transition-[color,transform] duration-300",
-                    onSeek && "cursor-pointer rounded-md -mx-1.5 px-1.5 hover:bg-white/[0.04]",
-                    i === activeLine ? "text-white scale-[1.02] origin-left"
-                      : i < activeLine ? "text-white/30" : "text-white/45"
-                  )}
-                >
-                  {line.text}
-                </div>
-              ))}
+              {syncedLines.map((line, i) => {
+                const isActive = i === activeLine;
+                const tone = isActive ? "text-fg scale-[1.02] origin-left" : i < activeLine ? "text-muted/60" : "text-muted";
+                // A break between sung lines: nothing to sing, so nothing stays highlighted.
+                if (!line.text) {
+                  return (
+                    <div key={i} ref={isActive ? activeLineRef : undefined} aria-hidden="true"
+                      className={cn("text-sm py-0.5 transition-[color,transform] duration-300", tone)}>
+                      ♪
+                    </div>
+                  );
+                }
+                return (
+                  <div
+                    key={i}
+                    ref={isActive ? activeLineRef : undefined}
+                    role={onSeek ? "button" : undefined}
+                    tabIndex={onSeek ? 0 : undefined}
+                    aria-current={isActive || undefined}
+                    onClick={onSeek ? () => seekTo(line.time) : undefined}
+                    onKeyDown={onSeek ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        seekTo(line.time);
+                      }
+                    } : undefined}
+                    className={cn(
+                      "text-sm font-medium py-0.5 transition-[color,transform] duration-300",
+                      onSeek && "cursor-pointer rounded-md -mx-1.5 px-1.5 hover:bg-fg/[0.04]",
+                      tone,
+                    )}
+                  >
+                    {line.text}
+                  </div>
+                );
+              })}
             </div>
           </div>
           {autoScrollPaused && activeLine >= 0 && (
@@ -301,13 +257,17 @@ export default function LyricsPanel({ getPosition, onSeek }: {
     );
   }
 
+  if (!lyrics.lyrics) {
+    return <EmptyState compact icon={<LyricsIcon className="w-6 h-6" strokeWidth={1.5} />} title="No lyrics for this song" />;
+  }
+
   return (
     <div className="flex flex-col h-full">
-      <div className="px-4 py-2 border-b border-white/[0.06] flex-shrink-0">
-        <p className="text-xs text-muted truncate">{lyrics.title} — {lyrics.artist}</p>
+      <div className="px-4 py-2 border-b border-fg/[0.06] flex-shrink-0">
+        <p className="text-xs text-muted truncate">{credit}</p>
       </div>
       <div className="flex-1 overflow-y-auto px-5 py-4">
-        <pre className="text-xs text-white/60 whitespace-pre-wrap font-sans leading-relaxed select-text">{lyrics.lyrics}</pre>
+        <pre className="text-sm text-fg/80 whitespace-pre-wrap font-sans leading-relaxed select-text">{lyrics.lyrics}</pre>
       </div>
     </div>
   );

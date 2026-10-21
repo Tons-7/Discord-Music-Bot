@@ -2,8 +2,12 @@
 
 import { useState } from "react";
 import useSWR from "swr";
-import { useGuildState } from "./GuildStateProvider";
-import { proxyImg, cn } from "@/lib/utils";
+import { useGuildId } from "./GuildStateProvider";
+import EmptyState, { ErrorState } from "./EmptyState";
+import SegmentedControl from "./ui/SegmentedControl";
+import { StatsSkeleton } from "./ui/Skeleton";
+import { StatsIcon, TrophyIcon } from "./ui/icons";
+import { proxyImg, cn, formatListenTime, joinDetails } from "@/lib/utils";
 
 type Tab = "me" | "leaderboard";
 
@@ -22,89 +26,48 @@ interface LeaderboardEntry {
   total_seconds: number;
 }
 
-function formatListenTime(seconds: number): string {
-  if (seconds <= 0) return "0m";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
+const TABS: { value: Tab; label: string }[] = [
+  { value: "me", label: "My stats" },
+  { value: "leaderboard", label: "Leaderboard" },
+];
+
+// Gold, silver, bronze for the top three, as theme tokens
+const RANK_TEXT = ["text-rank-1", "text-rank-2", "text-rank-3"];
+const RANK_BG = ["bg-rank-1", "bg-rank-2", "bg-rank-3"];
+
+const plays = (n: number) => `${n.toLocaleString()} play${n !== 1 ? "s" : ""}`;
 
 export default function StatsPanel() {
-  const { guildId } = useGuildState();
   const [tab, setTab] = useState<Tab>("me");
-
-  const { data: myStats, isLoading: statsLoading } = useSWR<MyStats>(
-    `/api/guild/${guildId}/stats/me`
-  );
-  const { data: lbData, isLoading: lbLoading } = useSWR<{ entries: LeaderboardEntry[]; your_id: string }>(
-    `/api/guild/${guildId}/stats/leaderboard`
-  );
-  const leaderboard = lbData?.entries ?? [];
-  const yourId = lbData?.your_id ?? "";
-  const loading = statsLoading || lbLoading;
-
-  if (loading) {
-    return (
-      <div className="flex justify-center py-12">
-        <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-col h-full">
-      {/* Tab bar */}
       <div className="px-3 pt-3 pb-1 flex-shrink-0">
-        <div className="flex bg-white/[0.04] rounded-xl p-[3px]">
-          <button
-            onClick={() => setTab("me")}
-            className={cn(
-              "flex-1 py-1.5 rounded-[9px] text-xs font-semibold transition-[background-color,color,box-shadow] duration-200",
-              tab === "me"
-                ? "bg-accent text-white shadow-[0_1px_4px_var(--color-accent-glow)]"
-                : "text-white/40 hover:text-white/60"
-            )}
-          >
-            My Stats
-          </button>
-          <button
-            onClick={() => setTab("leaderboard")}
-            className={cn(
-              "flex-1 py-1.5 rounded-[9px] text-xs font-semibold transition-[background-color,color,box-shadow] duration-200",
-              tab === "leaderboard"
-                ? "bg-accent text-white shadow-[0_1px_4px_var(--color-accent-glow)]"
-                : "text-white/40 hover:text-white/60"
-            )}
-          >
-            Leaderboard
-          </button>
-        </div>
+        <SegmentedControl kind="tabs" label="Stats" options={TABS} value={tab} onChange={setTab} />
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 pb-3">
-        {tab === "me" ? (
-          <MyStatsView stats={myStats ?? null} />
-        ) : (
-          <LeaderboardView entries={leaderboard} yourId={yourId} />
-        )}
+      <div className="flex-1 overflow-y-auto px-3 pb-3" role="tabpanel" aria-label={tab === "me" ? "My stats" : "Leaderboard"}>
+        {tab === "me" ? <MyStatsView /> : <LeaderboardView />}
       </div>
     </div>
   );
 }
 
-function MyStatsView({ stats }: { stats: MyStats | null }) {
+function MyStatsView() {
+  const { guildId } = useGuildId();
+  const { data: stats, error, isLoading, mutate } = useSWR<MyStats>(`/api/guild/${guildId}/stats/me`);
+
+  if (isLoading) return <StatsSkeleton />;
+  if (error && !stats) return <ErrorState compact message="Couldn't load your stats" onRetry={() => mutate()} />;
+
   if (!stats || stats.play_count === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-center px-6">
-        <div className="w-12 h-12 rounded-2xl bg-white/[0.03] flex items-center justify-center mb-2">
-          <svg className="w-6 h-6 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-          </svg>
-        </div>
-        <p className="text-xs font-medium text-white/60">No listening data yet</p>
-        <p className="text-xs text-muted mt-1">Play some music to start tracking</p>
-      </div>
+      <EmptyState
+        compact
+        icon={<StatsIcon className="w-6 h-6" strokeWidth={1.5} />}
+        title="No listening data yet"
+        subtitle="Play some music to start tracking"
+      />
     );
   }
 
@@ -112,122 +75,90 @@ function MyStatsView({ stats }: { stats: MyStats | null }) {
     <div className="flex flex-col gap-3 mt-2">
       {/* Overview cards */}
       <div className="grid grid-cols-2 gap-2">
-        <div className="bg-white/[0.03] rounded-xl p-3 border border-white/[0.04]">
-          <p className="text-xs text-muted uppercase tracking-wider font-medium">Songs Played</p>
-          <p className="text-xl font-bold text-white mt-1">{stats.play_count.toLocaleString()}</p>
+        <div className="bg-fg/[0.03] rounded-xl p-3 border border-fg/[0.04]">
+          <p className="text-xs text-muted uppercase tracking-wider font-medium">Songs played</p>
+          <p className="text-xl font-bold text-fg mt-1 tabular-nums">{stats.play_count.toLocaleString()}</p>
         </div>
-        <div className="bg-white/[0.03] rounded-xl p-3 border border-white/[0.04]">
-          <p className="text-xs text-muted uppercase tracking-wider font-medium">Listen Time</p>
-          <p className="text-xl font-bold text-white mt-1">{formatListenTime(stats.total_seconds)}</p>
+        <div className="bg-fg/[0.03] rounded-xl p-3 border border-fg/[0.04]">
+          <p className="text-xs text-muted uppercase tracking-wider font-medium">Listen time</p>
+          <p className="text-xl font-bold text-fg mt-1 tabular-nums">{formatListenTime(stats.total_seconds)}</p>
         </div>
       </div>
 
-      {/* Top Songs */}
-      {stats.top_songs.length > 0 && (
-        <div>
-          <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wider px-1 mb-1.5">
-            Top Songs
-          </h3>
-          <div className="flex flex-col gap-1">
-            {stats.top_songs.map((song, i) => (
-              <div
-                key={song.title}
-                className="flex items-center gap-2.5 p-2 rounded-xl bg-white/[0.02] border border-white/[0.04]"
-              >
-                <span className={cn(
-                  "w-5 text-center text-xs font-bold flex-shrink-0",
-                  i === 0 ? "text-yellow-400" : i === 1 ? "text-gray-300" : i === 2 ? "text-amber-600" : "text-muted"
-                )}>
-                  {i + 1}
-                </span>
-                <span className="text-sm text-white truncate flex-1">{song.title}</span>
-                <span className="text-xs text-muted tabular-nums flex-shrink-0">
-                  {song.plays} play{song.plays !== 1 ? "s" : ""}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Top Artists */}
-      {stats.top_artists.length > 0 && (
-        <div>
-          <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wider px-1 mb-1.5">
-            Top Artists
-          </h3>
-          <div className="flex flex-col gap-1">
-            {stats.top_artists.map((artist, i) => (
-              <div
-                key={artist.name}
-                className="flex items-center gap-2.5 p-2 rounded-xl bg-white/[0.02] border border-white/[0.04]"
-              >
-                <span className={cn(
-                  "w-5 text-center text-xs font-bold flex-shrink-0",
-                  i === 0 ? "text-yellow-400" : i === 1 ? "text-gray-300" : i === 2 ? "text-amber-600" : "text-muted"
-                )}>
-                  {i + 1}
-                </span>
-                <span className="text-sm text-white truncate flex-1">{artist.name}</span>
-                <span className="text-xs text-muted tabular-nums flex-shrink-0">
-                  {artist.plays} play{artist.plays !== 1 ? "s" : ""}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <RankedList title="Top songs" items={stats.top_songs.map(s => ({ key: s.title, label: s.title, plays: s.plays }))} />
+      <RankedList title="Top artists" items={stats.top_artists.map(a => ({ key: a.name, label: a.name, plays: a.plays }))} />
     </div>
   );
 }
 
-function LeaderboardView({ entries, yourId }: { entries: LeaderboardEntry[]; yourId: string }) {
+function RankedList({ title, items }: { title: string; items: { key: string; label: string; plays: number }[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-muted uppercase tracking-wider px-1 mb-1.5">{title}</h3>
+      <ol className="flex flex-col gap-1">
+        {items.map((item, i) => (
+          <li key={item.key} className="flex items-center gap-2.5 p-2 rounded-xl bg-fg/[0.02] border border-fg/[0.04]">
+            <span className={cn("min-w-5 text-center text-xs font-bold tabular-nums flex-shrink-0", RANK_TEXT[i] ?? "text-muted")}>
+              {i + 1}
+            </span>
+            <span className="text-sm text-fg truncate flex-1">{item.label}</span>
+            <span className="text-xs text-muted tabular-nums flex-shrink-0">{plays(item.plays)}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function LeaderboardView() {
+  const { guildId } = useGuildId();
+  const { data, error, isLoading, mutate } = useSWR<{ entries: LeaderboardEntry[]; your_id: string }>(
+    `/api/guild/${guildId}/stats/leaderboard`
+  );
+
+  if (isLoading) return <StatsSkeleton />;
+  if (error && !data) return <ErrorState compact message="Couldn't load the leaderboard" onRetry={() => mutate()} />;
+
+  const entries = data?.entries ?? [];
+  const yourId = data?.your_id ?? "";
+
   if (entries.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-center px-6">
-        <div className="w-12 h-12 rounded-2xl bg-white/[0.03] flex items-center justify-center mb-2">
-          <svg className="w-6 h-6 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 18.75h-9m9 0a3 3 0 013 3h-15a3 3 0 013-3m9 0v-3.375c0-.621-.503-1.125-1.125-1.125h-.871M7.5 18.75v-3.375c0-.621.504-1.125 1.125-1.125h.872m5.007 0H9.497m5.007 0a7.454 7.454 0 01-.982-3.172M9.497 14.25a7.454 7.454 0 00.981-3.172M5.25 4.236c-.982.143-1.954.317-2.916.52A6.003 6.003 0 007.73 9.728M5.25 4.236V4.5c0 2.108.966 3.99 2.48 5.228M5.25 4.236V2.721C7.456 2.41 9.71 2.25 12 2.25c2.291 0 4.545.16 6.75.47v1.516M18.75 4.236c.982.143 1.954.317 2.916.52A6.003 6.003 0 0016.27 9.728M18.75 4.236V4.5c0 2.108-.966 3.99-2.48 5.228m4.974-5.492a10.509 10.509 0 01-1.292 4.18M7.73 9.728a6.726 6.726 0 002.748 1.35m3.043 0a6.726 6.726 0 002.749-1.35m-5.792 0a24.585 24.585 0 003.043 0" />
-          </svg>
-        </div>
-        <p className="text-xs font-medium text-white/60">No leaderboard data</p>
-        <p className="text-xs text-muted mt-1">Start listening to climb the ranks</p>
-      </div>
+      <EmptyState
+        compact
+        icon={<TrophyIcon className="w-6 h-6" strokeWidth={1.5} />}
+        title="No leaderboard data"
+        subtitle="Start listening to climb the ranks"
+      />
     );
   }
 
   const maxSeconds = entries[0]?.total_seconds || 1;
 
   return (
-    <div className="flex flex-col gap-1.5 mt-2">
+    <ol className="flex flex-col gap-1.5 mt-2">
       {entries.map((entry, i) => {
         const isYou = entry.user_id === yourId;
         const barWidth = Math.max(4, (entry.total_seconds / maxSeconds) * 100);
 
         return (
-          <div
+          <li
             key={entry.user_id}
             className={cn(
               "relative flex items-center gap-2.5 p-2.5 rounded-xl border transition-colors",
-              isYou
-                ? "bg-accent/[0.06] border-accent/20"
-                : "bg-white/[0.02] border-white/[0.04]"
+              isYou ? "bg-accent/[0.06] border-accent/20" : "bg-fg/[0.02] border-fg/[0.04]"
             )}
           >
             {/* Progress bar background */}
             <div
-              className={cn(
-                "absolute inset-0 rounded-xl opacity-[0.04]",
-                i === 0 ? "bg-yellow-400" : i === 1 ? "bg-gray-300" : i === 2 ? "bg-amber-600" : "bg-white"
-              )}
+              aria-hidden="true"
+              className={cn("absolute inset-0 rounded-xl opacity-[0.04]", RANK_BG[i] ?? "bg-fg")}
               style={{ width: `${barWidth}%` }}
             />
 
             {/* Rank */}
-            <span className={cn(
-              "w-6 text-center text-sm font-bold flex-shrink-0 relative",
-              i === 0 ? "text-yellow-400" : i === 1 ? "text-gray-300" : i === 2 ? "text-amber-600" : "text-muted"
-            )}>
+            <span className={cn("min-w-8 text-center text-sm font-bold tabular-nums flex-shrink-0 relative", RANK_TEXT[i] ?? "text-muted")}>
               {i < 3 ? ["1st", "2nd", "3rd"][i] : `${i + 1}`}
             </span>
 
@@ -244,17 +175,17 @@ function LeaderboardView({ entries, yourId }: { entries: LeaderboardEntry[]; you
 
             {/* Name & stats */}
             <div className="flex-1 min-w-0 relative">
-              <p className={cn("text-sm font-medium truncate", isYou ? "text-accent" : "text-white")}>
+              <p className={cn("text-sm font-medium truncate", isYou ? "text-accent" : "text-fg")}>
                 {entry.display_name}
-                {isYou && <span className="text-xs text-accent/60 ml-1">(you)</span>}
+                {isYou && <span className="text-xs text-accent ml-1">(you)</span>}
               </p>
-              <p className="text-xs text-muted">
-                {formatListenTime(entry.total_seconds)} &middot; {entry.play_count.toLocaleString()} play{entry.play_count !== 1 ? "s" : ""}
+              <p className="text-xs text-muted tabular-nums">
+                {joinDetails(formatListenTime(entry.total_seconds), plays(entry.play_count))}
               </p>
             </div>
-          </div>
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }

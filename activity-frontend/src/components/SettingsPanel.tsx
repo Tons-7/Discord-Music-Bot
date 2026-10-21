@@ -1,12 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import useSWR from "swr";
-import { useGuildState } from "./GuildStateProvider";
+import { useGuildId } from "./GuildStateProvider";
 import { useToast } from "./Toast";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, errorMessage } from "@/lib/api";
 import { THEMES, type ThemeId } from "@/lib/themes";
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
+import { CheckIcon } from "./ui/icons";
+import { OptionRowsSkeleton } from "./ui/Skeleton";
 
 interface Option {
   id: string;
@@ -57,10 +60,10 @@ function ThemeSetting() {
   return (
     <div className="flex flex-col gap-2">
       <div>
-        <p className="text-sm font-semibold text-white">Theme</p>
+        <p className="text-sm font-semibold text-fg" id="theme-label">Theme</p>
         <p className="text-xs text-muted mt-0.5">Only you see it, on every server and device.</p>
       </div>
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-1" role="radiogroup" aria-labelledby="theme-label">
         {THEMES.map(t => (
           <Row key={t.id} selected={theme === t.id} onClick={() => pick(t.id)}>
             <span className="flex items-center gap-3">
@@ -82,7 +85,8 @@ function ThemePreview({ id }: { id: ThemeId }) {
   return (
     <span
       data-theme={id}
-      className="w-11 h-8 flex-shrink-0 rounded-lg overflow-hidden flex border border-white/[0.12] bg-surface-1"
+      aria-hidden="true"
+      className="w-11 h-8 flex-shrink-0 rounded-lg overflow-hidden flex border border-fg/[0.12] bg-surface-1"
     >
       <span className="w-1/2 bg-surface-2" />
       <span className="flex-1 flex items-center justify-center">
@@ -93,31 +97,58 @@ function ThemePreview({ id }: { id: ThemeId }) {
 }
 
 function ServerSettings() {
-  const { guildId } = useGuildState();
+  const { guildId } = useGuildId();
   const { toast } = useToast();
   const key = `/api/guild/${guildId}/settings`;
   const { data, error, isLoading, mutate } = useSWR<Settings>(key);
+  const [saving, setSaving] = useState(false);
 
-  const save = async (path: string, body: Record<string, string | null>, label: string) => {
-    try {
-      await apiFetch(`${key}/${path}`, { method: "POST", body: JSON.stringify(body) });
-      toast(label, "success");
-      mutate();
-    } catch (e: any) {
-      toast(e?.message || "Could not save", "error");
-    }
+  // Optimistic: the check moves at once and rolls back if the server refuses.
+  const save = (path: string, body: Record<string, string | null>, patch: Partial<Settings>, label: string) => {
+    if (saving) return;
+    setSaving(true);
+    mutate(
+      apiFetch(`${key}/${path}`, { method: "POST", body: JSON.stringify(body) }).then(() => undefined),
+      {
+        optimisticData: (d) => (d ? { ...d, ...patch } : d) as Settings,
+        rollbackOnError: true,
+        populateCache: false,
+        revalidate: true,
+      },
+    ).then(
+      () => {
+        setSaving(false);
+        toast(label, "success");
+      },
+      (e: unknown) => {
+        setSaving(false);
+        toast(errorMessage(e, "Couldn't save"), "error");
+      },
+    );
   };
 
   if (isLoading) {
     return (
-      <div className="flex justify-center py-4">
-        <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+      <div className="flex flex-col gap-4">
+        <OptionRowsSkeleton />
+        <OptionRowsSkeleton />
       </div>
     );
   }
 
   if (error || !data) {
-    return <p className="text-xs text-muted">Couldn't load server settings. Try reopening this panel.</p>;
+    return (
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-muted">Couldn&apos;t load server settings.</p>
+        <button
+          type="button"
+          onClick={() => mutate()}
+          className="min-h-8 px-3 rounded-full bg-accent/15 text-accent hover:bg-accent/25 text-xs font-semibold transition-colors flex-shrink-0"
+        >
+          Try again
+        </button>
+      </div>
+    );
   }
 
   if (!data.is_admin) {
@@ -132,47 +163,61 @@ function ServerSettings() {
   return (
     <>
       <Setting
+        id="dj-role"
         label="DJ role"
         hint="Only this role (and admins) can skip, stop, seek, or edit the queue."
         value={data.dj_role_id}
         options={data.roles ?? []}
         emptyLabel="Everyone"
-        onChange={id => save("dj-role", { role_id: id }, id ? "DJ role updated" : "DJ role removed")}
+        disabled={saving}
+        onChange={id => save(
+          "dj-role", { role_id: id },
+          { dj_role_id: id, dj_role_name: data.roles?.find(r => r.id === id)?.name ?? null },
+          id ? "DJ role updated" : "DJ role removed",
+        )}
       />
       <Setting
+        id="music-channel"
         label="Music channel"
         hint="Where the bot posts now-playing messages."
         value={data.music_channel_id}
         options={data.channels ?? []}
         emptyLabel="Wherever commands are used"
         prefix="#"
-        onChange={id => save("music-channel", { channel_id: id }, id ? "Music channel updated" : "Music channel cleared")}
+        disabled={saving}
+        onChange={id => save(
+          "music-channel", { channel_id: id },
+          { music_channel_id: id, music_channel_name: data.channels?.find(c => c.id === id)?.name ?? null },
+          id ? "Music channel updated" : "Music channel cleared",
+        )}
       />
     </>
   );
 }
 
-function Setting({ label, hint, value, options, emptyLabel, prefix, onChange }: {
+function Setting({ id, label, hint, value, options, emptyLabel, prefix, disabled, onChange }: {
+  id: string;
   label: string;
   hint: string;
   value: string | null;
   options: Option[];
   emptyLabel: string;
   prefix?: string;
+  disabled?: boolean;
   onChange: (id: string | null) => void;
 }) {
   return (
     <div className="flex flex-col gap-2">
       <div>
-        <p className="text-sm font-semibold text-white">{label}</p>
+        <p className="text-sm font-semibold text-fg" id={`${id}-label`}>{label}</p>
         <p className="text-xs text-muted mt-0.5">{hint}</p>
       </div>
-      <div className="flex flex-col gap-1">
-        <Row selected={!value} onClick={() => onChange(null)}>
+      <div className="flex flex-col gap-1" role="radiogroup" aria-labelledby={`${id}-label`} aria-busy={disabled || undefined}>
+        <Row selected={!value} disabled={disabled} onClick={() => onChange(null)}>
           <span className="block truncate">{emptyLabel}</span>
         </Row>
         {options.map(o => (
-          <Row key={o.id} selected={value === o.id} onClick={() => onChange(o.id)}>
+          <Row key={o.id} selected={value === o.id} disabled={disabled} onClick={() => onChange(o.id)}>
             <span className="block truncate">{prefix}{o.name}</span>
           </Row>
         ))}
@@ -181,26 +226,25 @@ function Setting({ label, hint, value, options, emptyLabel, prefix, onChange }: 
   );
 }
 
-function Row({ selected, onClick, children }: {
-  selected: boolean; onClick: () => void; children: React.ReactNode;
+function Row({ selected, disabled, onClick, children }: {
+  selected: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode;
 }) {
   return (
     <button
-      onClick={onClick}
-      aria-pressed={selected}
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      disabled={disabled}
+      onClick={() => { if (!selected) onClick(); }}
       className={cn(
-        "flex items-center justify-between gap-2 px-3 py-1.5 min-h-9 rounded-xl text-left text-xs transition-colors",
+        "flex items-center justify-between gap-2 px-3 py-1.5 min-h-9 rounded-xl text-left text-sm transition-colors disabled:opacity-60",
         selected
           ? "bg-accent/15 text-accent font-medium"
-          : "text-white/70 hover:bg-white/[0.06]"
+          : "text-fg/80 hover:bg-fg/[0.06]"
       )}
     >
       <span className="min-w-0 flex-1">{children}</span>
-      {selected && (
-        <svg className="w-3.5 h-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-        </svg>
-      )}
+      {selected && <CheckIcon className="w-3.5 h-3.5 flex-shrink-0" />}
     </button>
   );
 }
