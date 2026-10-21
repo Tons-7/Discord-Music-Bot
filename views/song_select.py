@@ -4,40 +4,33 @@ import discord
 from discord import ui
 
 from config import COLOR
+from utils.helpers import clip, format_duration, md
 
 logger = logging.getLogger(__name__)
 
 ACCENT_COLOUR = discord.Colour(COLOR)
+# Discord allows 25 options in a select menu; the text above it lists the first few.
+MAX_OPTIONS = 25
+LISTED = 10
+
+
+def _duration(entry: dict) -> str:
+    duration = entry.get("duration") or 0
+    return format_duration(duration) if duration else "LIVE"
 
 
 class SongSelect(ui.Select):
     def __init__(self, songs_data):
         self.songs_data = songs_data
 
-        options = []
-        for i, entry in enumerate(songs_data[:5]):
-            title = entry.get("title", "Unknown Title")
-            uploader = entry.get("uploader", "Unknown")
-            duration = entry.get("duration", 0)
-
-            if duration:
-                minutes, seconds = divmod(int(duration), 60)
-                duration_str = f"{minutes}:{seconds:02d}"
-            else:
-                duration_str = "0:00"
-
-            if len(title) > 60:
-                title = title[:57] + "..."
-
-            description = f"by {uploader} \u2022 {duration_str}"
-            if len(description) > 100:
-                description = description[:97] + "..."
-
-            options.append(
-                discord.SelectOption(
-                    label=title, description=description, value=str(i), emoji="\U0001f3b5"
-                )
+        options = [
+            discord.SelectOption(
+                label=clip(entry.get("title") or "Unknown Title", 100),
+                description=clip(f"by {entry.get('uploader') or 'Unknown'} • {_duration(entry)}", 100),
+                value=str(i), emoji="\U0001f3b5",
             )
+            for i, entry in enumerate(songs_data[:MAX_OPTIONS])
+        ]
 
         super().__init__(
             placeholder="Choose a song to add to queue...",
@@ -64,7 +57,7 @@ class SongSelect(ui.Select):
             # Update with loading state
             loading_view = ui.LayoutView(timeout=None)
             container = ui.Container(accent_colour=ACCENT_COLOUR)
-            container.add_item(ui.TextDisplay(f"### Adding Song...\nAdding **{selected_song['title']}** to queue..."))
+            container.add_item(ui.TextDisplay(f"### Adding Song...\nAdding **{md(selected_song['title'])}** to queue..."))
             loading_view.add_item(container)
             await interaction.response.edit_message(view=loading_view)
 
@@ -77,7 +70,7 @@ class SongSelect(ui.Select):
             self.view.selected = False
             error_view = ui.LayoutView(timeout=None)
             container = ui.Container(accent_colour=ACCENT_COLOUR)
-            container.add_item(ui.TextDisplay("### \u274c Error\nFailed to add song to queue."))
+            container.add_item(ui.TextDisplay("### ❌ Error\nFailed to add song to queue."))
             error_view.add_item(container)
             try:
                 if not interaction.response.is_done():
@@ -100,20 +93,15 @@ class SongSelectView(ui.LayoutView):
         # Build layout
         container = ui.Container(accent_colour=ACCENT_COLOUR)
 
-        # Song list text
-        lines = []
-        for i, entry in enumerate(songs_data[:5], 1):
-            title = entry.get("title", "Unknown Title")
-            uploader = entry.get("uploader", "Unknown")
-            duration = entry.get("duration", 0)
-            if duration:
-                minutes, seconds = divmod(int(duration), 60)
-                dur_str = f"{minutes}:{seconds:02d}"
-            else:
-                dur_str = "LIVE"
-            lines.append(f"`{i}.` **{title}** by {uploader} `[{dur_str}]`")
+        lines = [
+            f"`{i}.` **{md(entry.get('title') or 'Unknown Title')}** by {md(entry.get('uploader') or 'Unknown')} "
+            f"`[{_duration(entry)}]`"
+            for i, entry in enumerate(songs_data[:LISTED], 1)
+        ]
+        if len(songs_data) > LISTED:
+            lines.append(f"-# and {min(len(songs_data), MAX_OPTIONS) - LISTED} more in the menu")
 
-        container.add_item(ui.TextDisplay("### \U0001f50e Search Results\n" + "\n".join(lines)))
+        container.add_item(ui.TextDisplay(clip("### \U0001f50e Search Results\n" + "\n".join(lines), 3800)))
         container.add_item(ui.Separator())
 
         # Select menu inside container
@@ -130,7 +118,7 @@ class SongSelectView(ui.LayoutView):
         try:
             timeout_view = ui.LayoutView(timeout=None)
             container = ui.Container(accent_colour=ACCENT_COLOUR)
-            container.add_item(ui.TextDisplay("### \u23f0 Search Timed Out\nSearch selection timed out."))
+            container.add_item(ui.TextDisplay("### ⏰ Search Timed Out\nSearch selection timed out."))
             timeout_view.add_item(container)
             await self.message.edit(view=timeout_view)
         except discord.HTTPException:
