@@ -2,17 +2,43 @@ services:
   bot:
     build: .
     env_file: .env
+    environment:
+      DB_PATH: /data/music_bot.db
     ports:
-      - "${ACTIVITY_PORT:-8080}:${ACTIVITY_PORT:-8080}"
+      # Host-only; cloudflared reaches the bot over the compose network at http://bot:<port>.
+      - "${ACTIVITY_PUBLISH_IP:-127.0.0.1}:${ACTIVITY_PORT:-8080}:${ACTIVITY_PORT:-8080}"
     volumes:
-      - ./music_bot.db:/app/music_bot.db
-      - ./audio_cache:/app/audio_cache
+      # Database, audio cache and bans. Named, as SQLite's WAL is unsafe on Docker Desktop bind mounts.
+      - bot-data:/data
+      # Old layout, read-only: the first start imports ./music_bot.db and ./audio_cache, then it can go.
+      - .:/legacy:ro
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Lets uvicorn's graceful-shutdown timeout and bot.close() finish before Docker sends SIGKILL.
+    stop_grace_period: 45s
     restart: unless-stopped
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-    env_file: .env
+    image: cloudflare/cloudflared:2026.10.2@sha256:0e56c13c7058fcef9c4f0e7d83372f82330548dbf8f8b366f3d8b506526d93b2
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN_FILE: /run/secrets/cloudflare_tunnel_token
+    secrets:
+      - cloudflare_tunnel_token
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       - bot
     restart: unless-stopped
+
+secrets:
+  cloudflare_tunnel_token:
+    environment: CLOUDFLARE_TUNNEL_TOKEN
+
+volumes:
+  bot-data:
