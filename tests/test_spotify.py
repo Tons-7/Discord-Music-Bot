@@ -1,12 +1,15 @@
 import asyncio
 import json
+import re
 import time
 from types import SimpleNamespace
 
 import pytest
 
 from activity import known_songs
-from activity.routes import playlist_routes, stream_routes
+from activity import stream
+from activity.routes import playlist_routes
+from services import playlist_service
 from activity.routes.queue_routes import AddBody, add_to_queue
 from activity.routes.search_routes import search_songs
 from cogs.music_commands import MusicCommands
@@ -14,6 +17,20 @@ from tests.conftest import GUILD_ID, USER, settle
 
 PLAYLIST = "https://open.spotify.com/playlist/PL123?si=abc"
 TRACK = "https://open.spotify.com/track/TR123"
+
+
+def search_query(target: str) -> str:
+    return re.sub(r"^ytsearch\d*:", "", target)
+
+
+async def wait_until(condition, timeout: float = 5, task: asyncio.Task | None = None):
+    """Poll until condition() holds; fail at once if ``task`` died, and after ``timeout`` seconds at the latest."""
+    async with asyncio.timeout(timeout):
+        while not condition():
+            if task is not None and task.done():
+                task.result()
+                raise AssertionError("task finished before the condition held")
+            await asyncio.sleep(0.05)
 
 
 def embed_page(*tracks: tuple[str, str]) -> str:
@@ -54,7 +71,7 @@ class FakeSpotifyApi:
 
 @pytest.fixture
 def service(bot):
-    return bot._music_service
+    return bot.music
 
 
 @pytest.fixture
@@ -74,7 +91,7 @@ def youtube(service, monkeypatch):
     queries = []
 
     def fake_extract(target, **kwargs):
-        query = target.removeprefix("ytsearch:")
+        query = search_query(target)
         queries.append(query)
         time.sleep(0.2)
         slug = query.replace(" ", "-")
@@ -186,7 +203,7 @@ async def test_first_song_arrives_before_the_rest_are_found(bot, service, pages,
     pages["https://open.spotify.com/embed/playlist/PL123"] = embed_page(*[(f"Song {i}", "Artist") for i in range(6)])
 
     def fake_extract(target, **kwargs):
-        query = target.removeprefix("ytsearch:")
+        query = search_query(target)
         time.sleep(0.05 if query == "Song 0 Artist" else 1.0)
         return {"entries": [{"title": query, "id": query, "url": f"https://www.youtube.com/watch?v={query}", "duration": 1}]}
 
@@ -210,7 +227,8 @@ async def test_stopping_early_cancels_lookups_not_yet_started(bot, service, page
     await songs.aclose()
     await asyncio.sleep(0.6)
 
-    assert len(youtube) < 12
+    # Only the lookups already handed to a worker run: the first batch and the one that replaced it.
+    assert len(youtube) <= 2 * bot.import_executor._max_workers
 
 
 async def test_spotify_search_lists_tracks_without_remembering_them(bot, service, pages, youtube):
@@ -227,7 +245,7 @@ async def test_add_all_queues_in_the_background_and_starts_playing(bot, ws, guil
     async def no_caching(*args, **kwargs):
         pass
 
-    monkeypatch.setattr(stream_routes, "_preextract_and_cache", no_caching)
+    monkeypatch.setattr(stream, "precache", no_caching)
     pages["https://open.spotify.com/embed/playlist/PL123"] = embed_page(*[(f"Song {i}", "Artist") for i in range(5)])
 
     started = time.perf_counter()
@@ -264,7 +282,7 @@ async def test_play_command_starts_with_the_first_song_found(bot, guild_data, se
     pages["https://open.spotify.com/embed/album/AL1"] = embed_page(*[(f"Song {i}", "Artist") for i in range(5)])
 
     def fake_extract(target, **kwargs):
-        query = target.removeprefix("ytsearch:")
+        query = search_query(target)
         time.sleep(0.05 if query == "Song 0 Artist" else 1.0)
         return {"entries": [{"title": query, "id": query, "url": f"https://www.youtube.com/watch?v={query}", "duration": 1}]}
 
@@ -285,7 +303,7 @@ async def test_play_command_starts_with_the_first_song_found(bot, guild_data, se
         edit_original_response=record_edit,
     )
 
-    await cog._queue_spotify_collection(interaction, "https://open.spotify.com/album/AL1")
+    await cog._queue_track_collection(interaction, "https://open.spotify.com/album/AL1")
 
     assert len(play_started_after) == 1 and play_started_after[0] < 0.5
     assert edits == ["Adding Playlist...", "Playlist Added"]
@@ -297,7 +315,7 @@ def slow_after_first(service, monkeypatch):
     """Song 0 is found at once, every other song takes a second."""
 
     def fake_extract(target, **kwargs):
-        query = target.removeprefix("ytsearch:")
+        query = search_query(target)
         time.sleep(0.05 if query == "Song 0 Artist" else 1.0)
         return {"entries": [{"title": query, "id": query, "url": f"https://www.youtube.com/watch?v={query}", "duration": 1}]}
 
@@ -309,7 +327,7 @@ def no_stream_caching(monkeypatch):
     async def skip(*args, **kwargs):
         pass
 
-    monkeypatch.setattr(stream_routes, "_preextract_and_cache", skip)
+    monkeypatch.setattr(stream, "precache", skip)
 
 
 async def test_clearing_the_queue_stops_an_activity_import(
@@ -317,10 +335,9 @@ async def test_clearing_the_queue_stops_an_activity_import(
 ):
     pages["https://open.spotify.com/embed/playlist/PL123"] = embed_page(*[(f"Song {i}", "Artist") for i in range(6)])
     await add_to_queue(GUILD_ID, AddBody(query=PLAYLIST), user=USER, bot=bot, ws=ws)
-    while guild_data["current"] is None:
-        await asyncio.sleep(0.05)
+    await wait_until(lambda: guild_data["current"] is not None)
 
-    bot._playback_service.queue_service.clear_queue(GUILD_ID)
+    bot.playback.queue_service.clear_queue(GUILD_ID)
     await asyncio.sleep(1.3)
 
     assert guild_data["queue"] == []
@@ -345,11 +362,10 @@ async def test_play_command_reports_a_stopped_import(bot, guild_data, service, p
         edit_original_response=record_edit,
     )
 
-    command = asyncio.create_task(cog._queue_spotify_collection(interaction, "https://open.spotify.com/album/AL1"))
-    while not edits:
-        await asyncio.sleep(0.05)
+    command = asyncio.create_task(cog._queue_track_collection(interaction, "https://open.spotify.com/album/AL1"))
+    await wait_until(lambda: edits, task=command)
     cog.queue_service.clear_queue(GUILD_ID)
-    await command
+    await asyncio.wait_for(command, 5)
 
     assert edits == ["Adding Playlist...", "Playlist Stopped"]
     assert guild_data["queue"] == []
@@ -372,10 +388,11 @@ async def test_add_all_reports_a_cut_short_playlist(bot, ws, guild_data, service
 
 
 async def test_saving_a_link_to_a_full_playlist_skips_every_lookup(bot, service, pages, youtube, monkeypatch):
-    monkeypatch.setattr(playlist_routes, "MAX_PLAYLIST_SIZE", 1)
+    monkeypatch.setattr(playlist_service, "MAX_PLAYLIST_SIZE", 1)
     pages["https://open.spotify.com/embed/playlist/PL123"] = embed_page(("Song 0", "Artist"))
     await playlist_routes.create_playlist(GUILD_ID, playlist_routes.CreateBody(name="mix"), user=USER, bot=bot)
-    full = playlist_routes.AddSongBody(song_url="https://www.youtube.com/watch?v=x", song={"title": "X", "duration": 1})
+    known_songs.remember([{"title": "X", "duration": 1, "webpage_url": "https://www.youtube.com/watch?v=x"}])
+    full = playlist_routes.AddSongBody(song_url="https://www.youtube.com/watch?v=x")
     await playlist_routes.add_to_playlist(guild_id=GUILD_ID, name="mix", body=full, user=USER, bot=bot)
 
     with pytest.raises(playlist_routes.HTTPException) as refused:
@@ -396,7 +413,8 @@ async def test_saving_a_link_does_not_block_other_saves(bot, service, pages, slo
     await asyncio.sleep(0.2)
 
     started = time.perf_counter()
-    one_song = playlist_routes.AddSongBody(song_url="https://www.youtube.com/watch?v=y", song={"title": "Y", "duration": 1})
+    known_songs.remember([{"title": "Y", "duration": 1, "webpage_url": "https://www.youtube.com/watch?v=y"}])
+    one_song = playlist_routes.AddSongBody(song_url="https://www.youtube.com/watch?v=y")
     await playlist_routes.add_to_playlist(guild_id=GUILD_ID, name="mix", body=one_song, user=USER, bot=bot)
     single_save = time.perf_counter() - started
     result = await save_link
