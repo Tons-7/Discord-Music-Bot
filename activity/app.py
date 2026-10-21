@@ -1,23 +1,29 @@
 import asyncio
 import logging
 import os
+import random
+import signal
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import aiohttp
+import discord
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
 
 from activity.ws_manager import ConnectionManager
 from bot import MusicBot
 from cogs.music_commands import MusicCommands
 from cogs.playlist_commands import PlaylistCommands
-from services.queue_service import cancel_imports
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# The longest wait between attempts to log in or reconnect to Discord
+MAX_RETRY_DELAY = 300
 
 
 def _windows_exception_handler(loop, context):
@@ -25,6 +31,38 @@ def _windows_exception_handler(loop, context):
     if isinstance(exception, ConnectionResetError):
         return
     loop.default_exception_handler(context)
+
+
+async def _login(bot: MusicBot, token: str) -> None:
+    """Log in, waiting out network and Discord outages; a rejected token is the only error that stops it."""
+    delay = 5
+    while True:
+        try:
+            await bot.login(token)
+            return
+        except discord.LoginFailure:
+            raise
+        except (OSError, aiohttp.ClientError, TimeoutError, discord.HTTPException) as e:
+            logger.warning(f"Discord login failed ({e!r}); retrying in {delay}s")
+            await asyncio.sleep(delay + random.uniform(0, delay / 2))
+            delay = min(delay * 2, MAX_RETRY_DELAY)
+
+
+async def _stay_connected(bot: MusicBot) -> None:
+    """bot.connect(), restarted after failures discord.py doesn't retry itself (it retries network errors)."""
+    delay = 5
+    while not bot.is_closed():
+        try:
+            await bot.connect()
+        except discord.PrivilegedIntentsRequired:
+            raise
+        except Exception:
+            # discord.py closes the client on a bad token or a close code it can't resume from; a restart is needed.
+            if bot.is_closed():
+                raise
+            logger.exception(f"Discord connection failed; reconnecting in {delay}s")
+            await asyncio.sleep(delay + random.uniform(0, delay / 2))
+            delay = min(delay * 2, MAX_RETRY_DELAY)
 
 
 @asynccontextmanager
@@ -35,6 +73,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("BOT_TOKEN is required")
 
     logger.info("Starting Discord Music Bot + Activity server...")
+    app.state.shutting_down = False
 
     bot = MusicBot()
 
@@ -51,43 +90,29 @@ async def lifespan(app: FastAPI):
     # Initialize bot internals (same as `async with bot:` does),
     # then login + connect in background
     await bot._async_setup_hook()
-    await bot.login(bot_token)
-    bot_task = asyncio.create_task(bot.connect(), name="discord-bot-connect")
+    await _login(bot, bot_token)
+    bot_task = asyncio.create_task(_stay_connected(bot), name="discord-bot-connect")
 
-    def _log_bot_task_exception(task: asyncio.Task):
-        if task.cancelled():
+    def _on_bot_task_done(task: asyncio.Task):
+        if task.cancelled() or app.state.shutting_down:
             return
-        exc = task.exception()
-        if exc is not None:
-            logger.error("Discord bot connection task failed", exc_info=exc)
+        # The bot is offline for good: exit, so the supervisor (Wispbyte, Docker) restarts the process.
+        logger.critical("Discord connection ended; shutting down for a restart", exc_info=task.exception())
+        signal.raise_signal(signal.SIGTERM)
 
-    bot_task.add_done_callback(_log_bot_task_exception)
+    bot_task.add_done_callback(_on_bot_task_done)
 
-    # Wait for bot to be fully connected before installing hooks.
-    # Race wait_until_ready against bot_task so a failed connect() can't hang
-    # uvicorn forever, and bound it with a timeout.
+    # Wait for the bot to be ready before installing hooks; uvicorn serves nothing until then.
     ready_task = asyncio.create_task(bot.wait_until_ready(), name="bot-wait-until-ready")
-    done, _pending = await asyncio.wait(
-        {ready_task, bot_task},
-        return_when=asyncio.FIRST_COMPLETED,
-        timeout=60,
-    )
-
-    if bot_task in done:
-        # connect() returned/raised before the bot became ready
-        ready_task.cancel()
-        exc = bot_task.exception() if not bot_task.cancelled() else None
-        if exc is not None:
-            logger.error("Bot failed to connect during startup", exc_info=exc)
+    while True:
+        done, _pending = await asyncio.wait({ready_task, bot_task}, return_when=asyncio.FIRST_COMPLETED, timeout=60)
+        if ready_task in done:
+            break
+        if bot_task in done:
+            ready_task.cancel()
+            exc = bot_task.exception() if not bot_task.cancelled() else None
             raise RuntimeError(f"Bot failed to connect: {exc}") from exc
-        logger.error("Discord bot connection ended before becoming ready")
-        raise RuntimeError("Bot connection ended before becoming ready")
-
-    if ready_task not in done:
-        # Neither ready nor failed within the timeout
-        ready_task.cancel()
-        logger.error("Timed out waiting for the Discord bot to become ready (60s)")
-        raise RuntimeError("Timed out waiting for the Discord bot to become ready")
+        logger.warning("Still waiting for Discord to finish connecting...")
 
     # Install broadcast hooks so slash commands notify Activity clients
     from activity.cog_hooks import install_broadcast_hooks
@@ -97,29 +122,11 @@ async def lifespan(app: FastAPI):
     from activity.position_broadcaster import start_position_broadcaster
     position_task = start_position_broadcaster(bot, ws_manager)
 
-    # Stop Activity-driven playback when last user closes the Activity
+    # Stop Activity-driven playback when the last viewer closes the Activity (after a grace period)
+    from activity.helpers import end_activity_session
+
     async def on_last_disconnect(guild_id: int, last_user_ids: set[int] | None = None):
-        await asyncio.sleep(20)
-
-        # If someone reconnected during the delay, abort cleanup
-        if ws_manager.has_connections(guild_id):
-            return
-
-        guild_data = bot.get_guild_data(guild_id)
-        vc = guild_data.get("voice_client")
-        if vc and vc.is_connected():
-            return  # Bot is in voice — playback continues through VC
-
-        if guild_data.get("current"):
-            # Record listening stats before clearing (pass saved user IDs
-            # since WS connections are already gone at this point)
-            from activity.helpers import clear_activity_playback, record_activity_listening
-            await record_activity_listening(bot, ws_manager, guild_id, user_ids=last_user_ids)
-
-            cancel_imports(guild_data)
-            clear_activity_playback(guild_data, cancel_prefetch=True)
-            await bot.save_guild_queue(guild_id)
-            logger.info(f"Activity closed for guild {guild_id}, cleared playback state")
+        await end_activity_session(bot, ws_manager, guild_id, last_user_ids)
 
     ws_manager.set_on_last_disconnect(on_last_disconnect)
 
@@ -132,27 +139,12 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down...")
+    app.state.shutting_down = True
     position_task.cancel()
     try:
         await position_task
     except asyncio.CancelledError:
         pass
-
-    # Close lazily-created aiohttp sessions and cancel tracked background tasks.
-    # These helpers are defined by other modules — call them defensively.
-    try:
-        from activity.routes import stream_routes
-        if hasattr(stream_routes, "close_proxy_session"):
-            await stream_routes.close_proxy_session()
-    except Exception as e:
-        logger.debug(f"Error closing stream proxy session: {e}")
-
-    try:
-        from activity.routes import image_proxy
-        if hasattr(image_proxy, "close_session"):
-            await image_proxy.close_session()
-    except Exception as e:
-        logger.debug(f"Error closing image proxy session: {e}")
 
     try:
         from activity.tasks import cancel_all
@@ -164,24 +156,51 @@ async def lifespan(app: FastAPI):
     bot_task.cancel()
     try:
         await bot_task
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, Exception):
         pass
 
 
-app = FastAPI(lifespan=lifespan)
+# The API is used by the bundled frontend only, so it publishes no OpenAPI docs and needs no CORS.
+app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# Report-only first: the Activity runs inside Discord's iframe, and an enforced policy that misses a source
+# would blank the page. The theme script is inline, hence 'unsafe-inline'.
+_CSP = (
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' wss: https:; "
+    "frame-ancestors https://discord.com https://*.discord.com https://*.discordsays.com"
 )
+
+
+class SecurityHeaders:
+    """Adds the headers to every HTTP response (plain ASGI, so audio streams pass straight through)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.setdefault("X-Content-Type-Options", "nosniff")
+                headers.setdefault("Referrer-Policy", "no-referrer")
+                headers.setdefault("Content-Security-Policy-Report-Only", _CSP)
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(SecurityHeaders)
+
 
 # Mount API routes
 from activity.routes import api_router
 
 app.include_router(api_router)
+
 
 class FrontendStaticFiles(StaticFiles):
     """Static export with explicit cache policy: versioned chunks are
@@ -191,12 +210,13 @@ class FrontendStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
         # Per-build assetPrefix (/v-<stamp>/_next/...) — chunk filenames are not
         # content-hashed across builds, so the unique prefix is what busts CDN
-        # caches. Strip it to resolve the real file.
-        versioned = path.startswith("v-") and "/" in path
+        # caches. Strip it to resolve the real file (Starlette gives Windows paths with "\").
+        first, sep, rest = path.replace("\\", "/").partition("/")
+        versioned = first.startswith("v-") and bool(sep)
         if versioned:
-            path = path.split("/", 1)[1]
+            path = rest
         response = await super().get_response(path, scope)
-        if versioned:
+        if versioned and response.status_code == 200:
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         else:
             response.headers["Cache-Control"] = "no-cache"

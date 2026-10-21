@@ -68,7 +68,7 @@ def mint_session_token(user_id: int, guild_id: int, ttl: int = SESSION_TTL) -> s
 
 
 def verify_session_token(token: str) -> dict | None:
-    """Verify a session token, returning {"user_id", "guild_id"} or None.
+    """Verify a session token, returning {"user_id", "guild_id", "expires_at"} or None.
 
     Returns None for malformed, expired, or bad-signature tokens.
     """
@@ -84,6 +84,6 @@ def verify_session_token(token: str) -> dict | None:
         if int(payload["exp"]) < int(time.time()):
             return None
 
-        return {"user_id": int(payload["uid"]), "guild_id": int(payload["gid"])}
+        return {"user_id": int(payload["uid"]), "guild_id": int(payload["gid"]), "expires_at": int(payload["exp"])}
     except Exception:
         return None

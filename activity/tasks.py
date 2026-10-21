@@ -10,11 +10,17 @@ _BG: set = set()
 
 
 def spawn(coro) -> asyncio.Task:
-    """Schedule a fire-and-forget coroutine, keeping a strong reference until done."""
+    """Schedule a fire-and-forget coroutine, keeping a strong reference until done and logging its failure."""
     task = asyncio.create_task(coro)
     _BG.add(task)
-    task.add_done_callback(_BG.discard)
+    task.add_done_callback(_done)
     return task
+
+
+def _done(task: asyncio.Task) -> None:
+    _BG.discard(task)
+    if not task.cancelled() and (error := task.exception()) is not None:
+        logger.error(f"Background task {task.get_name()} failed", exc_info=error)
 
 
 async def cancel_all() -> None:

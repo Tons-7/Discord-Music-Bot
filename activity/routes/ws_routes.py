@@ -1,70 +1,84 @@
 import logging
+import time
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
-from activity.auth import get_discord_user
-from activity.permissions import check_banned
+from activity.auth import is_session_token, require_member, user_id_from_token
 from activity.session import verify_session_token
 from activity.state_serializer import serialize_guild_state
+from activity.ws_manager import Viewer
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
 
+# Close codes the client acts on (activity-frontend/src/lib/ws.ts)
+CLOSE_AUTH = 4001
+CLOSE_FORBIDDEN = 4003
+CLOSE_NO_BOT = 4004
+CLOSE_TRY_AGAIN = 1013
+
+
+def _close_code(error: HTTPException) -> int:
+    if error.status_code == 401:
+        return CLOSE_AUTH
+    if error.status_code == 404:
+        return CLOSE_NO_BOT
+    if error.status_code == 403:
+        return CLOSE_FORBIDDEN
+    return CLOSE_TRY_AGAIN
+
+
+def _optional_int(value: str | None) -> int | None:
+    return int(value) if value and value.isdigit() else None
+
+
+def _session_expiry(token: str) -> float | None:
+    session = verify_session_token(token) if is_session_token(token) else None
+    return session["expires_at"] if session else None
+
 
 @router.websocket("/ws/guild/{guild_id}")
 async def guild_websocket(websocket: WebSocket, guild_id: int):
-    app = websocket.app
-    bot = app.state.bot
-    ws_manager = app.state.ws_manager
+    bot = websocket.app.state.bot
+    ws_manager = websocket.app.state.ws_manager
 
-    # Authenticate via query param: signed session token (preferred, no Discord
-    # round-trip) or a raw Discord access token as a fallback.
+    # Accepted before the checks, so a refusal reaches the browser as a close code instead of a failed handshake.
+    await websocket.accept()
     token = websocket.query_params.get("token")
-    if not token:
-        await websocket.close(code=4001, reason="Missing token")
+    try:
+        user_id = await user_id_from_token(bot, guild_id, token)
+        require_member(bot, guild_id, user_id)
+    except HTTPException as e:
+        await websocket.close(code=_close_code(e), reason=str(e.detail)[:120])
         return
 
-    session = verify_session_token(token)
-    if session and session.get("guild_id") == guild_id:
-        user_id = session["user_id"]
-    else:
-        user = await get_discord_user(token)
-        if not user:
-            await websocket.close(code=4001, reason="Invalid token")
-            return
-        user_id = int(user["id"])
-
-    if check_banned(user_id):
-        await websocket.close(code=4003, reason="Banned")
-        return
-
-    # Check guild membership
-    guild = bot.get_guild(guild_id)
-    if not guild:
-        await websocket.close(code=4004, reason="Bot not in guild")
-        return
-
-    member = guild.get_member(user_id)
-    if not member:
-        await websocket.close(code=4003, reason="Not a guild member")
-        return
-
-    # Accept and register
-    await ws_manager.connect(websocket, guild_id, user_id)
+    viewer = Viewer(
+        user_id=user_id,
+        instance_id=(websocket.query_params.get("instance_id") or None),
+        channel_id=_optional_int(websocket.query_params.get("channel_id")),
+        expires_at=_session_expiry(token or ""),
+    )
+    await ws_manager.connect(websocket, guild_id, user_id, accept=False, viewer=viewer)
 
     try:
-        # Send initial state
-        state = serialize_guild_state(bot, guild_id)
-        await websocket.send_json({"type": "STATE_UPDATE", "data": state})
+        await websocket.send_json({"type": "STATE_UPDATE", "data": serialize_guild_state(bot, guild_id)})
 
-        # Listen for commands (optional, REST is primary)
+        # REST is the command channel; the socket only carries PINGs from the client.
         while True:
             data = await websocket.receive_json()
-            # Commands over WS are handled by REST endpoints
-            # This loop just keeps the connection alive
             ws_manager.touch(websocket)
-            if data.get("type") == "PING":
-                await websocket.send_json({"type": "PONG"})
+            if data.get("type") != "PING":
+                continue
+            # Bans, kicks and expired sessions are rechecked on every ping (~25s).
+            if viewer.expires_at is not None and viewer.expires_at < time.time():
+                await websocket.close(code=CLOSE_AUTH, reason="Your session expired")
+                return
+            try:
+                require_member(bot, guild_id, user_id)
+            except HTTPException as e:
+                await websocket.close(code=_close_code(e), reason=str(e.detail)[:120])
+                return
+            await websocket.send_json({"type": "PONG"})
 
     except WebSocketDisconnect:
         pass
@@ -72,3 +86,4 @@ async def guild_websocket(websocket: WebSocket, guild_id: int):
         logger.debug(f"WS error for guild {guild_id}: {e}")
     finally:
         ws_manager.disconnect(websocket, guild_id)
+

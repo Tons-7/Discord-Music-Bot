@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from activity import tasks, ws_manager
 from tests.conftest import GUILD_ID
@@ -13,12 +14,12 @@ class FakeSocket:
     async def accept(self):
         pass
 
-    async def send_json(self, message):
+    async def send_text(self, text):
         if self.stuck:
             await asyncio.sleep(3600)
-        self.received.append(message)
+        self.received.append(json.loads(text))
 
-    async def close(self, code=1000):
+    async def close(self, code=1000, reason=None):
         self.close_code = code
 
 

@@ -20,7 +20,7 @@ def extractions(bot, monkeypatch):
         calls.append(query)
         return {"title": "Extracted", "webpage_url": query, "url": "https://cdn/stream", "duration": 90}
 
-    monkeypatch.setattr(bot._music_service, "get_song_info_cached", fake_extract)
+    monkeypatch.setattr(bot.music, "get_song_info_cached", fake_extract)
     return calls
 
 
@@ -44,14 +44,14 @@ async def test_listed_song_is_added_without_extraction(bot, ws, playing, extract
     assert extractions == []
     queued = playing["queue"][0]
     assert (queued.title, queued.duration, queued.webpage_url) == ("Listed", 200, URL)
-    assert queued.requested_by == "tester"
+    assert queued.requested_by == "<@42>"
 
 
 async def test_search_result_is_added_without_extraction(bot, ws, playing, extractions, monkeypatch):
-    async def fake_search(query, limit=1):
-        return {"entries": [LISTED]}
+    async def fake_search(query, limit, executor=None):
+        return [LISTED]
 
-    monkeypatch.setattr(bot._music_service, "search_youtube", fake_search)
+    monkeypatch.setattr(bot.music, "search_youtube_many", fake_search)
 
     found = await search_songs(GUILD_ID, q="listed", limit=5, user=USER, bot=bot)
     await add(bot, ws, found["results"][0]["webpage_url"])

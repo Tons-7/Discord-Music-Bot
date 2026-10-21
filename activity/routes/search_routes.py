@@ -1,71 +1,67 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from activity import known_songs
-from activity.dependencies import get_bot, guild_member
-from activity.state_serializer import _ensure_thumbnail
-from services.music_service import spotify_collection
+from activity.dependencies import Bot, Member
+from activity.rate_limit import check_rate
+from config import DEFAULT_SEARCH_RESULTS, MAX_SEARCH_RESULTS
+from services.music_service import link_platform, track_collection, youtube_list_link
+from utils.helpers import youtube_thumbnail
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/guild/{guild_id}", tags=["search"])
 
 
+def _result(entry: dict) -> dict:
+    webpage_url = entry.get("webpage_url") or entry.get("url", "")
+    return {
+        "title": entry.get("title", "Unknown"),
+        "duration": entry.get("duration", 0) or 0,
+        "album": entry.get("album", ""),
+        "thumbnail": entry.get("thumbnail") or youtube_thumbnail(webpage_url),
+        "uploader": entry.get("uploader", entry.get("channel", "Unknown")),
+        "webpage_url": webpage_url,
+    }
+
+
 @router.get("/search")
 async def search_songs(
-    guild_id: int,
-    q: str = Query(..., min_length=1),
-    limit: int = Query(5, ge=1, le=25),
-    user=Depends(guild_member),
-    bot=Depends(get_bot),
+        guild_id: int,
+        user: Member,
+        bot: Bot,
+        q: str = Query(..., min_length=1, max_length=2048),
+        limit: int = Query(DEFAULT_SEARCH_RESULTS, ge=1, le=MAX_SEARCH_RESULTS),
 ):
-    music_service = bot._music_service
+    check_rate("search", int(user["id"]))
+    music_service = bot.music
 
+    # Spotify and Apple Music lists are read without YouTube lookups, so they show at once;
+    # each row is looked up when it is added.
+    is_track_list = track_collection(q) is not None
     try:
-        # If input looks like a URL, resolve it directly (Spotify, YouTube, SoundCloud, etc.)
-        is_url = q.startswith("http://") or q.startswith("https://")
-        # Listed without YouTube lookups, so they show at once; each is looked up when added.
-        is_spotify_list = is_url and spotify_collection(q) is not None
-        if is_spotify_list:
-            results = await music_service.spotify_tracks(q)
-        elif is_url:
+        if is_track_list:
+            results = await music_service.collection_tracks(q)
+        elif link_platform(q):
             results = await music_service.get_song_info_cached(q)
         else:
-            results = await music_service.search_youtube(q, limit=limit)
+            results = await music_service.search_youtube_many(q, limit)
     except Exception as e:
         logger.error(f"Search error: {e}")
-        raise HTTPException(status_code=500, detail="Search failed")
+        raise HTTPException(status_code=500, detail="Search failed") from e
 
-    if not results:
-        return {"results": []}
-
-    # search_youtube returns a dict with 'entries' when limit > 1
     if isinstance(results, dict):
-        entries = results.get("entries", [])
-        if not entries and results.get("title"):
-            # Single result returned as a flat dict
-            entries = [results]
-    elif isinstance(results, list):
-        entries = results
+        entries = results.get("entries")
+        if entries is None:
+            entries = [results] if results.get("title") else []
     else:
-        entries = [results] if results else []
+        entries = results or []
 
-    normalized = []
-    for entry in entries:
-        if not entry or not entry.get("title"):
-            continue
-
-        result = {
-            "title": entry.get("title", "Unknown"),
-            "duration": entry.get("duration", 0) or 0,
-            "album": entry.get("album", ""),
-            "thumbnail": entry.get("thumbnail", ""),
-            "uploader": entry.get("uploader", entry.get("channel", "Unknown")),
-            "webpage_url": entry.get("webpage_url", entry.get("url", "")),
-            "url": entry.get("url", ""),
-        }
-        normalized.append(_ensure_thumbnail(result))
-
-    if not is_spotify_list:
+    normalized = [_result(entry) for entry in entries if entry and entry.get("title")]
+    if not is_track_list:
         known_songs.remember(normalized)
-    return {"results": normalized}
+    response: dict = {"results": normalized}
+    # A video opened from a playlist or Mix resolves to that video; the list stays one tap away.
+    if len(normalized) == 1 and (list_url := youtube_list_link(q)):
+        response["list_url"] = list_url
+    return response

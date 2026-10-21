@@ -1,7 +1,10 @@
+import asyncio
+
 import pytest
 from fastapi import HTTPException
 
 from activity.routes import playlist_routes as routes
+from services import playlist_service
 from activity.routes.search_routes import search_songs
 from tests.conftest import GUILD_ID, USER, make_song
 
@@ -22,7 +25,7 @@ def lookups(bot, monkeypatch):
         calls.append(url)
         return links.get(url)
 
-    monkeypatch.setattr(bot._music_service, "get_song_info", fake_lookup)
+    monkeypatch.setattr(bot.music, "get_song_info", fake_lookup)
     return links, calls
 
 
@@ -74,7 +77,7 @@ async def test_saving_the_same_link_twice_is_refused(bot, playlist, lookups):
 
 
 async def test_full_playlist_keeps_what_fits(bot, playlist, lookups, monkeypatch):
-    monkeypatch.setattr(routes, "MAX_PLAYLIST_SIZE", 1)
+    monkeypatch.setattr(playlist_service, "MAX_PLAYLIST_SIZE", 1)
 
     result = await save_link(bot, playlist)
 
@@ -102,7 +105,7 @@ async def test_searched_link_is_not_resolved_again(bot, playlist, lookups):
 
 
 async def test_saving_the_queue_keeps_what_fits(bot, guild_data, playlist, monkeypatch):
-    monkeypatch.setattr(routes, "MAX_PLAYLIST_SIZE", 2)
+    monkeypatch.setattr(playlist_service, "MAX_PLAYLIST_SIZE", 2)
     guild_data["current"] = make_song("now")
     guild_data["queue"].extend([make_song("next"), make_song("later")])
 
@@ -111,3 +114,32 @@ async def test_saving_the_queue_keeps_what_fits(bot, guild_data, playlist, monke
     )
 
     assert (result["added"], result["dropped"], result["truncated"]) == (2, 1, True)
+
+
+async def test_saving_the_queue_saves_it_in_order_played_songs_first(bot, guild_data, playlist):
+    guild_data["played"].append(make_song("before"))
+    guild_data["current"] = make_song("now")
+    guild_data["queue"].append(make_song("next"))
+
+    await routes.add_all_queue_to_playlist(
+        guild_id=GUILD_ID, name=playlist, body=routes.AddAllQueueBody(), user=USER, bot=bot,
+    )
+
+    saved = (await routes.show_playlist(GUILD_ID, playlist, user=USER, bot=bot, global_mode=False, owner_id=None))["songs"]
+    assert [s["title"] for s in saved] == ["Song before", "Song now", "Song next"]
+
+
+async def test_writers_to_one_playlist_take_turns_and_leave_no_lock_behind():
+    playlist = playlist_service.Playlist(1, 1, "mix", False, [], "owner")
+    order = []
+
+    async def writer(n):
+        async with playlist_service.lock(playlist):
+            order.append(("in", n))
+            await asyncio.sleep(0.01)
+            order.append(("out", n))
+
+    await asyncio.gather(*(writer(i) for i in range(5)))
+
+    assert all(order[i + 1] == ("out", order[i][1]) for i in range(0, len(order), 2))
+    assert playlist_service._locks == {}
