@@ -18,7 +18,8 @@ err=$(echo 'console.log(1 + 1)' | run -i --entrypoint deno "$image" run --ext=js
 test -z "$err" || { echo "deno stderr: $err"; exit 1; }
 
 echo "--- the app imports"
-run --entrypoint python "$image" -c "import activity.app, main"
+# As at runtime: the code is in /app (on the path, like `python /app/main.py`) and the working directory is /data.
+run --entrypoint python -e PYTHONPATH=/app "$image" -c "import activity.app, main"
 
 echo "--- healthcheck fails while nothing listens and passes once /api/config answers"
 if run --entrypoint python "$image" /app/scripts/docker_healthcheck.py; then
