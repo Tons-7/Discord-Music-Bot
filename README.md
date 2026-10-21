@@ -27,7 +27,7 @@ autoplay, and an optional **Discord Activity** (in-Discord web UI) for browser-b
 - [FFmpeg](https://www.ffmpeg.org/download.html) installed and on PATH
 - [Deno](https://deno.com/) on PATH, recommended: yt-dlp uses it to solve YouTube's challenges (without it some videos
   won't play)
-- Node.js 24+ (only if you change the Discord Activity frontend)
+- Node.js 26+ (only if you change the Discord Activity frontend)
 
 ## Setup
 
