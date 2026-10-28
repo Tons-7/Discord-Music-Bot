@@ -8,6 +8,7 @@ import { errorMessage } from "@/lib/api";
 import { openExternal } from "@/lib/discord-sdk";
 import { AUDIO_EFFECTS, SPEEDS, effectLabel } from "@/lib/playback";
 import MarqueeText from "./MarqueeText";
+import CoverArt from "./CoverArt";
 import FavHeart from "./FavHeart";
 import AddToPlaylistButton from "./AddToPlaylistButton";
 import InviteButton from "./InviteButton";
@@ -17,7 +18,7 @@ import { useConfirm } from "./ui/ConfirmButton";
 import { SeekBar, LiveTime } from "./ui/SeekBar";
 import { NowPlayingTextSkeleton } from "./ui/Skeleton";
 import {
-  PlayIcon, PauseIcon, NoteIcon, InfinityIcon, StopIcon, ShuffleIcon, SkipPrevIcon, SkipNextIcon,
+  PlayIcon, PauseIcon, InfinityIcon, StopIcon, ShuffleIcon, SkipPrevIcon, SkipNextIcon,
   RepeatIcon, RepeatOneIcon, VolumeIcon, VolumeOffIcon, AlertIcon,
 } from "./ui/icons";
 import type { AudioPlayerHandle } from "@/hooks/useAudioPlayer";
@@ -134,16 +135,9 @@ export default function NowPlaying({ audio, view, transport, volume, onVolumeCha
         <InviteButton />
       </div>
 
-      {/* Size container: art stays square, sized by the smaller available axis */}
+      {/* Size container: the art keeps its own shape (16:9 video, square cover) at the largest size that fits */}
       <div className="relative z-10 flex-1 flex items-center justify-center p-4 max-sm:p-3 min-h-0 min-w-0 [container-type:size]">
-        <div className="relative aspect-square w-[min(100cqw,100cqh)] rounded-2xl overflow-hidden shadow-[0_8px_40px_rgba(0,0,0,0.5)]">
-          {thumb ? (
-            <img src={thumb} alt="" className="w-full h-full object-cover" />
-          ) : (
-            <div className="w-full h-full bg-gradient-to-br from-accent/20 via-accent/5 to-transparent flex items-center justify-center">
-              <NoteIcon className="w-14 h-14 text-accent/30" />
-            </div>
-          )}
+        <CoverArt thumbnail={current?.thumbnail}>
           {current?.is_live && (
             <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-danger">
               <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
@@ -178,7 +172,7 @@ export default function NowPlaying({ audio, view, transport, volume, onVolumeCha
               <span className="text-xs font-medium text-white">Tap to play</span>
             </button>
           )}
-        </div>
+        </CoverArt>
       </div>
 
       {elsewhere && (
