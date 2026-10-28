@@ -13,7 +13,7 @@ concurrency:
 
 env:
   # Keep in step with the uv image pinned in the Dockerfile.
-  UV_VERSION: "0.13.4"
+  UV_VERSION: "0.13.6"
 
 jobs:
   python:
@@ -112,4 +112,14 @@ jobs:
       - name: npm (production dependencies)
         if: ${{ !cancelled() }}
         working-directory: activity-frontend
-        run: npm audit --omit=dev --audit-level=high
+        # Allowed: GHSA-mrhx-c7xc-m3w5 (zod < 4.6.6). Only Discord's Embedded App SDK uses zod, to check messages from
+        # the Discord client in the listener's own browser, and no SDK release (the 3.0 beta included) allows zod 4.
+        # Drop the exception once one does.
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          found=$(jq -r '[.vulnerabilities[].via[] | objects
+            | select(.severity == "high" or .severity == "critical")
+            | select(.url | endswith("GHSA-mrhx-c7xc-m3w5") | not)
+            | "\(.name): \(.title) (\(.url))"] | unique | .[]' audit.json)
+          if [ -n "$found" ]; then echo "$found"; exit 1; fi
+          echo "No high or critical advisories besides the allowed GHSA-mrhx-c7xc-m3w5"
