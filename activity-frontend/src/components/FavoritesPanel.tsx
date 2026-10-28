@@ -88,7 +88,7 @@ export default function FavoritesPanel() {
                 duration={fav.duration}
                 trailing={
                   <>
-                    <AddToPlaylistButton song={fav} />
+                    {/* Hover-only, so it goes first: the always-shown button stays next to the duration */}
                     <IconButton
                       label="Remove from Favorites"
                       size="xs"
@@ -98,6 +98,7 @@ export default function FavoritesPanel() {
                     >
                       <CloseIcon className="w-3 h-3" />
                     </IconButton>
+                    <AddToPlaylistButton song={fav} />
                   </>
                 }
               />

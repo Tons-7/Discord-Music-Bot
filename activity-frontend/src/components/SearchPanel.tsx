@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import useSWR from "swr";
 import { useGuildId } from "./GuildStateProvider";
 import { apiFetch, errorMessage } from "@/lib/api";
@@ -11,7 +11,8 @@ import SongRow from "./SongRow";
 import AddToPlaylistButton, { AddLinkToPlaylistButton } from "./AddToPlaylistButton";
 import EmptyState, { ErrorState } from "./EmptyState";
 import { SongRowSkeleton } from "./ui/Skeleton";
-import { AddIcon, SearchIcon, Spinner } from "./ui/icons";
+import IconButton from "./ui/IconButton";
+import { AddIcon, CloseIcon, SearchIcon, Spinner } from "./ui/icons";
 import { useQueueAdd } from "@/hooks/useQueueAdd";
 import type { SearchResult } from "@/types";
 
@@ -38,6 +39,13 @@ export default function SearchPanel() {
   const [debounced, setDebounced] = useState("");
   const [addingAll, setAddingAll] = useState(false);
   const queue = useQueueAdd();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Back to an empty box, ready for the next search.
+  const clearQuery = () => {
+    setQuery("");
+    inputRef.current?.focus();
+  };
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query.trim()), DEBOUNCE_MS);
@@ -89,13 +97,20 @@ export default function SearchPanel() {
         <div className="flex items-center gap-2.5 bg-surface-3/60 rounded-xl border border-fg/[0.08] focus-within:border-accent/40 transition-[border-color] duration-200 px-3.5 py-2.5">
           <SearchIcon className="w-4 h-4 text-muted flex-shrink-0" />
           <input
+            ref={inputRef}
             type="search" value={query} onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape" && query) { e.preventDefault(); clearQuery(); } }}
             placeholder="Search or paste a link…"
             aria-label="Search songs"
             enterKeyHint="search" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             // 16px on mobile — iOS zooms the page when focusing smaller inputs
             className="flex-1 bg-transparent text-fg text-base sm:text-sm outline-none placeholder:text-muted min-w-0 [&::-webkit-search-cancel-button]:hidden"
           />
+          {query && (
+            <IconButton label="Clear search" size="xs" onClick={clearQuery}>
+              <CloseIcon className="w-3 h-3" />
+            </IconButton>
+          )}
         </div>
       </div>
 
