@@ -40,8 +40,11 @@ const MarqueeText = memo(function MarqueeText({ children, className, hovered }: 
       onMouseEnter={hovered === undefined ? () => setSelfHover(true) : undefined}
       onMouseLeave={hovered === undefined ? () => setSelfHover(false) : undefined}
     >
-      {/* Hidden measurer — always single copy, never affected by animation */}
-      <span ref={measureRef} aria-hidden="true" className="invisible absolute whitespace-nowrap">{children}</span>
+      {/* Hidden measurer, always a single copy. Its zero-size clipped box keeps the full-width text from
+          widening whatever scrolls around the row (overflow-hidden here doesn't clip absolute children). */}
+      <span aria-hidden="true" className="invisible absolute w-0 h-0 overflow-hidden">
+        <span ref={measureRef} className="inline-block whitespace-nowrap">{children}</span>
+      </span>
 
       {animating ? (
         <span className="inline-block pr-16" style={{ animation: "marquee 14s linear infinite" }}>
