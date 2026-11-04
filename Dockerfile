@@ -1,7 +1,7 @@
 # Images are pinned by tag and digest; Dependabot's docker ecosystem bumps both together.
 
 ### Stage 1: Build Next.js frontend
-FROM node:26.12.0-slim@sha256:e556a144463cc8dc53afe8de6d2fa0db5c132fd39ffa232c17641bd40df2bf11 AS frontend
+FROM node:26.12.1-slim@sha256:94816674c62774da0d099a947bf4613b9e1972a2733abd0d0cd80e795f8411d0 AS frontend
 WORKDIR /frontend
 COPY activity-frontend/package.json activity-frontend/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
@@ -9,13 +9,13 @@ COPY activity-frontend/ .
 RUN npm run build
 
 # JS runtime for yt-dlp's YouTube signature solving
-FROM denoland/deno:bin-2.9.7@sha256:bc5aa4466e21b6d3021226a85ba2e1911f7c386254d97b9d797903ab74edace2 AS deno
+FROM denoland/deno:bin-2.9.8@sha256:b507583d3c68ba69f3ed2ce5969ae5b8b70f43421c781279c7aea06435263543 AS deno
 
 # Keep in step with the uv version pinned in .github/workflows/ci.yml.
-FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
 
 ### Stage 2: Python dependencies (pyproject.toml + uv.lock)
-FROM python:3.14.8-slim-trixie@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a AS builder
+FROM python:3.14.9-slim-trixie@sha256:35caba83af2fe6da9a5d922f9b0156f21d1246a48278c58a08bd253303ba42e8 AS builder
 COPY --from=uv /uv /usr/local/bin/uv
 # Never fetch a standalone interpreter; use this image's python3.14.
 ENV UV_PYTHON_DOWNLOADS=never \
@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 
 ### Stage 3: Runtime
-FROM python:3.14.8-slim-trixie@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a
+FROM python:3.14.9-slim-trixie@sha256:35caba83af2fe6da9a5d922f9b0156f21d1246a48278c58a08bd253303ba42e8
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg && \
